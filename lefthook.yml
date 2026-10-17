@@ -1,0 +1,28 @@
+# Conventional Commits + gitleaks + estate pre-push gate (federated standard).
+# Skip: LEFTHOOK=0.
+commit-msg:
+  commands:
+    conventional:
+      run: |
+        head -1 {1} | grep -qE '^(feat|fix|perf|refactor|docs|test|ci|build|infra|security|style|chore|revert)(\(.+\))?!?: .+' \
+          || { echo "commit-msg must be Conventional Commits: <type>(scope): <desc>"; exit 1; }
+
+pre-commit:
+  commands:
+    gitleaks:
+      # `cmd || echo` would swallow every real finding (gitleaks exits non-zero on
+      # a leak). Only a MISSING binary is tolerated; a leak blocks the commit.
+      run: |
+        if command -v gitleaks >/dev/null 2>&1; then
+          gitleaks protect --staged --redact --no-banner
+        else
+          echo "gitleaks not installed — CI will enforce"
+        fi
+
+pre-push:
+  commands:
+    xwork-pre-push:
+      # Hygiene gates always; cargo gates when Rust inputs changed vs the
+      # merge-base with origin/cerebral. Valid on gitbutler/workspace
+      # (GitButler SOP §5). Throttled to -j 2 via .cargo/config.toml.
+      run: cargo xwork --pre-push
