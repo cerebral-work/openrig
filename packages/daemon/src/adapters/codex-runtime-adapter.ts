@@ -34,7 +34,7 @@ import { codexQueueStateRoot, codexTeamWorkspaceArg, type PrepareCodexTeamWorksp
 import { shellQuote } from "./shell-quote.js";
 import { runSyncSite } from "../domain/sync-site-wrap.js";
 
-import { listNativeProcesses, observeCodexPaneProcess, type NativeProcessRow } from "../domain/native-process-lineage.js";
+import { listNativeProcesses, observeCodexPaneProcess, verifyPaneIdleShell, type NativeProcessRow } from "../domain/native-process-lineage.js";
 
 // Shared by all probes of ONE launch, never reset by a delayed screen or an
 // ambiguous transport result. A separately requested launch gets a new attempt.
@@ -489,6 +489,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return { ready: false, reason: "tmux session not responsive" };
     }
 
+    const pendingLaunch = await this.tmux.pendingShellLaunch?.(binding.tmuxSession);
+    if (pendingLaunch) return { ready: false, code: "launch_not_executed",
+      reason: "The shell has not consumed its launch script; the runtime launch has not executed." };
+
     const paneCommand = await this.tmux.getPaneCommand(binding.tmuxSession);
     const paneContent = await this.captureProbeScreen(binding.tmuxSession);
     const probe = assessNativeResumeProbe({
@@ -496,6 +500,13 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       paneCommand,
       paneContent,
     });
+
+    // Backport upstream #1373/#1395: a shell label alone does not prove exit.
+    if (probe.code === "returned_to_shell"
+      && !await verifyPaneIdleShell({ target: binding.tmuxSession, tmux: this.tmux, listProcesses: this.listProcesses })) {
+      return { ready: false, code: "awaiting_runtime",
+        reason: "The pane shows a shell that is not a proven idle shell; a launch script may still be starting Codex." };
+    }
 
     if (probe.status === "resumed") return { ready: true };
     return { ready: false, reason: probe.detail, code: probe.code };

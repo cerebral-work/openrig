@@ -238,7 +238,11 @@ describe("Claude Code runtime adapter", () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
     (tmux.capturePaneContent as ReturnType<typeof vi.fn>).mockResolvedValue("user@example.test rigged %");
-    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs() });
+    tmux.getPanePid = vi.fn(async () => 900);
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), listProcesses: () => [
+      { pid: 900, ppid: 1, command: "/bin/zsh", pgid: 900, tpgid: 900,
+        executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+    ] });
 
     const result = await adapter.checkReady(makeBinding());
 

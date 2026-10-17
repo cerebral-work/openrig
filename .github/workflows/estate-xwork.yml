@@ -39,3 +39,19 @@ jobs:
       # process, inode and docker behaviour and upstream runs them on macos-latest
       # (tests.yml). Run `cargo xwork` locally for the full DAG.
       - run: cargo xwork --skip npm-test-workspaces
+      # These launcher suites use fake tmux and hermetic fixture state, so they
+      # run on Linux even though the full upstream workspace suite cannot.
+      - name: Launcher regressions (CER-2889)
+        run: >-
+          npx vitest run --maxWorkers 2
+          packages/daemon/test/fresh-shell-launch.test.ts
+          packages/daemon/test/tmux-shell-command.test.ts
+          packages/daemon/test/tmux-adapter.test.ts
+          packages/daemon/test/tmux-argv-exec.test.ts
+          packages/daemon/test/claude-runtime-adapter.test.ts
+          packages/daemon/test/codex-runtime-adapter.test.ts
+          packages/daemon/test/node-launcher.test.ts
+          packages/daemon/test/seat-delivery-guard.test.ts
+          packages/daemon/test/native-process-lineage.test.ts
+          packages/daemon/test/claude-auto-startup.test.ts
+          packages/daemon/test/startup-orchestrator.test.ts
