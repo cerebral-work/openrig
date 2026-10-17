@@ -1,0 +1,8 @@
+# EARS Specification Configuration for the OpenRig fork (cerebral-work/openrig)
+version = 1
+spec_dir = "specs"
+ears_from = "0001"
+require_req_ids = true
+require_single_shall = true
+max_lines_warn = 300
+max_lines_error = 400
