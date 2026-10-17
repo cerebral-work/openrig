@@ -35,6 +35,11 @@ export const DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS = 300;
 export const STUCK_SWEEP_UNCLAIMED_AGE_KEY = "queue.stuck_sweep_unclaimed_age_minutes";
 export const DEFAULT_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES = 60;
 export const STUCK_SWEEP_CUSTODY_WINDOW_HOURS = 24;
+// A retry marker leases suppression; it is not proof that the ladder still runs.
+// Thirty minutes allows several default five-minute ladder ticks. Expiry only
+// restores reporting: it never retries delivery or acts on an interactive prompt.
+export const STUCK_SWEEP_LADDER_MAX_AGE_MINUTES = 30;
+const SWEEP_ACTOR = "stuck-sweep@system";
 
 /** Stamp tag on every routed finding row: the sweep's self-exclusion mark. */
 export const STUCK_SWEEP_FINDING_TAG = "stuck-sweep-finding";
@@ -222,14 +227,17 @@ function defaultIsRegisteredHost(log: (line: string) => void): (hostId: string) 
   };
 }
 
-function hasLiveLadder(db: Database.Database, qitemId: string): boolean {
+function hasLiveLadder(db: Database.Database, qitemId: string, now: Date): boolean {
   const notes = db
-    .prepare("SELECT transition_note FROM queue_transitions WHERE qitem_id = ? ORDER BY transition_id DESC")
-    .all(qitemId) as TransitionNoteRow[];
-  for (const { transition_note: note } of notes) {
+    .prepare("SELECT transition_note, ts FROM queue_transitions WHERE qitem_id = ? ORDER BY transition_id DESC")
+    .all(qitemId) as Array<TransitionNoteRow & { ts: string }>;
+  for (const { transition_note: note, ts } of notes) {
     if (!note) continue;
     if (note.startsWith(LADDER_EXHAUSTED_PREFIX)) return false;
-    if (note.startsWith(LADDER_ATTEMPT_PREFIX) || note.startsWith(LADDER_RUNG_PREFIX)) return true;
+    if (note.startsWith(LADDER_ATTEMPT_PREFIX) || note.startsWith(LADDER_RUNG_PREFIX)) {
+      const age = now.getTime() - Date.parse(ts);
+      return age >= 0 && age < STUCK_SWEEP_LADDER_MAX_AGE_MINUTES * 60_000;
+    }
   }
   return false;
 }
@@ -409,9 +417,11 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     // so it routes to the destination's orchestrator when one is derivable. Rows with a
     // live S01 ladder are S01's territory; an exhausted ladder is the handback and lands
     // here exactly once (the dedup tag keeps it to one finding).
-    for (const row of deps.queueRepo.findUndelivered()) {
+    const undeliveredRows = deps.queueRepo.findUndelivered();
+    const undeliveredIds = new Set(undeliveredRows.map((row) => row.qitemId));
+    for (const row of undeliveredRows) {
       if (isFindingRow(row)) continue;
-      if (hasLiveLadder(deps.db, row.qitemId)) continue;
+      if (hasLiveLadder(deps.db, row.qitemId, now)) continue;
       candidates.push({
         kind: "undelivered-wake",
         row,
@@ -441,7 +451,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       if (!row || isFindingRow(row)) continue;
       const actionableAt = pendingSince(deps.db, row.qitemId) ?? row.tsCreated;
       if (actionableAt > cutoff) continue;
-      if (hasLiveLadder(deps.db, row.qitemId)) continue;
+      if (hasLiveLadder(deps.db, row.qitemId, now)) continue;
       // #514 — an ask already posted to its registered human in the current delivery episode waits on
       // that human; it is not stuck, and a finding would post the human again. Unposted, failed,
       // legacy and non-human rows keep this net.
@@ -607,15 +617,16 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       }
     }
 
-    // Resolution: an open finding whose underlying condition is no longer detected closes
-    // with its reason — the sweep cleans up after itself, no human unwind.
+    // Suppression decides whether to route a new finding, never whether the source
+    // has resolved. In particular a live ladder or a changed age threshold can
+    // remove a pending row from candidates without delivery or pickup occurring.
     const openFindings = deps.db
       .prepare(
-        `SELECT qitem_id, source_session, tags FROM queue_items
+        `SELECT qitem_id, tags FROM queue_items
           WHERE state IN ('pending', 'in-progress', 'blocked')
             AND tags LIKE ?`,
       )
-      .all(`%"${STUCK_SWEEP_FINDING_TAG}"%`) as Array<{ qitem_id: string; source_session: string; tags: string }>;
+      .all(`%"${STUCK_SWEEP_FINDING_TAG}"%`) as Array<{ qitem_id: string; tags: string }>;
     for (const f of openFindings) {
       let tags: string[] = [];
       try {
@@ -626,12 +637,24 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       const dedupTag = tags.find((t) => t.startsWith("stuck-sweep:"));
       if (!dedupTag || liveDedupTags.has(dedupTag)) continue;
       const [, kind, stuckId] = dedupTag.match(/^stuck-sweep:([a-z-]+):(.+)$/) ?? [];
+      if (!kind || !stuckId) continue;
+      const source = deps.queueRepo.getById(stuckId);
+      if (!source) continue; // a missing row is not resolution evidence
+      const humanPosted = deps.queueRepo.humanNotificationPostedThisEpisode(stuckId);
+      if (kind === "undelivered-wake" && ["pending", "in-progress", "blocked"].includes(source.state)) {
+        if (undeliveredIds.has(stuckId)) continue;
+        const claimed = source.state === "in-progress" && source.claimedAt !== null;
+        // A human notification is scoped to its current episode. A terminal ACK
+        // pending/indeterminate result is deliberately not delivery proof.
+        if (!claimed && source.lastNudgeResult !== "verified" && !humanPosted) continue;
+      }
+      if (kind === "unclaimed-obligation" && source.state === "pending" && !source.claimedAt && !humanPosted) continue;
       await deps.queueRepo.update({
         qitemId: f.qitem_id,
-        actorSession: f.source_session,
+        actorSession: SWEEP_ACTOR,
         state: "done",
         closureReason: "no-follow-on",
-        transitionNote: `stuck-sweep resolved: ${kind ?? "finding"} on ${stuckId ?? "row"} no longer detected`,
+        transitionNote: `stuck-sweep resolved: ${kind} on ${stuckId}; source state=${source.state}, claimed=${source.claimedAt !== null}, wake=${source.lastNudgeResult ?? "unknown"}, human-posted=${humanPosted}`,
       });
       if (kind && stuckId) {
         findings.push({
