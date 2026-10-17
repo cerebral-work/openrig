@@ -14,7 +14,7 @@ resolver = "2"
 members = ["xtask"]
 
 [workspace.package]
-version = "0.6.10-cw.1"
+version = "0.6.10-cw.2"
 edition = "2021"
 rust-version = "1.88"
 license = "Apache-2.0"
