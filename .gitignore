@@ -45,3 +45,6 @@ packages/daemon/context-packs/
 
 # Internal build receipts; never commit
 /.evidence/
+
+# Estate xtask / xwork (Rust verification pipeline)
+/target/
