@@ -203,3 +203,41 @@ describe("AgyRuntimeAdapter", () => {
     });
   });
 });
+
+describe("ResumeMetadataRefresher agy deferred capture (snapshot/teardown path)", () => {
+  const session = (over: Record<string, unknown> = {}) => ({
+    sessionId: "sid1", sessionName: "dev-impl@rig", runtime: "agy", resumeType: null, resumeToken: null, ...over,
+  });
+  async function setup(store: { readConversationId(n: string): { ok: true; conversationId: string } | { ok: false; reason: string } } | undefined) {
+    const { ResumeMetadataRefresher } = await import("../src/domain/resume-metadata-refresher.js");
+    const sessionRegistry = { updateResumeToken: vi.fn(() => true), markResumeProbeResult: vi.fn() };
+    const refresher = new ResumeMetadataRefresher({ sessionRegistry: sessionRegistry as never, tmuxAdapter: mockTmux(""), agyStateStore: store });
+    return { refresher, sessionRegistry };
+  }
+  const hook = { readConversationId: () => ({ ok: true as const, conversationId: UUID }) };
+
+  it("null-fills agy_id from the hook sidecar", async () => {
+    const { refresher, sessionRegistry } = await setup(hook);
+    await refresher.refresh([session()] as never, { fillNullOnly: true });
+    expect(sessionRegistry.updateResumeToken).toHaveBeenCalledWith("sid1", "agy_id", UUID, "scrape");
+  });
+  it("before the first turn (no sidecar) it writes nothing", async () => {
+    const { refresher, sessionRegistry } = await setup({ readConversationId: () => ({ ok: false, reason: "missing_sidecar" }) });
+    await refresher.refresh([session()] as never, { fillNullOnly: true });
+    expect(sessionRegistry.updateResumeToken).not.toHaveBeenCalled();
+  });
+  it("never clobbers a present token; an equal id only re-stamps freshness", async () => {
+    const { refresher, sessionRegistry } = await setup({ readConversationId: () => ({ ok: true, conversationId: "11111111-1111-4111-8111-111111111111" }) });
+    await refresher.refresh([session({ resumeToken: UUID, resumeType: "agy_id" })] as never, { fillNullOnly: true });
+    expect(sessionRegistry.updateResumeToken).not.toHaveBeenCalled();
+    expect(sessionRegistry.markResumeProbeResult).not.toHaveBeenCalled();
+    const same = await setup(hook);
+    await same.refresher.refresh([session({ resumeToken: UUID, resumeType: "agy_id" })] as never, { fillNullOnly: true });
+    expect(same.sessionRegistry.markResumeProbeResult).toHaveBeenCalledWith("sid1", "resumable");
+  });
+  it("without the store dependency agy is a silent no-op", async () => {
+    const { refresher, sessionRegistry } = await setup(undefined);
+    await refresher.refresh([session()] as never, { fillNullOnly: true });
+    expect(sessionRegistry.updateResumeToken).not.toHaveBeenCalled();
+  });
+});
