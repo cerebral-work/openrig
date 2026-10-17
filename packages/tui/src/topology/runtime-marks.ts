@@ -191,12 +191,18 @@ export function terminalMark(): MarkSeg[] {
   ];
 }
 
+/** agy (Google Antigravity CLI): bright `A` on the mark cell. */
+export function agyMark(): MarkSeg[] {
+  return [{ text: "A", token: "bright", bg: "markBg", bold: true }];
+}
+
 /** the row-scale mark for a served runtime string (placeholder-safe default:
  * miniA for claude until the founder pick lands — swap point, one site) */
 export function runtimeMarkSegs(runtime: string | null | undefined): MarkSeg[] {
   const r = (runtime ?? "").toLowerCase();
   if (r.startsWith("claude")) return clawdSquareMark(); // round-3 locked square
   if (r.startsWith("codex")) return codexMark();
+  if (r === "agy" || r.startsWith("agy-") || r === "antigravity") return agyMark();
   if (r === "terminal" || r === "tty" || r.startsWith("external")) return terminalMark();
   // unknown runtime: honest text token, dimmed — never a fabricated mark
   return [{ text: "?", token: "dim" }];
