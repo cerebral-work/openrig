@@ -106,6 +106,17 @@ describe("RuntimeVerifier", () => {
     expect(result.runtime).toBe("codex");
   });
 
+  it("agy --version succeeds -> verified, and verifyAll dispatches the agy runtime", async () => {
+    const exec = createMockExec({ "agy --version": "1.4.0" });
+    const verifier = new RuntimeVerifier({ exec, db });
+
+    const [result] = await verifier.verifyAll(["agy"]);
+
+    expect(result!.runtime).toBe("agy");
+    expect(result!.status).toBe("verified");
+    expect(result!.version).toBe("1.4.0");
+  });
+
   // T7: verifyTmux auto-persists to DB
   it("verification auto-persists to runtime_verifications table", async () => {
     const exec = createMockExec({ "tmux -V": "tmux 3.4" });

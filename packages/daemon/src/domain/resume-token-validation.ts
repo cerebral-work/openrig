@@ -9,7 +9,9 @@
 // actually resume" probe is intentionally out of scope (heavy + must not
 // mutate live state); format validation is the safe, side-effect-free floor.
 
-export type ResumeType = "claude_id" | "codex_id" | "pi_session_file" | "omp_session_file";
+import { AGY_CONVERSATION_ID_RE } from "./agy-runtime.js";
+
+export type ResumeType = "claude_id" | "codex_id" | "agy_id" | "pi_session_file" | "omp_session_file";
 
 export interface ResumeTokenValidationOk {
   ok: true;
@@ -46,6 +48,7 @@ const SESSION_FILE_SUFFIX = ".jsonl";
 export function resumeTypeForRuntime(runtime: string | null): ResumeType | null {
   if (runtime === "claude-code") return "claude_id";
   if (runtime === "codex") return "codex_id";
+  if (runtime === "agy") return "agy_id";
   if (runtime === "pi") return "pi_session_file";
   if (runtime === "omp") return "omp_session_file";
   return null;
@@ -95,7 +98,7 @@ export function validateResumeToken(
   if (!resumeType) {
     return {
       ok: false,
-      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, pi, and omp have resume tokens).`,
+      error: `set-resume-token is not supported for runtime "${runtime ?? "unknown"}" (only claude-code, codex, agy, pi, and omp have resume tokens).`,
     };
   }
   if (typeof rawToken !== "string") {
@@ -107,6 +110,13 @@ export function validateResumeToken(
   }
   if (resumeType === "pi_session_file" || resumeType === "omp_session_file") {
     return validateSessionFileToken(resumeType, token);
+  }
+  if (resumeType === "agy_id") {
+    // agy resumes by conversation UUID (`agy --conversation <uuid>`).
+    if (!AGY_CONVERSATION_ID_RE.test(token)) {
+      return { ok: false, error: "Agy resume token must be a conversation UUID (8-4-4-4-12 hex)." };
+    }
+    return { ok: true, resumeType, token };
   }
   return validateIdShapedToken(resumeType, token);
 }

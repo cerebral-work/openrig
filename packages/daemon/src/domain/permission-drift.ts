@@ -112,11 +112,22 @@ export function observeOmpApprovalMode(arg: string): AppliedLaunchObservation {
   return { runtime: "omp", axis: "permission", state: "unknown", value: null, reason: "unrecognized_launch_argument" };
 }
 
+/** agy launch: always `--dangerously-skip-permissions`, optionally with `--mode <accept-edits|auto|plan>`. Launch arguments only; native enforcement is not verified. */
+export function observeAgyPermission(arg: string): AppliedLaunchObservation {
+  const normalized = arg.trim().replace(/\s+/g, " ");
+  const m = /^--dangerously-skip-permissions(?: --mode (accept-edits|auto|plan))?$/.exec(normalized);
+  if (m) {
+    return { runtime: "agy", axis: "permission", state: "observed", value: m[1] ? `skip-permissions+${m[1]}` : "skip-permissions", reason: "emitted_launch_arguments" };
+  }
+  return { runtime: "agy", axis: "permission", state: "unknown", value: null, reason: "unrecognized_launch_argument" };
+}
+
 function runtimeCommand(runtime: string): string | null {
   if (runtime === "claude-code") return "claude";
   if (runtime === "codex") return "codex";
   if (runtime === "pi") return "pi";
   if (runtime === "omp") return "omp";
+  if (runtime === "agy") return "agy";
   return null;
 }
 
@@ -234,7 +245,7 @@ function inspectLaunchBoundRuntime(
   runtime: string,
   applied: AppliedLaunchObservation | null,
 ): RuntimeEnforcementDiagnostic {
-  const axis: AppliedLaunchAxis = runtime === "codex" ? "sandbox" : runtime === "pi" ? "resource_trust" : runtime === "omp" ? "permission" : "not_applicable";
+  const axis: AppliedLaunchAxis = runtime === "codex" ? "sandbox" : runtime === "pi" ? "resource_trust" : runtime === "omp" || runtime === "agy" ? "permission" : "not_applicable";
   if (!applied || applied.runtime !== runtime || applied.axis !== axis || applied.state !== "observed" || !applied.value) {
     return unknownEnforcement(axis, null, null, applied?.reason ?? "applied_launch_unknown");
   }
@@ -259,7 +270,7 @@ export function diagnoseRuntimePosture(input: {
   // Preserve their bytes; generation matching does not prove native enforcement.
   const applied = input.applied;
   const launchArguments = applied?.state === "observed" && applied.runtime === input.runtime
-    && (input.runtime === "claude-code" || input.runtime === "codex");
+    && (input.runtime === "claude-code" || input.runtime === "codex" || input.runtime === "agy");
   const enforcement = launchArguments
     ? unknownEnforcement(applied.axis, applied.value, null, "native_permission_effect_unverified")
     : input.runtime === "claude-code"
