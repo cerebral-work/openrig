@@ -199,7 +199,11 @@ describe("Codex runtime adapter", () => {
       getPaneCommand: vi.fn(async () => "zsh"),
       capturePaneContent: vi.fn(async () => "user@example.test rigged %"),
     });
-    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs() });
+    tmux.getPanePid = vi.fn(async () => 900);
+    const adapter = new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), listProcesses: () => [
+      { pid: 900, ppid: 1, command: "/bin/zsh", pgid: 900, tpgid: 900,
+        executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" },
+    ] });
 
     const result = await adapter.checkReady(makeBinding());
 

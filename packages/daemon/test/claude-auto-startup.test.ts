@@ -74,7 +74,8 @@ describe("auto-mode startup content requires the launched Claude identity", () =
     });
     // Orchestrator checks readiness before content and once more at completion.
     if (good && !resumes) expect(listProcesses).toHaveBeenCalledTimes(4);
-    if (mode === "plain-shell") expect(listProcesses).not.toHaveBeenCalled();
+    // A shell label now requires process evidence; it still receives no startup content.
+    if (mode === "plain-shell") expect(listProcesses).toHaveBeenCalled();
     if (good) {
       // The shared proof must stay tied to the exact launch binding/generation.
       for (const changed of [{ id: "replacement" }, { tmuxSession: "replacement@rig" },

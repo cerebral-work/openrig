@@ -3,6 +3,8 @@ import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
+import { verifyPaneIdleShell, type NativeProcessLister } from "../domain/native-process-lineage.js";
 
 export type ExecFn = (cmd: string) => Promise<string>;
 
@@ -315,6 +317,8 @@ export class TmuxAdapter {
   deliveryGuard?: SeatDeliveryGuard;
   private readonly freshProbes = new Map<string, string>();
   private readonly freshManaged = new Map<string, {nodeId: string; pane: string}>();
+  private readonly freshShells = new Set<string>();
+  private readonly shellLaunches = new Map<string, string>();
 
   /** Only the private metadata probe uses this door. Success proves allocation,
    * never authority over a pre-existing or registry-managed target. */
@@ -427,6 +431,7 @@ export class TmuxAdapter {
     private exec: ExecFn,
     private fileOps: TmuxFileOps = defaultTmuxFileOps(),
     private argvExec?: ArgvExecFn,
+    private shellReadiness: { listProcesses?: NativeProcessLister; sleep?: (ms: number) => Promise<void> } = {},
   ) {}
 
   /**
@@ -550,6 +555,10 @@ export class TmuxAdapter {
       return { ok: false, code: "guard_lease_required", message: "Managed launch requires a lifecycle lease before terminal creation." };
     }
     const result = await this.createSessionUnchecked(name, cwd, env);
+    if (result.ok) {
+      this.freshShells.add(name);
+      this.shellLaunches.delete(name);
+    }
     if (result.ok && this.deliveryGuard && env?.OPENRIG_NODE_ID) {
       try {
         const panes = await this.listPanes(name);
@@ -572,10 +581,10 @@ export class TmuxAdapter {
       OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS: "",
       ...env,
     };
-    const argv = ["tmux", "new-session", "-d", "-s", name];
+    const argv = ["tmux", "new-session", "-d", "-s", name, "-x", "160", "-y", "48"];
     if (cwd != null) argv.push("-c", cwd);
     for (const [k, v] of Object.entries(seatEnv)) argv.push("-e", `${k}=${v}`);
-    const legacyParts = ["tmux", "new-session", "-d", "-s", shellQuote(name)];
+    const legacyParts = ["tmux", "new-session", "-d", "-s", shellQuote(name), "-x", "160", "-y", "48"];
     if (cwd != null) legacyParts.push("-c", shellQuote(cwd));
     for (const [k, v] of Object.entries(seatEnv)) legacyParts.push("-e", shellQuote(`${k}=${v}`));
     try {
@@ -661,6 +670,11 @@ export class TmuxAdapter {
   }
 
   private async sendShellCommandUnchecked(target: string, command: string, beforeInput: (() => void) | undefined, options: TmuxShellCommandOptions): Promise<TmuxResult> {
+    if (this.freshShells.has(target)) {
+      const ready = await this.waitForFreshShell(target);
+      if (!ready.ok) return ready;
+      this.freshShells.delete(target);
+    }
     const commandBytes = Buffer.byteLength(command, "utf8");
     // POSIX shells retain subshell isolation; unknown/unreadable panes use sh.
     const paneShell = options.sourceInPane ? (await this.getPaneCommand(target) ?? "").replace(/^-/, "") : "";
@@ -705,6 +719,8 @@ export class TmuxAdapter {
         return enter;
       }
       // The receiver now owns removal. Unlinking here races shell startup.
+      if (path) this.shellLaunches.set(target, path);
+      else this.shellLaunches.delete(target);
       created = false;
       return { ok: true };
     } catch (err) {
@@ -714,6 +730,50 @@ export class TmuxAdapter {
         try { await this.fileOps.unlink(path); } catch { /* best-effort cleanup */ }
       }
     }
+  }
+
+  /** Only a positive file observation means this attempt has not executed. No
+   * retry or extra Enter is sent after the actual launch invocation. */
+  async pendingShellLaunch(target: string): Promise<boolean> {
+    const path = this.shellLaunches.get(target);
+    if (!path) return false;
+    try { await stat(path); return true; }
+    catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") this.shellLaunches.delete(target);
+      return false;
+    }
+  }
+
+  private async waitForFreshShell(target: string): Promise<TmuxResult> {
+    // This handshake is restricted to shells created by THIS adapter. It never
+    // answers a runtime prompt or sends a second launch. A computed marker means
+    // tty echo of the probe is not evidence that the shell executed it.
+    const nonce = randomUUID().replace(/-/g, "");
+    const marker = `openrig_ready_${nonce}`;
+    const probe = `printf '%s%s\\n' 'openrig_ready_' '${nonce}'`;
+    const sleep = this.shellReadiness.sleep ?? (ms => new Promise(resolve => setTimeout(resolve, ms)));
+    let sent = false;
+    for (let attempt = 0; attempt < 40; attempt++) {
+      if (sent) {
+        const screen = await this.capturePaneScreen(target);
+        if (screen?.split(/\r?\n/).some(line => line.trim() === marker)) return { ok: true };
+      }
+      // zsh can discard an early Enter while its rc files initialize. Wait for
+      // positive idle-shell process evidence before every write, including an
+      // extra Enter for our probe. A startup menu or child process gets no input.
+      if (await verifyPaneIdleShell({ target, tmux: this, listProcesses: this.shellReadiness.listProcesses })) {
+        if (!sent) {
+          const text = await this.sendText(target, probe);
+          if (!text.ok) return text;
+          sent = true;
+        }
+        const enter = await this.sendKeys(target, ["Enter"]);
+        if (!enter.ok) return enter;
+      }
+      await sleep(250);
+    }
+    return { ok: false, code: "shell_not_ready",
+      message: "The new shell did not execute its readiness probe within 10 seconds; no runtime launch was sent." };
   }
 
   async sendKeys(target: string, keys: string[], beforeInput?: () => void): Promise<TmuxResult> {
