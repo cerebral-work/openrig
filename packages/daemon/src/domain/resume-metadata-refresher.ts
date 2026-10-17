@@ -54,6 +54,8 @@ interface ResumeMetadataRefresherDeps {
   /** Provider root used by the daemon's Claude launches; no scan of other homes. */
   claudeConfigDir?: string;
   listClaudeProcesses?: NativeProcessLister;
+  /** Agy PreInvocation-hook sidecar reader: null-fills an agy seat's token after its first turn. Absent = agy is a no-op. */
+  agyStateStore?: ResumeTokenCaptureDeps["agyStateStore"];
 }
 
 export class ResumeMetadataRefresher {
@@ -69,6 +71,7 @@ export class ResumeMetadataRefresher {
   private claudeProcessStartedAt: ResumeMetadataRefresherDeps["claudeProcessStartedAt"] | null;
   private claudeConfigDir: string;
   private listClaudeProcesses: NativeProcessLister | undefined;
+  private agyStateStore: ResumeMetadataRefresherDeps["agyStateStore"] | null;
 
   constructor(deps: ResumeMetadataRefresherDeps) {
     this.sessionRegistry = deps.sessionRegistry;
@@ -95,6 +98,7 @@ export class ResumeMetadataRefresher {
     this.claudeProcessStartedAt = deps.claudeProcessStartedAt ?? null;
     this.claudeConfigDir = deps.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR ?? nodePath.join(this.homeDir, ".claude");
     this.listClaudeProcesses = deps.listClaudeProcesses;
+    this.agyStateStore = deps.agyStateStore ?? null;
   }
 
   /**
@@ -159,6 +163,22 @@ export class ResumeMetadataRefresher {
         const threadId = await this.captureCodexThreadId(session.sessionName, captureOpts);
         if (threadId) {
           this.sessionRegistry.updateResumeToken(session.sessionId, "codex_id", threadId, "scrape");
+        }
+        continue;
+      }
+
+      if (session.runtime === "agy") {
+        // Deferred: agy has no conversation until the first turn, then OpenRig's PreInvocation
+        // hook writes the id. Pure file read. Fill-null only; a present token is never clobbered
+        // (an equal id just re-stamps freshness, mirroring Codex/Claude).
+        const state = this.agyStateStore?.readConversationId(session.sessionName);
+        if (!state?.ok) continue;
+        const valid = validateResumeToken("agy", state.conversationId);
+        if (!valid.ok) continue;
+        if (!session.resumeToken) {
+          this.sessionRegistry.updateResumeToken(session.sessionId, "agy_id", valid.token, "scrape");
+        } else if (fillNullOnly && valid.token === session.resumeToken) {
+          this.sessionRegistry.markResumeProbeResult(session.sessionId, "resumable");
         }
         continue;
       }

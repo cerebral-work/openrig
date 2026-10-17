@@ -119,24 +119,54 @@ describe("agy config edits (temp HOME)", () => {
       const parsed = JSON.parse(fs.readFileSync(agyHooksPath(home), "utf8"));
       expect(parsed.openrig.PreInvocation).toEqual([{ type: "command", command: "bash '/pkg/openrig-agy-hook.sh'", timeout: 10 }]);
     });
-    it("is idempotent and leaves existing entries byte-for-byte untouched", () => {
+    const bodyBefore = (raw: string) => raw.slice(0, raw.lastIndexOf("}")).trimEnd();
+    it("is idempotent and leaves existing entries BYTE-FOR-BYTE untouched (raw text, not parsed objects)", () => {
       const path = agyHooksPath(home);
       fs.mkdirSync(nodePath.dirname(path), { recursive: true });
       fs.writeFileSync(path, moshi);
       expect(registerAgyHook("/pkg/h.sh", home)).toBe(true);
       const once = fs.readFileSync(path, "utf8");
+      // every original byte up to the closing brace is still there, in place
+      expect(once.startsWith(bodyBefore(moshi) + ",\n")).toBe(true);
+      expect(once.endsWith("\n}\n")).toBe(true);
       const parsed = JSON.parse(once);
       expect(Object.keys(parsed)).toEqual(["moshi-hook", "moshi-operator-ask", "openrig"]);
-      expect(parsed["moshi-hook"]).toEqual(JSON.parse(moshi)["moshi-hook"]);
-      expect(parsed["moshi-operator-ask"]).toEqual(JSON.parse(moshi)["moshi-operator-ask"]);
+      expect(parsed.openrig.PreInvocation).toEqual([{ type: "command", command: "bash '/pkg/h.sh'", timeout: 10 }]);
       // second registration: no write at all
       expect(registerAgyHook("/pkg/h.sh", home)).toBe(false);
       expect(fs.readFileSync(path, "utf8")).toBe(once);
-      // a moved script updates only the openrig entry
+      // a moved script replaces ONLY the openrig value: bytes before it are identical
       expect(registerAgyHook("/pkg2/h.sh", home)).toBe(true);
-      const moved = JSON.parse(fs.readFileSync(path, "utf8"));
-      expect(moved["moshi-hook"]).toEqual(parsed["moshi-hook"]);
-      expect(moved.openrig.PreInvocation[0].command).toContain("/pkg2/h.sh");
+      const moved = fs.readFileSync(path, "utf8");
+      const cut = once.indexOf('"openrig"');
+      expect(moved.slice(0, cut)).toBe(once.slice(0, cut));
+      expect(JSON.parse(moved).openrig.PreInvocation[0].command).toContain("/pkg2/h.sh");
+      expect(moved.split('"openrig"').length - 1).toBe(1); // replaced in place, not appended as a duplicate key
+    });
+    it("preserves unusual existing bytes: tabs, CRLF, \\u escapes, no trailing newline", () => {
+      const path = agyHooksPath(home);
+      fs.mkdirSync(nodePath.dirname(path), { recursive: true });
+      const odd = '{\r\n\t"caf\\u00e9": {"x": [1,2,\t3], "s": "a\\"}b{"}\r\n}';
+      fs.writeFileSync(path, odd);
+      registerAgyHook("/pkg/h.sh", home);
+      const after = fs.readFileSync(path, "utf8");
+      expect(after.startsWith(bodyBefore(odd))).toBe(true);
+      expect(after.slice(bodyBefore(odd).length)).toMatch(/^,\r\n\t"openrig": \{\r\n\t\t"PreInvocation"/); // file's own EOL and indent
+      expect(after).toContain('"caf\\u00e9"');
+      expect(Object.keys(JSON.parse(after))).toEqual(["café", "openrig"]);
+    });
+    it("handles an empty object and a minified single-line file", () => {
+      const path = agyHooksPath(home);
+      fs.mkdirSync(nodePath.dirname(path), { recursive: true });
+      fs.writeFileSync(path, "{}\n");
+      registerAgyHook("/pkg/h.sh", home);
+      expect(Object.keys(JSON.parse(fs.readFileSync(path, "utf8")))).toEqual(["openrig"]);
+      const mini = '{"moshi-hook":{"PreToolUse":[]}}';
+      fs.writeFileSync(path, mini);
+      registerAgyHook("/pkg/h.sh", home);
+      const after = fs.readFileSync(path, "utf8");
+      expect(after.startsWith('{"moshi-hook":{"PreToolUse":[]},"openrig":')).toBe(true);
+      expect(after.includes("\n")).toBe(false);
     });
     it("a hook-registration failure is a warning, a trust failure is fatal", () => {
       const hooks = agyHooksPath(home);

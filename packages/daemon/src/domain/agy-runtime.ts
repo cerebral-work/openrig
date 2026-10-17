@@ -122,11 +122,100 @@ export function ensureAgyWorkspaceTrusted(cwd: string, homeDir?: string): boolea
 
 export const AGY_HOOK_ENTRY_NAME = "openrig";
 
+interface TopLevelEntry { key: string; valueStart: number; valueEnd: number }
+
+/** Skip one JSON value starting at `i` (after whitespace); returns the index just past it. Strings, escapes and nesting are tracked. */
+function skipJsonValue(raw: string, i: number): number {
+  const c = raw[i];
+  if (c === '"') {
+    for (let j = i + 1; j < raw.length; j++) {
+      if (raw[j] === "\\") j++;
+      else if (raw[j] === '"') return j + 1;
+    }
+    throw new Error("unterminated string");
+  }
+  if (c === "{" || c === "[") {
+    let depth = 0;
+    for (let j = i; j < raw.length; j++) {
+      const ch = raw[j];
+      if (ch === '"') { j = skipJsonValue(raw, j) - 1; continue; }
+      if (ch === "{" || ch === "[") depth++;
+      else if (ch === "}" || ch === "]") { depth--; if (depth === 0) return j + 1; }
+    }
+    throw new Error("unterminated container");
+  }
+  let j = i;
+  while (j < raw.length && !/[,}\s]/.test(raw[j]!)) j++;
+  return j;
+}
+
+/** Locate every top-level member of a JSON object document, plus the index of its closing brace. */
+function scanTopLevel(raw: string): { entries: TopLevelEntry[]; close: number } {
+  const ws = (i: number) => { while (i < raw.length && /\s/.test(raw[i]!)) i++; return i; };
+  let i = ws(0);
+  if (raw[i] !== "{") throw new Error("not a JSON object");
+  i = ws(i + 1);
+  const entries: TopLevelEntry[] = [];
+  while (raw[i] !== "}") {
+    if (raw[i] !== '"') throw new Error("expected a member name");
+    const keyEnd = skipJsonValue(raw, i);
+    const key = JSON.parse(raw.slice(i, keyEnd)) as string;
+    i = ws(keyEnd);
+    if (raw[i] !== ":") throw new Error("expected ':'");
+    const valueStart = ws(i + 1);
+    const valueEnd = skipJsonValue(raw, valueStart);
+    entries.push({ key, valueStart, valueEnd });
+    i = ws(valueEnd);
+    if (raw[i] === ",") i = ws(i + 1);
+  }
+  return { entries, close: i };
+}
+
+/**
+ * Set one top-level member of a JSON object document by TEXTUAL splice, so every other byte
+ * (formatting, escapes, line endings, other hooks) stays exactly as it was. A new member is appended
+ * after the last one in the file's own indent style; an existing member has only its value replaced.
+ * The result is parsed and checked (other members deep-equal, the target equal to `value`) before
+ * it is returned; any doubt throws and the caller writes nothing.
+ */
+export function spliceTopLevelMember(raw: string, key: string, value: unknown): string {
+  const before = JSON.parse(raw) as Record<string, unknown>;
+  const { entries, close } = scanTopLevel(raw);
+  const multiline = /^\s*\{[ \t]*\r?\n/.test(raw);
+  const eol = raw.includes("\r\n") ? "\r\n" : "\n";
+  const indentMatch = raw.match(/\{[ \t]*\r?\n([ \t]+)"/);
+  const unit = indentMatch ? indentMatch[1]! : "  ";
+  const valueText = multiline
+    ? JSON.stringify(value, null, unit).split("\n").join(`${eol}${unit}`)
+    : JSON.stringify(value);
+  const existing = entries.find((e) => e.key === key);
+  let out: string;
+  if (existing) {
+    out = raw.slice(0, existing.valueStart) + valueText + raw.slice(existing.valueEnd);
+  } else if (entries.length === 0) {
+    out = multiline
+      ? `${raw.slice(0, raw.indexOf("{") + 1)}${eol}${unit}${JSON.stringify(key)}: ${valueText}${eol}${raw.slice(close)}`
+      : `{${JSON.stringify(key)}:${valueText}${raw.slice(close)}`;
+  } else {
+    const last = entries[entries.length - 1]!;
+    const member = multiline ? `,${eol}${unit}${JSON.stringify(key)}: ${valueText}` : `,${JSON.stringify(key)}:${valueText}`;
+    out = raw.slice(0, last.valueEnd) + member + raw.slice(last.valueEnd);
+  }
+  const after = JSON.parse(out) as Record<string, unknown>;
+  const expected = { ...before, [key]: value };
+  if (JSON.stringify(Object.keys(after).sort()) !== JSON.stringify(Object.keys(expected).sort())
+    || Object.keys(expected).some((k) => JSON.stringify(after[k]) !== JSON.stringify(expected[k]))) {
+    throw new Error("internal check failed: spliced JSON does not match the intended document");
+  }
+  return out;
+}
+
 /**
  * Idempotently register OpenRig's PreInvocation hook in agy's global
  * ~/.gemini/config/hooks.json under the hook name `openrig`. All other named
- * hooks (e.g. `moshi-hook`, `moshi-operator-ask`) are left untouched; when the
- * file already holds the same `openrig` block nothing is written.
+ * hooks (e.g. `moshi-hook`, `moshi-operator-ask`) stay BYTE-FOR-BYTE untouched
+ * (textual splice, see spliceTopLevelMember); when the file already holds the
+ * same `openrig` block nothing is written.
  *
  * Schema: hooks.json is keyed by hook name, each block maps an event to a FLAT
  * handler list for PreInvocation (a matcher/hooks wrapper is only valid for the
@@ -142,8 +231,10 @@ export function registerAgyHook(hookScriptPath: string, homeDir?: string): boole
   };
   const current = hooks[AGY_HOOK_ENTRY_NAME];
   if (current !== undefined && JSON.stringify(current) === JSON.stringify(desired)) return false;
-  hooks[AGY_HOOK_ENTRY_NAME] = desired;
-  writeFileAtomic(path, serializeLike(raw, hooks), 0o644);
+  const next = raw === null || raw.trim() === ""
+    ? `${JSON.stringify({ [AGY_HOOK_ENTRY_NAME]: desired }, null, 2)}\n`
+    : spliceTopLevelMember(raw, AGY_HOOK_ENTRY_NAME, desired);
+  writeFileAtomic(path, next, 0o644);
   return true;
 }
 
