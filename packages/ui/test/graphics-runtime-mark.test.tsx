@@ -16,6 +16,14 @@ describe("graphics runtime package", () => {
     expect(runtimeBrand("codex").label).toBe("Codex");
   });
 
+  it("brands the agy (Antigravity CLI) runtime and renders its mark", () => {
+    expect(normalizeRuntimeBrandId("agy")).toBe("agy");
+    expect(runtimeBrand("agy").label).toBe("Antigravity");
+    const { container } = render(<RuntimeMark runtime="agy" title="Antigravity" />);
+    expect(container.querySelector("svg")).not.toBeNull();
+    expect(normalizeRuntimeBrandId("agy")).not.toBe("unknown");
+  });
+
   it("normalizes tool brands for CMUX, tmux, VS Code, and screenshots", () => {
     expect(normalizeToolBrandId("cmux")).toBe("cmux");
     expect(normalizeToolBrandId("tmux attach")).toBe("tmux");

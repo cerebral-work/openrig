@@ -35,6 +35,7 @@ describe("row-scale mark family", () => {
     expect(markText(runtimeMarkSegs("codex"))).toBe(">_"); // the LOCKED web token
     expect(markText(runtimeMarkSegs("terminal"))).toBe(">_");
     expect(runtimeMarkSegs("terminal").every((s) => s.bg === "markBg")).toBe(true); // the dark-cell variant
+    expect(markText(runtimeMarkSegs("agy"))).toBe("A");
     expect(markText(runtimeMarkSegs("something-else"))).toBe("?");
     expect(runtimeMarkSegs(null)[0]!.token).toBe("dim"); // honest, never fabricated
   });
