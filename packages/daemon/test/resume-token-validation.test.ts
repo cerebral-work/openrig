@@ -37,6 +37,12 @@ describe("validateResumeToken", () => {
     if (r.ok) expect(r.token).toBe("tok-123");
   });
 
+  it("agy: accepts a conversation UUID as agy_id, rejects anything else", () => {
+    const uuid = "3f2b8c1e-5a47-4d2e-9b6a-1c0e7d8f9a21";
+    expect(validateResumeToken("agy", uuid)).toEqual({ ok: true, resumeType: "agy_id", token: uuid });
+    expect(validateResumeToken("agy", "tok-123").ok).toBe(false);
+  });
+
   it("rejects an unsupported runtime without fabricating", () => {
     const r = validateResumeToken("terminal", "anything");
     expect(r.ok).toBe(false);

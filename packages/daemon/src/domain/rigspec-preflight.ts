@@ -13,6 +13,7 @@ const RUNTIME_COMMANDS: Record<string, string> = {
   "codex": "codex --version",
   "pi": "pi --version",
   "omp": "omp --version",
+  "agy": "agy --version",
 };
 
 interface RigSpecPreflightDeps {
@@ -147,7 +148,7 @@ import {
 
 // Slice 51-01 (OPR.0.5.1.1): `stub` is a first-class runtime (the deterministic node-script fake harness
 // through the real orchestrator) — admitted at the modern-pod preflight gate alongside the real runtimes.
-const SUPPORTED_RUNTIMES = new Set(["claude-code", "codex", "pi", "omp", "terminal", "stub"]);
+const SUPPORTED_RUNTIMES = new Set(["claude-code", "codex", "pi", "omp", "agy", "terminal", "stub"]);
 
 // Default daemon-shipped asset paths for the managed Claude activity hooks — the SAME files the
 // ClaudeCodeAdapter is wired with in startup.ts (validation is the shared module either way).
@@ -407,6 +408,7 @@ export async function preflightValidatedSpec(rigSpec: PodRigSpec, preflightCtx: 
     const piErrors = await verifyPiRuntimeAvailable(rigSpec, preflightCtx.exec, warnings);
     errors.push(...piErrors);
     errors.push(...await verifyOmpRuntimeAvailable(rigSpec, preflightCtx.exec));
+    errors.push(...await verifyAgyRuntimeAvailable(rigSpec, preflightCtx.exec));
   }
 
   // §6 RECONCILIATION — WARNING EMISSION ORDER (PM ruling 2026-08-05): ACTIVITY-HOOK-FIRST,
@@ -460,6 +462,17 @@ function piAvailabilityFailure(err: unknown, warnings: string[]): string[] {
   }
   warnings.push(`Pi version unknown ('pi --version' failed: ${detail}); launch continues. Check 'pi --version' in the pane's shell. If Pi is not installed, install @earendil-works/pi-coding-agent and ensure 'pi' is on PATH.`);
   return [];
+}
+
+/** Probe only Agy (Google Antigravity CLI) seats. Agy has no login/status subcommand, so this checks the binary only. */
+export async function verifyAgyRuntimeAvailable(rigSpec: PodRigSpec, exec: ExecFn): Promise<string[]> {
+  if (!rigSpec.pods.some((pod) => pod.members.some((member) => member.runtime === "agy"))) return [];
+  try {
+    await exec(RUNTIME_COMMANDS["agy"]!);
+    return [];
+  } catch (err) {
+    return [`Runtime "agy" not available ('agy --version' failed: ${runtimeProbeFailure(err)}). If the Antigravity CLI is not installed, install it and ensure 'agy' is on PATH.`];
+  }
 }
 
 /** Probe only OMP seats. An OMP spec must never depend on the Pi binary. */

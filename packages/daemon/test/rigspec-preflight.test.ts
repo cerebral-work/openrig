@@ -141,6 +141,23 @@ describe("RigSpecPreflight", () => {
     expect(codexCall![0]).toBe("codex --version");
   });
 
+  it("accepts the agy runtime and probes `agy --version` (legacy spec)", async () => {
+    const exec = vi.fn<ExecFn>().mockResolvedValue("");
+    const pf = createPreflight({ exec });
+    const result = await pf.check(validSpec({ nodes: [{ id: "worker", runtime: "agy", cwd: "/" }] }));
+    expect(result.ready).toBe(true);
+    expect(exec).toHaveBeenCalledWith("agy --version");
+    expect(exec).not.toHaveBeenCalledWith("pi --version");
+  });
+
+  it("reports an unavailable agy binary (legacy spec)", async () => {
+    const exec = vi.fn<ExecFn>().mockRejectedValue(new Error("agy: command not found"));
+    const pf = createPreflight({ exec });
+    const result = await pf.check(validSpec({ nodes: [{ id: "worker", runtime: "agy", cwd: "/" }] }));
+    expect(result.ready).toBe(false);
+    expect(result.errors.join("\n")).toContain("agy");
+  });
+
   it("probes OMP independently of Pi for an OMP-only legacy rig", async () => {
     const exec = vi.fn<ExecFn>().mockResolvedValue("");
     const pf = createPreflight({ exec });
@@ -467,6 +484,21 @@ profiles:
     const result = await rigPreflight({ rigSpecYaml: rigYaml, rigRoot: RIG_ROOT, fsOps: mockFs(files) });
     expect(result.ready).toBe(false);
     expect(result.errors.some((e) => e.includes("unsupported runtime"))).toBe(true);
+  });
+
+  it("accepts a modern pod member with runtime: agy", async () => {
+    const files: Record<string, string> = {
+      [`${RIG_ROOT}/agents/impl/agent.yaml`]: validAgentYaml("impl"),
+    };
+    const rigYaml = makeRigYaml({
+      pods: [{
+        id: "dev", label: "Dev",
+        members: [{ id: "impl", agentRef: "local:agents/impl", profile: "default", runtime: "agy", cwd: "." }],
+        edges: [],
+      }],
+    });
+    const result = await rigPreflight({ rigSpecYaml: rigYaml, rigRoot: RIG_ROOT, fsOps: mockFs(files) });
+    expect(result.errors.some((e) => e.includes("unsupported runtime"))).toBe(false);
   });
 
   // Slice 51-01 stub-runtime — TEST-ONLY RED (undisputed mechanical FACT 1): a modern pod member
