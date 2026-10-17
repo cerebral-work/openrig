@@ -1,7 +1,7 @@
 name: Estate xwork
 
 # Estate verification (cargo xwork): governance gates, the xtask crate's own
-# fmt/clippy/test, and the repo's npm gates. Fork-only; upstream workflows are untouched.
+# fmt/clippy/test, and the repo's npm gates (lint, test:repo, build:package). Fork-only; upstream workflows are untouched.
 
 on:
   pull_request:
@@ -35,4 +35,7 @@ jobs:
           components: rustfmt, clippy
       - run: sudo apt-get update && sudo apt-get install -y tmux
       - run: npm ci
-      - run: cargo xwork
+      # npm-test-workspaces is excluded on ubuntu: upstream's daemon/cli suites read macOS
+      # process, inode and docker behaviour and upstream runs them on macos-latest
+      # (tests.yml). Run `cargo xwork` locally for the full DAG.
+      - run: cargo xwork --skip npm-test-workspaces

@@ -17,6 +17,7 @@
 //! Commands:
 //!   - `hygiene`               Fast zero-compile gates (projectfile, stages, spec, branch)
 //!   - `check` | `xwork`       All gates, BLAKE3 content-addressed checkpoints in `target/xtask-cas/`
+//!   - `xwork --skip <gate>`   Exclude a gate (repeatable); excluded gates are never recorded as passed
 //!   - `xwork --pre-push`      Hygiene plus cargo gates if Rust inputs changed vs the `origin/cerebral` merge-base
 //!   - `stack [status]`        Read-only stacked-branch / GitButler status
 //!   - any `--break-check`     Falsification self-test: feed each gate a broken input, require red
@@ -298,7 +299,22 @@ fn run_xwork(root: &Path, args: &[String]) -> Result<()> {
         return save_state(root, &state);
     }
 
+    let mut skipped: Vec<&str> = Vec::new();
+    for (i, a) in args.iter().enumerate() {
+        if a == "--skip" {
+            let gate = args.get(i + 1).context("`--skip` requires a gate name")?;
+            if !gates.contains(&gate.as_str()) {
+                bail!("`--skip` names unknown gate `{gate}`");
+            }
+            skipped.push(gate);
+        }
+    }
+
     for gate in &gates {
+        if skipped.contains(gate) {
+            println!("==> Gate [{gate}] SKIP (excluded by --skip; not recorded as passed)");
+            continue;
+        }
         if !break_check && state.passed_gates.contains_key(*gate) {
             println!(
                 "==> Gate [{gate}] SKIP (cached in BLAKE3 CAS {})",
@@ -314,6 +330,14 @@ fn run_xwork(root: &Path, args: &[String]) -> Result<()> {
         save_state(root, &state)?;
     }
 
+    if !skipped.is_empty() {
+        println!(
+            "\nXWORK PASSED with {} gate(s) excluded: {}",
+            skipped.len(),
+            skipped.join(", ")
+        );
+        return Ok(());
+    }
     println!(
         "\nALL {} OPENRIG XWORK GATES PASSED (BLAKE3 CAS receipt: target/xtask-cas/{}.json)",
         gates.len(),
