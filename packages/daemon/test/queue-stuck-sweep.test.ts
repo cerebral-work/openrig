@@ -561,6 +561,90 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(loud.length).toBeGreaterThan(0); // the loudness is emitted, not just stored
   });
 
+  describe("sweep resolution requires source evidence", () => {
+    it.each(["undelivered", "unclaimed"])("a retry suppresses new %s findings without closing the existing finding", async (kind) => {
+      const row = await mkRow();
+      if (kind === "undelivered") failNudge(row.qitemId);
+      else ageCreated(row.qitemId, 120);
+      await runSweep();
+      const [finding] = await findingsFor(row.qitemId);
+      expect(finding?.state).toBe("pending");
+      await repo.update({ qitemId: row.qitemId, actorSession: "wake-ladder@system", transitionNote: "wake-attempt: 1 retry pending" });
+
+      const { result } = await runSweep();
+      expect(result.outcome).not.toBe("failed");
+      expect(result.findings.filter((f) => f.action === "closed")).toEqual([]);
+      expect(repo.getById(finding!.qitemId)?.state).toBe("pending");
+      expect(repo.getById(row.qitemId)).toMatchObject({ state: "pending", claimedAt: null });
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it.each(["delivered-ack-pending", "indeterminate:waiting for prompt", null])("%s is not delivery proof for an existing failed-wake finding", async (nudge) => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      await runSweep();
+      const [finding] = await findingsFor(row.qitemId);
+      db.prepare("UPDATE queue_items SET last_nudge_result = ? WHERE qitem_id = ?").run(nudge, row.qitemId);
+      await runSweep();
+      expect(repo.getById(finding!.qitemId)?.state).toBe("pending");
+    });
+
+    it.each(["claimed", "delivered", "closed"])("real source %s resolves the finding under the sweep's actor", async (resolution) => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      await runSweep();
+      const [finding] = await findingsFor(row.qitemId);
+      if (resolution === "claimed") await repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+      else if (resolution === "delivered") setNudgeResult(row.qitemId, "verified", new Date());
+      else await repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: "done", closureReason: "no-follow-on", transitionNote: "finished" });
+      await runSweep();
+      expect(repo.getById(finding!.qitemId)?.state).toBe("done");
+      expect(db.prepare("SELECT actor_session, transition_note FROM queue_transitions WHERE qitem_id = ? ORDER BY transition_id DESC LIMIT 1").get(finding!.qitemId))
+        .toMatchObject({ actor_session: "stuck-sweep@system", transition_note: expect.stringContaining(row.qitemId) });
+    });
+
+    it("changing the unclaimed age threshold does not resolve an already open pickup finding", async () => {
+      const row = await mkRow();
+      ageCreated(row.qitemId, 120);
+      await runSweep();
+      const [finding] = await findingsFor(row.qitemId);
+      setNudgeResult(row.qitemId, "verified", new Date());
+      await runSweep({ unclaimedAgeMinutes: 180 });
+      expect(repo.getById(finding!.qitemId)?.state).toBe("pending");
+    });
+
+    it.each(["wake-attempt:", "escalation-rung:"])("a stale %s marker stops suppressing the safety net despite a newer unrelated note", async (prefix) => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      await repo.update({ qitemId: row.qitemId, actorSession: "wake-ladder@system", transitionNote: `${prefix} old attempt` });
+      db.prepare("UPDATE queue_transitions SET ts = ? WHERE qitem_id = ? AND transition_note = ?")
+        .run(new Date(Date.now() - 31 * 60_000).toISOString(), row.qitemId, `${prefix} old attempt`);
+      await repo.update({ qitemId: row.qitemId, actorSession: "sender@r", transitionNote: "still waiting" });
+      await runSweep();
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it.each(["invalid", "2099-01-01T00:00:00Z"])("an untrustworthy marker timestamp %s cannot suppress the safety net indefinitely", async (ts) => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      await repo.update({ qitemId: row.qitemId, actorSession: "wake-ladder@system", transitionNote: "wake-attempt: 1" });
+      db.prepare("UPDATE queue_transitions SET ts = ? WHERE qitem_id = ? AND transition_note = 'wake-attempt: 1'").run(ts, row.qitemId);
+      await runSweep();
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it.each([29, 30])("suppression of a fresh unclaimed row expires at thirty minutes (marker age %i)", async (minutes) => {
+      const row = await mkRow();
+      ageCreated(row.qitemId, 120);
+      await repo.update({ qitemId: row.qitemId, actorSession: "wake-ladder@system", transitionNote: "escalation-rung: orchestrator" });
+      const now = new Date();
+      db.prepare("UPDATE queue_transitions SET ts = ? WHERE qitem_id = ? AND transition_note = 'escalation-rung: orchestrator'")
+        .run(new Date(now.getTime() - minutes * 60_000).toISOString(), row.qitemId);
+      await runSweep({ now });
+      expect(await findingsFor(row.qitemId)).toHaveLength(minutes === 29 ? 0 : 1);
+    });
+  });
+
   it("S01 SEAM — LIVE LADDER SKIPPED: an undelivered row whose transitions carry a live ladder marker produces no finding (S01 owns it)", async () => {
     const mod = await sweepMod();
     expect(mod.LADDER_ATTEMPT_PREFIX).toBe("wake-attempt:");
@@ -1360,6 +1444,21 @@ describe("#514 unclaimed sweep and a pending ask posted to a registered human", 
     expect(repo.waitingView(row.qitemId)!.nextBackstop.mechanism).toBe("queue-stuck-sweep:unclaimed");
     await sweep();
     expect(await findingsFor(row.qitemId)).toHaveLength(1);
+  });
+
+  it("a current human delivery failure remains open under ladder suppression until a posted receipt", async () => {
+    const row = await ask();
+    receipt(row.qitemId, "transport-failed");
+    await sweep();
+    const [finding] = await findingsFor(row.qitemId);
+    expect(finding?.state).toBe("pending");
+    await repo.update({ qitemId: row.qitemId, actorSession: "wake-ladder@system", transitionNote: "wake-attempt: 1" });
+    await sweep();
+    expect(repo.getById(finding!.qitemId)?.state).toBe("pending");
+    await receipt(row.qitemId, "posted");
+    await sweep();
+    expect(repo.getById(finding!.qitemId)?.state).toBe("done");
+    expect(repo.getById(row.qitemId)?.state).toBe("pending");
   });
 
   it("a posted-looking note on an ask with no current human episode (unregistered @external) does not suppress the finding", async () => {

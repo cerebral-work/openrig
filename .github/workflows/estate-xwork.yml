@@ -55,3 +55,13 @@ jobs:
           packages/daemon/test/native-process-lineage.test.ts
           packages/daemon/test/claude-auto-startup.test.ts
           packages/daemon/test/startup-orchestrator.test.ts
+      - name: Queue resolution and prompt guards
+        run: >-
+          npx vitest run --maxWorkers 2
+          packages/daemon/test/queue-stuck-sweep.test.ts
+          packages/daemon/test/queue-wake-ladder.test.ts
+          packages/daemon/test/queue-recovery-read-work.test.ts
+          packages/daemon/test/queue-recovery-index.test.ts
+          packages/daemon/test/send-prompt-guard.test.ts
+          packages/daemon/test/prompt-blocked-alert.test.ts
+          packages/daemon/test/prompt-clear-continuation.test.ts
