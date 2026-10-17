@@ -615,6 +615,10 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       return { ready: false, reason: "tmux session not responsive" };
     }
 
+    const pendingLaunch = await this.tmux.pendingShellLaunch?.(binding.tmuxSession);
+    if (pendingLaunch) return { ready: false, code: "launch_not_executed",
+      reason: "The shell has not consumed its launch script; the runtime launch has not executed." };
+
     const paneCommand = await this.tmux.getPaneCommand(binding.tmuxSession);
     const paneContent = await this.captureProbeScreen(binding.tmuxSession);
     const probe = assessNativeResumeProbe({
