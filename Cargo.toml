@@ -1,0 +1,47 @@
+# ═══════════════════════════════════════════════════════════════════════════
+# OpenRig (cerebral-work fork) — estate verification workspace
+#
+# OpenRig itself is an npm-workspaces TypeScript monorepo (see package.json).
+# This Cargo workspace exists only to host the estate `xtask` / `xwork`
+# verification pipeline:
+#
+#   xtask   Checkpointed gate runner (`cargo xwork`, `cargo xtask hygiene`).
+#           Wraps the repo's own npm gates and adds the estate governance
+#           gates (projectfile, stages, spec, branch hygiene, stack).
+# ═══════════════════════════════════════════════════════════════════════════
+[workspace]
+resolver = "2"
+members = ["xtask"]
+
+[workspace.package]
+version = "0.6.10-cw.2"
+edition = "2021"
+rust-version = "1.88"
+license = "Apache-2.0"
+authors = ["Christian M. Todie <chris@todie.io>"]
+repository = "https://github.com/cerebral-work/openrig"
+publish = false
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+double_must_use = "allow"
+unwrap_used = "warn"
+expect_used = "warn"
+panic = "warn"
+todo = "warn"
+dbg_macro = "warn"
+unnecessary_map_or = "warn"
+
+[workspace.dependencies]
+anyhow = "1"
+blake3 = "1.8"
+chrono = { version = "0.4", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+toml = "0.8"
+
+[profile.dev]
+debug = "line-tables-only"

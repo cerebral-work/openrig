@@ -1,0 +1,97 @@
+$schema: https://projectfile.org/schema/v1.json
+kind: SoftwareSourceCode
+
+identity:
+  namespace: io.todie.cerebral
+  name: openrig
+  version: "0.6.10-cw.2"
+  title:
+    en: "OpenRig (cerebral-work fork)"
+  summary:
+    en: "Cerebral-work distribution of mvschwarz/openrig: multi-agent topology runtime for coding agents (daemon, CLI, UI, TUI), tracked as a vendor-branch fork with estate verification gates."
+  created: "2026-10-17"
+  modified: "2026-10-17"
+
+repositories:
+  - url: "https://github.com/cerebral-work/openrig.git"
+    type: git
+    branch: cerebral
+    role: origin
+  - url: "https://github.com/mvschwarz/openrig.git"
+    type: git
+    branch: main
+    role: upstream
+
+links:
+  - type: source-code
+    url: https://github.com/cerebral-work/openrig
+  - type: bugs
+    url: https://github.com/cerebral-work/openrig/issues
+
+license:
+  spdx: Apache-2.0
+  file: LICENSE
+
+copyright:
+  year: 2026
+
+people:
+  - family-names: Todie
+    given-names: Christian M.
+    email: chris@todie.io
+    roles: [maintainer]
+
+organizations:
+  - name: "Cerebral"
+    url: https://github.com/cerebral-work
+    roles: [maintainer]
+
+keywords:
+  - openrig
+  - agents
+  - multi-agent
+  - fork
+
+technologies:
+  - typescript
+  - nodejs
+  - npm-workspaces
+  - rust
+
+requirements:
+  runtime:
+    node: "^22 || ^24"
+    rust: ">=1.88"
+
+org:
+  projectfile:
+    operating-system: [ linux ]
+    architecture: [ amd64 ]
+    ci:
+      nodes:
+        hygiene:
+          needs:
+            projectfile-check: true
+            stages-check: true
+            spec-check: true
+            branch-hygiene: true
+        formatted:
+          needs:
+            hygiene: true
+            cargo-fmt: true
+        linted:
+          needs:
+            formatted: true
+            cargo-clippy: true
+            cargo-test: true
+            npm-lint: true
+        tested:
+          needs:
+            linted: true
+            npm-test-repo: true
+            npm-test-workspaces: true
+        check:
+          goal: true
+          needs:
+            tested: true
+            npm-build-package: true
