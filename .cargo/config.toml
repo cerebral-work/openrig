@@ -1,0 +1,7 @@
+# Estate host throttling and xtask / xwork aliases for the OpenRig fork.
+[build]
+jobs = 2
+
+[alias]
+xtask = "run -q -p xtask --"
+xwork = "run -q -p xtask -- xwork"
