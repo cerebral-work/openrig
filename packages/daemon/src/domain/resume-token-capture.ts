@@ -33,6 +33,10 @@ export interface ResumeTokenCaptureDeps {
   piRunnerStateStore?: {
     readSessionFile(sessionName: string): { ok: true; sessionFile: string } | { ok: false; reason: string };
   } | null;
+  /** Agy's PreInvocation hook sidecar ($OPENRIG_HOME/state/agy/<session>.json). Deferred: absent until the first turn. */
+  agyStateStore?: {
+    readConversationId(sessionName: string): { ok: true; conversationId: string } | { ok: false; reason: string };
+  } | null;
   /** Reads the separately rooted OMP runner sidecar; never reads Pi seat state. */
   ompRunnerStateStore?: {
     readSessionFile(sessionName: string): { ok: true; sessionFile: string } | { ok: false; reason: string };
@@ -76,6 +80,8 @@ export async function isClaudeSidecarFromEarlierProcess(
  *   codex       → the thread id derived from live pid-keyed logs
  *   pi          → the pi-runner state sidecar's sessionFile (a file read)
  *   omp         → the OMP runner state sidecar's sessionFile (separate root)
+ *   agy         → the conversationId written by agy's PreInvocation hook (a file read;
+ *                 absent until the seat's first turn, so a missing sidecar is an honest skip)
  * Returns a structured outcome; never throws for a missing/invalid token
  * (those are honest skips). ANY unexpected throw from a dependency is the
  * caller's to swallow (capture must never fail or block its lifecycle op).
@@ -106,6 +112,13 @@ export async function deriveResumeToken(
     if (!deps.resumeTokenCapturer) return { outcome: "noop" }; // dep absent — silent no-op
     token = await deps.resumeTokenCapturer.captureCodexThreadId(input.sessionName);
     if (!token) return { outcome: "skipped", reason: "probe_timeout" };
+  } else if (runtime === "agy") {
+    if (!deps.agyStateStore) return { outcome: "noop" }; // dep absent — silent no-op
+    const state = deps.agyStateStore.readConversationId(input.sessionName);
+    if (!state.ok) {
+      return { outcome: "skipped", reason: state.reason === "parse_error" ? "parse_error" : "missing_sidecar" };
+    }
+    token = state.conversationId.trim();
   } else if (runtime === "pi" || runtime === "omp") {
     const stateStore = runtime === "pi" ? deps.piRunnerStateStore : deps.ompRunnerStateStore;
     if (!stateStore) return { outcome: "noop" }; // dep absent — silent no-op

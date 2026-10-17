@@ -12,6 +12,8 @@
 // config files — it only selects a launch flag. Opt-in via the OPENRIG_YOLO env setting. (The
 // zero-permission-config-write property concerns Claude/Codex permission policy; Pi is resource trust.)
 
+import { validateAgyMode } from "../domain/agy-runtime.js";
+
 /** OPR.0.4.8.3 Seam B: a seat's RESOLVED permission-policy posture. When present it is
  *  authoritative for that seat and overrides the OPENRIG_YOLO env read in BOTH directions
  *  (an attached builtin:locked keeps the floor even under global YOLO; an attached custom
@@ -67,6 +69,17 @@ export function codexPostureArg(
   if (resolvedPosture === "full_bypass") return " -s danger-full-access -a never";
   if (yoloEnabled(env, resolvedPosture)) return " -s danger-full-access";
   return profileArg ? profileArg : " -s workspace-write";
+}
+
+/**
+ * Agy launch posture segment (leading space included). OpenRig always launches agy with
+ * `--dangerously-skip-permissions` (its permission prompts are not driven by OpenRig); the
+ * independent `--mode accept-edits|auto|plan` axis is added only when the seat sets one.
+ * agy only WARNS on an unrecognised --mode, so an invalid value throws here instead.
+ */
+export function agyPostureArg(permissionMode?: string | null): string {
+  const mode = validateAgyMode(permissionMode);
+  return ` --dangerously-skip-permissions${mode ? ` --mode ${mode}` : ""}`;
 }
 
 /** Pi RESOURCE TRUST (Pi's --approve/--no-approve govern resource trust, NOT a permission policy):

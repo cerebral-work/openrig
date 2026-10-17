@@ -147,6 +147,8 @@ interface SeatHandoverServiceDeps {
   piRunnerStateStore?: ResumeTokenCaptureDeps["piRunnerStateStore"];
   /** OMP runner sidecar reader for independently isolated OMP seats. */
   ompRunnerStateStore?: ResumeTokenCaptureDeps["ompRunnerStateStore"];
+  /** Agy PreInvocation-hook sidecar reader (deferred conversation-id capture). */
+  agyStateStore?: ResumeTokenCaptureDeps["agyStateStore"];
   /** Readiness timeout for the successor launch (tests shorten it). */
   readinessTimeoutMs?: number;
   /** Injectable sleep for the successor readiness backoff (tests). */
@@ -260,6 +262,7 @@ export class SeatHandoverService {
       resumeTokenCapturer: deps.resumeTokenCapturer ?? null,
       piRunnerStateStore: deps.piRunnerStateStore ?? null,
       ompRunnerStateStore: deps.ompRunnerStateStore ?? null,
+      agyStateStore: deps.agyStateStore ?? null,
     };
   }
 

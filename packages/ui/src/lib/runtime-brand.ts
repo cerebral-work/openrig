@@ -1,10 +1,10 @@
-export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "omp" | "terminal" | "unknown";
+export type RuntimeBrandId = "claude-code" | "codex" | "pi" | "omp" | "agy" | "terminal" | "unknown";
 
 export interface RuntimeBrand {
   id: RuntimeBrandId;
   label: string;
   shortLabel: string;
-  tone: "sand" | "green" | "slate" | "violet" | "neutral";
+  tone: "sand" | "green" | "slate" | "violet" | "blue" | "neutral";
 }
 
 const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
@@ -33,6 +33,13 @@ const RUNTIME_BRANDS: Record<RuntimeBrandId, RuntimeBrand> = {
     shortLabel: "OMP",
     tone: "violet",
   },
+  // Google Antigravity CLI (`agy`).
+  agy: {
+    id: "agy",
+    label: "Antigravity",
+    shortLabel: "Agy",
+    tone: "blue",
+  },
   terminal: {
     id: "terminal",
     label: "Terminal",
@@ -54,6 +61,7 @@ export function normalizeRuntimeBrandId(runtime: string | null | undefined): Run
   // Exact/prefixed match only — never a bare `includes("pi")` (api/pilot/…).
   if (normalized === "pi" || normalized.startsWith("pi-")) return "pi";
   if (normalized === "omp" || normalized.startsWith("omp-") || normalized === "oh-my-pi") return "omp";
+  if (normalized === "agy" || normalized.startsWith("agy-") || normalized === "antigravity") return "agy";
   if (normalized === "terminal" || normalized === "tmux" || normalized === "shell") return "terminal";
   return "unknown";
 }
