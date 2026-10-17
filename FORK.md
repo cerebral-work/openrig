@@ -49,6 +49,7 @@ Rust `xtask` (host throttle `-j 2`, set in `.cargo/config.toml`), driven by [pro
 | `cargo xwork` | All gates in DAG order with a BLAKE3 checkpoint cache (`target/xtask-cas/`); an unchanged tree skips passed gates |
 | `cargo xtask hygiene` | `projectfile-check`, `stages-check`, `spec-check`, `branch-hygiene` (no compile of project code) |
 | `cargo xtask check` | Same pipeline as `xwork` |
+| `cargo xwork --skip <gate>` | Exclude a gate (never cached as passed). CI excludes `npm-test-workspaces`: upstream's daemon/cli suites assume macOS and run on `macos-latest` in upstream's `tests.yml` |
 | `cargo xtask hygiene --break-check` | Each gate also proves it fails on a deliberately broken input |
 | `cargo xtask stack` | Read-only branch / GitButler status |
 | `cargo xwork --pre-push` | Hygiene, plus xtask fmt/clippy/test if Rust inputs changed vs the `origin/cerebral` merge-base |
