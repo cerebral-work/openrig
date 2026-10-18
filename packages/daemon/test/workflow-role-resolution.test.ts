@@ -463,6 +463,56 @@ describe("FAC-1 C3: the six owner-resolution call sites on a bound rig", () => {
     ).rejects.toMatchObject({ code: "bound_rig_not_found" });
   });
 
+  // ---------- reused rig names (spec 0009) ----------
+
+  it("reused rig name: archived same-name rigs never supply role seats; the live rig does (spec 0009)", async () => {
+    // The fixture's factory-a is the OLDEST rig of the name: give it seats, then archive it.
+    seedSeat(rigAId, "factory-a", "dev", "plannerold", { role: "planner" });
+    seedSeat(rigAId, "factory-a", "dev", "driverold", { role: "driver" });
+    rigRepo.archiveRig(rigAId);
+    const live = rigRepo.createRig("factory-a");
+    const plannerSeat = seedSeat(live.id, "factory-a", "dev", "plannernew", { role: "planner" });
+    const driverSeat = seedSeat(live.id, "factory-a", "dev", "drivernew", { role: "driver" });
+    const inst = await runtime.instantiate({
+      specPath: writeSpec("role-only.yaml", ROLE_ONLY_SPEC),
+      rootObjective: "t",
+      createdBySession: "orch@factory-a",
+    });
+    expect(inst.entryOwnerSession).toBe(plannerSeat);
+    const projected = await runtime.projector.project({
+      instanceId: inst.instance.instanceId,
+      currentPacketId: inst.entryQitemId,
+      exit: "handoff",
+      actorSession: plannerSeat,
+    });
+    expect(projected.nextOwnerSession).toBe(driverSeat);
+  });
+
+  it("two live rigs share the bound name: instantiate fails loud with rig_name_ambiguous naming both ids (spec 0009)", async () => {
+    seedSeat(rigAId, "factory-a", "dev", "planner1", { role: "planner" });
+    const twin = rigRepo.createRig("factory-a");
+    seedSeat(twin.id, "factory-a", "dev", "planner2", { role: "planner" });
+    await expect(
+      runtime.instantiate({ specPath: writeSpec("role-only.yaml", ROLE_ONLY_SPEC), rootObjective: "t", createdBySession: "orch@factory-a" }),
+    ).rejects.toMatchObject({ code: "rig_name_ambiguous", details: { rigIds: expect.arrayContaining([rigAId, twin.id]) } });
+  });
+
+  it("a same-name live rig appearing mid-run: projection fails loud with rig_name_ambiguous, never picks one (spec 0009)", async () => {
+    seedSeat(rigAId, "factory-a", "dev", "planner1", { role: "planner" });
+    seedSeat(rigAId, "factory-a", "dev", "driver1", { role: "driver" });
+    const inst = await runtime.instantiate({ specPath: writeSpec("role-only.yaml", ROLE_ONLY_SPEC), rootObjective: "t", createdBySession: "orch@factory-a" });
+    const twin = rigRepo.createRig("factory-a");
+    seedSeat(twin.id, "factory-a", "dev", "driver2", { role: "driver" });
+    await expect(
+      runtime.projector.project({
+        instanceId: inst.instance.instanceId,
+        currentPacketId: inst.entryQitemId,
+        exit: "handoff",
+        actorSession: "dev-planner1@factory-a",
+      }),
+    ).rejects.toMatchObject({ code: "rig_name_ambiguous" });
+  });
+
   it("loud-with-candidates: all role seats stopped → structured per-candidate disqualifiers; zero-declaring → the named zero-candidate message", async () => {
     seedSeat(rigAId, "factory-a", "dev", "planner1", { role: "planner" });
     seedSeat(rigAId, "factory-a", "dev", "driver1", { role: "driver", sessionStatus: "stopped" });

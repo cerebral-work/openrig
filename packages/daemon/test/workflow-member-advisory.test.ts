@@ -19,7 +19,7 @@ import { QueueRepository, QueueRepositoryError } from "../src/domain/queue-repos
 import { WorkflowRuntime } from "../src/domain/workflow-runtime.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
-import { rigMemberExists } from "../src/domain/workflow-role-context.js";
+import { RigNameAmbiguousError, rigMemberExists } from "../src/domain/workflow-role-context.js";
 
 // OPR.0.4.6.FAC3 C2 — the FR-5 member-exists instantiate ADVISORY
 // (plan v1.1 §3 C2; PRD FR-5 ACs + BR-2). The engine bit (B) of the
@@ -482,6 +482,38 @@ describe("FAC-3 C2: FR-5 member-exists instantiate advisory", () => {
   });
 
   // ---------- the probe unit surface ----------
+
+  // ---------- reused rig names (spec 0009) ----------
+  // A lead swap archives a rig and creates a new one under the same name. The probe must read the one
+  // UNARCHIVED rig of the name, never the oldest row, and must not pick between two live same-name rigs.
+
+  it("reused rig name: the member probe reads the live rig, not an archived same-name rig (spec 0009)", async () => {
+    rigRepo.archiveRig(buildRigId);
+    const live = rigRepo.createRig("acme-build");
+    seedSeat(live.id, "acme-build", "dev", "newbuild", { role: "builder" });
+    expect(rigMemberExists(db, "acme-build", "dev-newbuild@acme-build")).toBe(true);
+    expect(rigMemberExists(db, "acme-build", "dev-builder1@acme-build")).toBe(false);
+    const result = await runtime.instantiate({
+      specPath: writeSpec("reused.yaml", VALID_SPEC.replace("dev-builder1@acme-build", "dev-newbuild@acme-build")),
+      rootObjective: "t",
+      createdBySession: "orch@acme-build",
+    });
+    expect(result.advisories).toEqual([]);
+  });
+
+  it("two live rigs share a name: the probe refuses to pick and instantiate names the ambiguity (spec 0009)", async () => {
+    const twin = rigRepo.createRig("acme-build");
+    expect(() => rigMemberExists(db, "acme-build", "dev-builder1@acme-build")).toThrow(RigNameAmbiguousError);
+    const result = await runtime.instantiate({
+      specPath: writeSpec("ambiguous.yaml", VALID_SPEC),
+      rootObjective: "t",
+      createdBySession: "orch@acme-build",
+    });
+    const joined = result.advisories.join(" || ");
+    expect(joined).toContain("rig_name_ambiguous");
+    expect(joined).toContain(buildRigId);
+    expect(joined).toContain(twin.id);
+  });
 
   it("rigMemberExists: true for real/cold/terminal members; false for a typo member or an unknown rig", () => {
     expect(rigMemberExists(db, "acme-build", "dev-builder1@acme-build")).toBe(true);
