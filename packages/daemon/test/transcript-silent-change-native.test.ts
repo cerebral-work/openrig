@@ -19,6 +19,7 @@ import { classifyPaneActivity } from "../src/domain/session-transport.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
 
 delete process.env.TMUX; delete process.env.TMUX_PANE;
 const TMUX = process.env.TMUX_BIN ?? "tmux";
@@ -109,7 +110,7 @@ async function seat(name: string, opts: { history: number; screen: string; listi
   svc.start(db, 1000);
   return {
     name, run, file, store, svc, lastEnd, listings, failCaptures, rotationCalls, sweeps, ticks,
-    done: async () => { svc.stop(); stopTranscriptRotation(name); await run("kill-server").catch(() => {}); db.close(); rmSync(root, { recursive: true, force: true }); },
+    done: async () => { svc.stop(); stopTranscriptRotation(name); await releaseTmuxTestSocket(socket, { killServer: true }); db.close(); rmSync(root, { recursive: true, force: true }); },
   };
 }
 

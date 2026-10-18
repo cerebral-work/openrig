@@ -7,6 +7,7 @@ import path from "node:path";
 import type { DaemonClient } from "../src/client.js";
 import { openTerminalWindow, type WindowDeps } from "../src/terminal-window.js";
 import { composeView } from "../../daemon/src/domain/terminal/view-composer.js";
+import { releaseTmuxTestSocket } from "../../daemon/test/helpers/tmux-test-socket.js";
 
 // Real isolated tmux servers; the desktop launcher alone is inert.
 const sockets: string[] = [];
@@ -15,10 +16,9 @@ const env = { ...process.env }; delete env["TMUX"];
 function tmux(socket: string, args: string[]): string {
   return execFileSync("tmux", ["-L", socket, "-f", "/dev/null", ...args], { encoding: "utf8", env, timeout: 5000 });
 }
-afterEach(() => {
-  for (const socket of sockets.splice(0)) {
-    try { tmux(socket, ["kill-server"]); } catch { /* Already exited after a failing setup. */ }
-  }
+afterEach(async () => {
+  // kill-server alone leaves the socket file (tmux 3.4); the shared teardown also unlinks it (linear-pending item 44).
+  for (const socket of sockets.splice(0)) await releaseTmuxTestSocket(socket, { killServer: true });
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 

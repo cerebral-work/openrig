@@ -8,6 +8,7 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatDeliveryGuard, resolveGuardTarget } from "../src/domain/seat-delivery-guard.js";
 import { createTestApp } from "./helpers/test-app.js";
+import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
@@ -16,9 +17,10 @@ describe.skipIf(!nativeAvailable)("claimed-session custody with native tmux", ()
   let db: Database.Database;
   let setup: ReturnType<typeof createTestApp>;
   let run: (...args: string[]) => Promise<string>;
+  let socket: string;
 
   beforeEach(async () => {
-    const socket = `openrig-unclaim-test-${process.pid}-${Date.now()}`;
+    socket = `openrig-unclaim-test-${process.pid}-${Date.now()}`;
     const execute = promisify(execFile);
     run = async (...args) => (await execute("tmux", ["-L", socket, "-f", "/dev/null", ...args], { timeout: 5000 })).stdout;
     db = createDb();
@@ -30,7 +32,7 @@ describe.skipIf(!nativeAvailable)("claimed-session custody with native tmux", ()
     await run("new-session", "-d", "-s", "manual-adoption", "cat");
   });
   afterEach(async () => {
-    await run("kill-server").catch(() => {});
+    await releaseTmuxTestSocket(socket, { killServer: true });
     db.close();
   });
 
