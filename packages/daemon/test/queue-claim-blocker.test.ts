@@ -12,6 +12,7 @@ import { queueRoutes } from "../src/routes/queue.js";
 import { WatchdogPolicyEngine } from "../src/domain/watchdog-policy-engine.js";
 import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
 import { QueueWakeRepository } from "../src/domain/queue-wake-repository.js";
+import { diagnoseSeatParked } from "../src/domain/parked-query.js";
 
 // Both SQL writers are supported by QueueRepository's generation-column detection.
 describe.each(["current", "without generation stamps"])("claim park exit (%s schema)", (schema) => {
@@ -109,6 +110,65 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
     const restored = await reblock(row.qitemId);
     expect(restored.status).toBe(200);
     expect(await restored.json()).toMatchObject({ state: "blocked", blockedOn: blocker.qitemId });
+  });
+
+  // review-r2 I2 on #32: a blocker wake is live only while its row is still the parked row's blocker. A non-strict re-park
+  // that switches the blocker to a typed gate arms no wake, so the old record must not keep reading live.
+  const heldHealth = (id: string) => diagnoseSeatParked({
+    getSeatState: () => null,
+    listOpenObligations: (session, limit) => ({ rows: repo.listOpenObligations(session, limit), limit }),
+    getParkWake: (qitemId) => repo.getParkWakeStatus(qitemId),
+  }, { seatNodeId: "worker-node", sessionName: "worker@rig" }).obligations.held.find((h) => h.qitemId === id);
+
+  it("I2: a blocker wake whose row is no longer the blocker is not live; the bare re-park needs a wake", async () => {
+    const blocker = await create("gate@rig");
+    const row = await create();
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: blocker.qitemId });
+    // Control: parked on the live row, the blocker wake is live and the held row is healthy.
+    expect(repo.getParkWakeStatus(row.qitemId)).toMatchObject({ kind: "blocker", ref: blocker.qitemId, live: true });
+    expect(heldHealth(row.qitemId)).toMatchObject({ healthy: true });
+    // A non-strict (repository) re-park switches the blocker to a typed gate with no wake: no new wake is armed.
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "external:gate" });
+    expect(repo.getById(row.qitemId)).toMatchObject({ state: "blocked", blockedOn: "external:gate" });
+    expect(repo.getById(blocker.qitemId)).toMatchObject({ state: "pending" });
+    expect(repo.getParkWakeStatus(row.qitemId)).toMatchObject({ kind: "blocker", ref: blocker.qitemId, live: false });
+    expect(heldHealth(row.qitemId)).toMatchObject({ healthy: false });
+    const refused = await reblock(row.qitemId);
+    expect(refused.status).toBe(500);
+    expect(await refused.json()).toMatchObject({ error: "blocker_wake_required", rejectedBlocker: "external:gate" });
+    const rearmed = await reblock(row.qitemId, { wakeAfterSeconds: 120 });
+    expect(rearmed.status).toBe(200);
+    expect(repo.getParkWakeStatus(row.qitemId)).toMatchObject({ kind: "timer", live: true });
+  });
+
+  // review-r2 P1 on #32 (lead ruling: keep it): an operator watchdog survives a claim and still targets the row, so a
+  // claim-restored park that still has it attached has a live wake and needs no new one.
+  it("P1: a claim-restored park whose operator watchdog is still attached is re-parked without a wake", async () => {
+    const row = await create();
+    const job = jobs.register({
+      policy: "periodic-reminder",
+      specYaml: ["policy: periodic-reminder", "target:", "  session: \"worker@rig\"", "message: \"operator check\"", ""].join("\n"),
+      targetSession: "worker@rig", intervalSeconds: 3600, registeredBySession: "orch@rig",
+    });
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "external:owned-gate", wakeWatchdogId: job.jobId });
+    expect((await claim(row.qitemId)).status).toBe(200);
+    expect(repo.getParkWakeStatus(row.qitemId)).toMatchObject({ kind: "watchdog", ref: job.jobId, live: true });
+    const restored = await reblock(row.qitemId);
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ state: "blocked", blockedOn: "external:owned-gate" });
+  });
+
+  // review-r2 P2 on #32 (REQ-0011-15): a typed gate parked with no wake through a non-strict path has no live wake, so
+  // a bare re-park from the CLI needs one.
+  it("P2: a typed-gate park made without a wake on a non-strict path needs a wake on a CLI re-park", async () => {
+    const row = await create();
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "external:owned-gate" });
+    expect(repo.getParkWakeStatus(row.qitemId)).toBeNull();
+    const refused = await reblock(row.qitemId);
+    expect(refused.status).toBe(500);
+    expect(await refused.json()).toMatchObject({ error: "blocker_wake_required", rejectedBlocker: "external:owned-gate" });
+    const rearmed = await reblock(row.qitemId, { wakeAfterSeconds: 120 });
+    expect(rearmed.status).toBe(200);
   });
 
   it("clears a qitem blocker and returns liveness to the claimant while preserving the sibling park", async () => {
