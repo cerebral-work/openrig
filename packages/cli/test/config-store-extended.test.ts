@@ -190,6 +190,11 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       // S02 — standing-stuck-sweep cadence + unclaimed-obligation age.
       "queue.stuck_sweep_interval_seconds",
       "queue.stuck_sweep_unclaimed_age_minutes",
+      "queue.stuck_sweep_undelivered_grace_minutes",
+      "queue.stuck_sweep_owner_active_minutes",
+      "queue.stuck_sweep_quiet_kinds",
+      "queue.blocker_resume_coalesce_minutes",
+      "queue.parked_owner_wake_grace_minutes",
       // S01 — wake-or-escalate ladder knobs.
       "queue.wake_retry_interval_seconds",
       "queue.wake_retry_cap",
