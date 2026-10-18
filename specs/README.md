@@ -22,6 +22,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0013](0013-seat-env-allowlist.md) | Seat env allow-list mode (off by default) | complete | daemon, tmux, seat launch, config | SEC-178, extends 0006 |
 | [0014](0014-launch-graph-cycles.md) | Launch-dependency cycles: restore holds, growth refuses | in-progress | daemon, restore, topology growth | CER-2976 |
 | [0015](0015-pane-read-failure-unavailable.md) | A failed tmux pane read is unavailable, never pane_missing | in-progress | daemon, tmux, seat identity | cortex mesh flap, cw.4.2 |
+| [0016](0016-transient-observation-unavailable.md) | A transient or ambiguous native observation is unavailable, never a mismatch | in-progress | daemon, seat identity, native process proof | CER-2982 |
 
 ## Requirements Syntax (EARS)
 

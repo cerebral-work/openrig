@@ -1,10 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
-const { execute, paths } = vi.hoisted(() => ({ execute: vi.fn(), paths: vi.fn() }));
+const { execute, paths, errors } = vi.hoisted(() => ({ execute: vi.fn(), paths: vi.fn(), errors: vi.fn() }));
 vi.mock("node:child_process", () => ({ execFile: Object.assign(vi.fn(), { [Symbol.for("nodejs.util.promisify.custom")]: execute }) }));
-vi.mock("../src/domain/native-process-executable.js", () => ({ readNativeExecutablePaths: paths }));
+vi.mock("../src/domain/native-process-executable.js", () => ({ readNativeExecutablePaths: paths, readNativeExecutableErrors: errors }));
 import { listNativeProcesses } from "../src/domain/native-process-lineage.js";
 const line = (pid: number, name: string, argv: string) => `${pid} 10 11 11 ${name} Sun Oct  4 15:21:03 2026 ${argv}`;
-beforeEach(() => { vi.resetAllMocks(); });
+beforeEach(() => { vi.resetAllMocks(); errors.mockResolvedValue(new Map()); });
 it("batches only unresolved version-named Claude candidates; healthy seats need no extra subprocess", async () => {
   const healthy = [line(10, "zsh", "-zsh"), line(11, "claude", "claude"), line(12, "codex", "codex"), line(13, "2.1.289", "/x/.local/share/claude/versions/2.1.289"), line(14, "2.1.289", "unrelated")];
   execute.mockResolvedValue({ stdout: "HEADER\n" + healthy.join("\n") });
@@ -17,6 +17,8 @@ it("batches only unresolved version-named Claude candidates; healthy seats need 
   expect(paths).toHaveBeenCalledExactlyOnceWith([15, 16]);
   expect(rows.find(r => r.pid === 15)?.executablePath).toBe("/x/.local/share/claude/versions/2.1.289");
   expect(rows.find(r => r.pid === 16)?.executablePath).toBeUndefined();
+  // Spec 0016: only the candidate whose path was not read is asked why.
+  expect(errors).toHaveBeenCalledExactlyOnceWith([16]);
 });
 it("reads the OS path for a Nix-wrapped Claude whose ucomm is the truncated `.claude-unwrapped`", async () => {
   const listed = [line(20, ".claude-unwrapp", "claude --session-id token"), line(21, ".claude-wrapped", "/nix/store/x-claude-code-2.1.280/bin/claude"),

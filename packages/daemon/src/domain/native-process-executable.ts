@@ -18,6 +18,24 @@ function run(argv) {
   }));
 }`;
 
+/** Spec 0016: why a Linux /proc/<pid>/exe read gave no path. An exited process is no reading (unavailable); a
+ *  refused read is positive evidence that the process is not the seat's own (contrary). */
+export type NativeExecutableReadError = "exited" | "refused" | "unreadable";
+
+/** Spec 0016: the failed Linux exe reads of `requested`, by pid. Other platforms report none. */
+export async function readNativeExecutableErrors(requested: number[]): Promise<Map<number, NativeExecutableReadError>> {
+  const errors = new Map<number, NativeExecutableReadError>();
+  if (process.platform !== "linux") return errors;
+  const pids = [...new Set(requested.filter(pid => Number.isInteger(pid) && pid > 0 && pid <= 2147483647))].slice(0, 1024);
+  await Promise.all(pids.map(async pid => {
+    try { await readlink(`/proc/${pid}/exe`); } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      errors.set(pid, code === "ENOENT" || code === "ESRCH" ? "exited" : code === "EACCES" || code === "EPERM" ? "refused" : "unreadable");
+    }
+  }));
+  return errors;
+}
+
 /** Optional OS executable witnesses. Unavailable, exited and over-budget PIDs
  * have no witness; this never substitutes argv or a version string for a path. */
 export async function readNativeExecutablePaths(requested: number[]): Promise<Map<number, string>> {
