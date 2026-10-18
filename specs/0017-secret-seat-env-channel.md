@@ -77,8 +77,22 @@ Line numbers below are at cerebral `583fa40e`.
   - The daemon resolves the directory to an absolute path (item 2) and creates it with mode 0700 if absent.
   - It then checks it with `lstat` before each use: a directory, not a symlink, owned by the daemon's uid, mode exactly 0700.
   - Otherwise it refuses the launch, naming the directory and what failed, and writes nothing.
-- **tmux never carries the value.** `createSession` and `respawnPane` get only the non-secret launch variables. 0013 item 9's guard stays, as a backstop that refuses a secret-named variable reaching `-e`.
-- Every launch that should have the value gets it from its own staged script: fresh launch, resume, handover successor, restart-in-place. A pane shell started by `respawn-pane` without a launch has none.
+- **Which values are secrets** (the lead's ruling, 2026-10-18).
+  - The secret set comes only from the daemon's own environment: `providerAuthEnv` and `runtimeSessionEnv[runtime]` (item 4). One resolver, built at startup, gives a runtime's secret values.
+  - The launch env is one merged map: the daemon's session env, the runtime's env and the seat env. Exactly the resolver's names are stripped from it before tmux. Nothing is moved into the script because of its name.
+  - 0013 item 9's guard keeps refusing every other secret-named variable. So a secret-named seat-env name still refuses everywhere, including a handover successor, which builds its env from stored seat env.
+- **tmux never carries the value.** `createSession` and `respawnPane` get only the launch variables left after that strip. The guard stays, as a backstop that refuses a secret-named variable reaching `-e`.
+- **Marking a launch.**
+  - Each runtime launch call site passes an explicit option, and the tmux adapter resolves the values for that runtime.
+  - No per-session store is consumed by the next staged command. Probes, resume-metadata commands and context delivery also go through `sendShellCommand`, and they never carry a secret.
+  - **The launch paths:** fresh launch, resume, the restore resume adapters, the handover successor, and restart-in-place (below).
+  - A pane shell started by `respawn-pane` without a launch has no secret.
+- **Fish panes:** a secret-bearing script always runs as `/bin/sh <script>`, never sourced by fish. The guard line isn't fish syntax, and fish reads POSIX backslash quoting differently.
+- **Typed paths:** a secret-bearing launch is always staged, through `sendLaunchCommand` as well as `sendShellCommand`. The resume-metadata probe never carries a secret: it isn't a runtime launch.
+- **Restart-in-place, `direct_native` (Codex):** the relaunch is the `respawn-pane` command itself (`seat-restart-in-place.ts:311`).
+  - When the seat has daemon secrets, that command becomes `/bin/sh <staged script>`. The script exports, then `exec`s the relaunch command, so only the path is on argv.
+  - It is the same hardened script: the tracing guard first, the self-delete before any export line, and the `lstat`-checked 0700 directory. `sh` reads the rest through the descriptor it opened, so the file is gone before any value is read.
+- **Terminal seats** have no launch command, so they get no daemon secrets. Since 0013 item 9, a configured provider-auth key refuses every launch anyway, so no working seat loses a value it has today.
 
 ### 2. The managed Claude launch reads the value from a file, not argv
 
@@ -172,11 +186,15 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-13: If a rig spec's seat env, a `rig up --env` or an `envOverride` names a secret-named variable that is not on the exemption list, then validation shall refuse it with `seat_env_secret_name`, naming the variable and not its value.
 - REQ-0017-14: The seat env validation, the tmux launch guard, the runtime change refusal and both `seat_env.base` checks shall take the name rule and the exemption list from one daemon export.
 - REQ-0017-15: If a stored seat env names a secret-named variable that is not on the exemption list, then the next launch, restore or `rig up` of that seat shall refuse with `seat_env_secret_name` before launching, and name the spec field to remove.
+- REQ-0017-16: The daemon shall take secret launch values only from the provider-auth allow-list and `runtimeSessionEnv`, through one resolver built at startup.
+- REQ-0017-17: Where a command is not marked as a runtime launch, the tmux adapter shall write no secret value into it.
+- REQ-0017-18: When a secret-bearing script targets a fish pane, the tmux adapter shall run it with `/bin/sh`.
+- REQ-0017-19: When a `direct_native` restart-in-place seat has daemon secrets, the respawn command shall be `/bin/sh` with the staged script's absolute path as its only argument.
 
 ## Plan
 
 1. This spec, reviewed for security before any code.
-2. One fork PR: the channel (items 1 to 3) and the source rule (item 4), with 0013 item 9's guard kept as a backstop.
+2. Two fork PRs: the source rule (item 4) first, then the channel (items 1 to 3) stacked on it, with 0013 item 9's guard kept as a backstop.
 3. Switching any daemon-env source on is a separate, operator-gated step.
 
 ## Test
@@ -213,4 +231,15 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
   - **The `--env` refusal** names the variable, never the value, and says to rotate it.
   - **Red:** before the change, each source accepts `GITHUB_TOKEN`.
 - **Stored env:** a node whose stored `env_json` names a secret-named variable is refused at its next launch and at `rig up`, before any tmux command, with the remedy.
+- **The secret set (the lead's ruling):**
+  - **Positive:** a `runtimeSessionEnv` secret reaches the runtime through the staged script, and the deterministic argv record holds only paths.
+  - **Refusal:** a handover of a seat whose stored env names a secret-named variable is refused, not delivered.
+- **Marking:**
+  - each launch path (fresh launch, resume, the restore resume adapters, the handover successor, restart-in-place) carries the runtime's secrets;
+  - a probe, a resume-metadata command and a context delivery carry none.
+- **Fish:** a secret-bearing launch into a fish pane is invoked as `/bin/sh <script>`, and nothing sources it in fish.
+- **Restart-in-place `direct_native`:**
+  - the respawn argv carries only `/bin/sh` and the script's absolute path;
+  - running that script under a traced shell prints no sentinel;
+  - the relaunched process has the value.
 - **Break-once:** each rule, broken on purpose, turns its test red.
