@@ -291,7 +291,8 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(finding.evidenceRef).toBe(`rig queue show ${row.qitemId}`);
     expect(repo.getById(finding.evidenceRef!.slice("rig queue show ".length))?.body).toBe(row.body);
     expect(finding.destinationSession).toBe(destinationSession);
-    expect(finding.lastNudgeResult).toMatch(/^unroutable:/);
+    // Churn B2: an undelivered-wake finding is created without a wake, so it records no attempt of its own.
+    expect(finding.lastNudgeResult).toBeNull();
     expect(sent).toEqual([]);
 
     expect((await runSweep()).result.findings).toContainEqual(expect.objectContaining({ findingQitemId: finding.qitemId, action: "refreshed" }));
@@ -435,6 +436,92 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(await findingsFor(row.qitemId)).toHaveLength(1);
   });
 
+  // Queue churn A (cerebral-work fork): an undelivered-wake finding waits while the destination is
+  // refused at an interactive prompt or wrote a queue transition recently, but only until the failed
+  // wake is older than the grace. A seat that really is stuck is still found, at the latest then.
+  describe("churn A — undelivered-wake grace", () => {
+    const PROMPT_REFUSAL = "failed: Refused: 'worker@r' is at an interactive prompt (permission dialog). No text was sent.";
+    const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000);
+    function destinationWroteAt(at: Date): void {
+      db.prepare("INSERT INTO queue_transitions (qitem_id, ts, state, actor_session, transition_note) SELECT qitem_id, ?, state, 'worker@r', 'fixture: destination activity' FROM queue_items LIMIT 1")
+        .run(at.toISOString());
+    }
+
+    it("a fresh wake refused at an interactive prompt raises no finding", async () => {
+      const row = await mkRow();
+      setNudgeResult(row.qitemId, PROMPT_REFUSAL, minutesAgo(2));
+      await runSweep();
+      expect(await findingsFor(row.qitemId)).toHaveLength(0);
+    });
+
+    it("a prompt refusal older than the grace is still found", async () => {
+      const row = await mkRow();
+      setNudgeResult(row.qitemId, PROMPT_REFUSAL, minutesAgo(11));
+      await runSweep();
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it("a destination that wrote a queue transition within the activity window raises no finding for a fresh failed wake", async () => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      destinationWroteAt(minutesAgo(2));
+      await runSweep();
+      expect(await findingsFor(row.qitemId)).toHaveLength(0);
+    });
+
+    it("an active destination is still found once the failed wake is older than the grace", async () => {
+      const row = await mkRow();
+      setNudgeResult(row.qitemId, "failed:tmux session not found", minutesAgo(11));
+      destinationWroteAt(minutesAgo(1));
+      await runSweep();
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it("the grace is the configured value, not a constant", async () => {
+      const row = await mkRow();
+      setNudgeResult(row.qitemId, PROMPT_REFUSAL, minutesAgo(2));
+      await runSweep({ undeliveredGraceMinutes: 1 });
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+  });
+
+  // Queue churn B, ruling B2 (cerebral-work fork): finding rows stay (coordination-primitive.md and the
+  // wake ladder's deferral depend on them). Only the self-resolving kinds are created without a wake.
+  describe("churn B2 — quiet finding kinds", () => {
+    const findingCreates = (spy: ReturnType<typeof vi.spyOn>) =>
+      spy.mock.calls.map(([input]) => input as { tags?: string[]; nudge?: boolean })
+        .filter((input) => (input.tags ?? []).includes("stuck-sweep-finding"));
+
+    it("an undelivered-wake finding is created without a wake", async () => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      const create = vi.spyOn(repo, "create");
+      await runSweep({ resolveOrchestrator: () => "orch@r" });
+      const created = findingCreates(create);
+      expect(created).toHaveLength(1);
+      expect(created[0]!.nudge).toBe(false);
+    });
+
+    it("a judgment-kind finding still wakes its route", async () => {
+      const stale = await mkRow();
+      ageCreated(stale.qitemId, 120);
+      const create = vi.spyOn(repo, "create");
+      await runSweep({ resolveOrchestrator: () => "orch@r" });
+      const created = findingCreates(create);
+      expect(created).toHaveLength(1);
+      expect(created[0]!.tags).toContain(`stuck-sweep:unclaimed-obligation:${stale.qitemId}`);
+      expect(created[0]!.nudge).not.toBe(false);
+    });
+
+    it("the quiet kinds are the configured list", async () => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      const create = vi.spyOn(repo, "create");
+      await runSweep({ quietKinds: [] });
+      expect(findingCreates(create)[0]!.nudge).not.toBe(false);
+    });
+  });
+
   it("NEW EVIDENCE + RECUR AFTER AUTO-CLOSE: a newer nudge row-field timestamp mints exactly one successor finding without any underlying transition", async () => {
     const row = await mkRow();
     const initial = new Date(Date.now() - 60_000);
@@ -465,7 +552,9 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     const closed = (await findingsFor(row.qitemId))[0]!;
     repo.update({
       qitemId: closed.qitemId,
-      actorSession: closed.destinationSession,
+      // Closed by the orchestrator: a close by the destination is recent activity, and churn A would then
+      // rightly hold the new finding for the grace. This test is about dedup order, not activity.
+      actorSession: "orch@r",
       state: "done",
       closureReason: "no-follow-on",
     });

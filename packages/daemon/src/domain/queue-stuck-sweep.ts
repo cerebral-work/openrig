@@ -35,6 +35,15 @@ export const DEFAULT_STUCK_SWEEP_INTERVAL_SECONDS = 300;
 export const STUCK_SWEEP_UNCLAIMED_AGE_KEY = "queue.stuck_sweep_unclaimed_age_minutes";
 export const DEFAULT_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES = 60;
 export const STUCK_SWEEP_CUSTODY_WINDOW_HOURS = 24;
+// Queue churn A (cerebral-work fork): an undelivered-wake finding waits while the destination is refused at an
+// interactive prompt or wrote a queue transition within the activity window, but only until the failed wake is
+// older than the grace. Defaults are the 2026-10-18 measurement (vilicus churn baseline).
+export const STUCK_SWEEP_UNDELIVERED_GRACE_KEY = "queue.stuck_sweep_undelivered_grace_minutes";
+export const DEFAULT_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES = 10;
+export const STUCK_SWEEP_OWNER_ACTIVE_KEY = "queue.stuck_sweep_owner_active_minutes";
+export const DEFAULT_STUCK_SWEEP_OWNER_ACTIVE_MINUTES = 5;
+// Queue churn B, ruling B2: finding rows stay, but the kinds that resolve themselves are created without a wake.
+export const STUCK_SWEEP_QUIET_KINDS_KEY = "queue.stuck_sweep_quiet_kinds";
 // A retry marker leases suppression; it is not proof that the ladder still runs.
 // Thirty minutes allows several default five-minute ladder ticks. Expiry only
 // restores reporting: it never retries delivery or acts on an interactive prompt.
@@ -59,6 +68,8 @@ export type StuckFindingKind =
   | "undelivered-wake"
   | "unclaimed-obligation"
   | "dangling-closure";
+
+export const DEFAULT_STUCK_SWEEP_QUIET_KINDS: readonly StuckFindingKind[] = ["dangling-closure", "undelivered-wake"];
 
 /** Idempotency key: one open finding row per (stuck row, finding kind). */
 export function findingDedupTag(kind: StuckFindingKind, qitemId: string): string {
@@ -114,6 +125,34 @@ export function resolveStuckSweepIntervalSeconds(): number {
   }
 }
 
+function resolvePositiveSetting(key: string, fallback: number): number {
+  try {
+    const v = new SettingsStore().resolveOne(key as never).value;
+    const n = typeof v === "number" ? v : Number(v);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+export function resolveStuckSweepUndeliveredGraceMinutes(): number {
+  return resolvePositiveSetting(STUCK_SWEEP_UNDELIVERED_GRACE_KEY, DEFAULT_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES);
+}
+
+export function resolveStuckSweepOwnerActiveMinutes(): number {
+  return resolvePositiveSetting(STUCK_SWEEP_OWNER_ACTIVE_KEY, DEFAULT_STUCK_SWEEP_OWNER_ACTIVE_MINUTES);
+}
+
+/** The finding kinds created without a wake. An unreadable setting falls back to the default list. */
+export function resolveStuckSweepQuietKinds(): StuckFindingKind[] {
+  try {
+    const v = new SettingsStore().resolveOne(STUCK_SWEEP_QUIET_KINDS_KEY as never).value;
+    return String(v ?? "").split(",").map((kind) => kind.trim()).filter(Boolean) as StuckFindingKind[];
+  } catch {
+    return [...DEFAULT_STUCK_SWEEP_QUIET_KINDS];
+  }
+}
+
 export function resolveStuckSweepUnclaimedAgeMinutes(): number {
   try {
     const v = new SettingsStore().resolveOne(STUCK_SWEEP_UNCLAIMED_AGE_KEY as never).value;
@@ -134,6 +173,12 @@ export interface StuckSweepDeps {
    *  layer). Injectable for tests; default derives from topology. */
   resolveOrchestrator?: (session: string) => string | null;
   unclaimedAgeMinutes?: number;
+  /** Churn A: how long an undelivered-wake finding may wait for a refused or recently active destination. */
+  undeliveredGraceMinutes?: number;
+  /** Churn A: a destination queue transition within this window counts as activity. */
+  ownerActiveMinutes?: number;
+  /** Churn B2: finding kinds created without a wake. */
+  quietKinds?: readonly StuckFindingKind[];
   custodyWindowHours?: number;
   now?: Date;
   log?: (line: string) => void;
@@ -242,6 +287,23 @@ function hasLiveLadder(db: Database.Database, qitemId: string, now: Date): boole
   return false;
 }
 
+/** Whether the time is less than `windowMs` before now. An absent or unreadable time is never recent. */
+function withinMs(iso: string | null | undefined, now: Date, windowMs: number): boolean {
+  if (!iso) return false;
+  const then = Date.parse(iso);
+  return !Number.isNaN(then) && now.getTime() - then < windowMs;
+}
+
+/** The transport's refusal of a seat at a permission or selection prompt (session-transport.ts). */
+function refusedAtInteractivePrompt(nudgeResult: string | null | undefined): boolean {
+  return !!nudgeResult && /Refused:.*interactive prompt/.test(nudgeResult);
+}
+
+function lastTransitionBy(db: Database.Database, session: string): string | null {
+  const row = db.prepare("SELECT MAX(ts) AS ts FROM queue_transitions WHERE actor_session = ?").get(session) as { ts: string | null } | undefined;
+  return row?.ts ?? null;
+}
+
 function minutesSince(iso: string | null | undefined, now: Date): number {
   if (!iso) return 0;
   const then = Date.parse(iso);
@@ -348,6 +410,9 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
   try {
     const now = deps.now ?? new Date();
     const ageMinutes = deps.unclaimedAgeMinutes ?? resolveStuckSweepUnclaimedAgeMinutes();
+    const undeliveredGraceMs = (deps.undeliveredGraceMinutes ?? resolveStuckSweepUndeliveredGraceMinutes()) * 60_000;
+    const ownerActiveMs = (deps.ownerActiveMinutes ?? resolveStuckSweepOwnerActiveMinutes()) * 60_000;
+    const quietKinds = new Set(deps.quietKinds ?? resolveStuckSweepQuietKinds());
     const resolveOrch =
       deps.resolveOrchestrator ?? ((session: string) => defaultResolveOrchestrator(deps.db, session));
     const isRegisteredHost = deps.isRegisteredHost ?? defaultIsRegisteredHost(log);
@@ -422,6 +487,11 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
     for (const row of undeliveredRows) {
       if (isFindingRow(row)) continue;
       if (hasLiveLadder(deps.db, row.qitemId, now)) continue;
+      // Churn A: a destination refused at an interactive prompt, or one that wrote a queue transition within the
+      // activity window, is not stuck yet. The wait lasts only until the failed wake is older than the grace.
+      if (withinMs(row.lastNudgeAttempt ?? row.tsUpdated, now, undeliveredGraceMs)
+        && (refusedAtInteractivePrompt(row.lastNudgeResult)
+          || withinMs(lastTransitionBy(deps.db, row.destinationSession), now, ownerActiveMs))) continue;
       candidates.push({
         kind: "undelivered-wake",
         row,
@@ -612,6 +682,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           summary: `Stuck sweep: ${c.verificationTargets ? "successor-verification-required" : c.kind} on ${c.row.qitemId} (${c.ageMinutes} min)`,
           evidenceRef: `rig queue show ${c.row.qitemId}`,
           tags: [STUCK_SWEEP_FINDING_TAG, dedupTag, recoveryTag(c.row.qitemId)],
+          // Churn B2: the kinds that resolve themselves are recorded without a wake.
+          ...(quietKinds.has(c.kind) ? { nudge: false } : {}),
         });
         findings.push({ kind: c.kind, qitemId: c.row.qitemId, findingQitemId: created.qitemId, action: "created" });
       }
