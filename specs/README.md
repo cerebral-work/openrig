@@ -19,6 +19,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0010](0010-workflow-human-gate-targets.md) | Workflow gate targets: forms and hints | complete | daemon, workflow, docs | feat/factory-expansion-fixes |
 | [0012](0012-startup-submission-verification.md) | Startup submission verification: boundary re-look, transcript confirmation, required sends | in-progress | daemon, startup, claude adapter | revenant gap 1 |
 | [0014](0014-launch-graph-cycles.md) | Launch-dependency cycles: restore holds, growth refuses | in-progress | daemon, restore, topology growth | CER-2976 |
+| [0015](0015-pane-read-failure-unavailable.md) | A failed tmux pane read is unavailable, never pane_missing | in-progress | daemon, tmux, seat identity | cortex mesh flap, cw.4.2 |
 
 ## Requirements Syntax (EARS)
 

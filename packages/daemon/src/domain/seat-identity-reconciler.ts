@@ -3,7 +3,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { claudeResumeRotation } from "./session-registry.js";
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { TmuxAdapter } from "../adapters/tmux.js";
+import { readPanePid, type TmuxAdapter } from "../adapters/tmux.js";
 import type { SeatIdentityVerdict } from "./types.js";
 import { SeatIdentityStore, SelfHostIdentityStore } from "./seat-identity-store.js";
 import { RESERVED_HOST_IDS, validateHostRegistry } from "./hosts/hosts-registry-reader.js";
@@ -77,11 +77,12 @@ interface RunningSeatRow {
   resume_launch_process?: string | null;
 }
 
-type PaneObservation = { pid: number | null; command: string | null };
+/** A pane read. `unavailable` marks a failed read (spec 0015): no pid, and no evidence the pane is gone. */
+type PaneObservation = { pid: number | null; command: string | null; unavailable?: true };
 
 export interface SeatIdentityReconcilerDeps {
   db: Database.Database;
-  tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "readAllPaneProcesses" | "listPanes">>;
+  tmux: Pick<TmuxAdapter, "listSessions" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "readAllPaneProcesses" | "listPanes" | "observePanePid">>;
   now?: () => Date;
   listProcesses?: NativeProcessLister;
 }
@@ -173,6 +174,8 @@ export class SeatIdentityReconciler {
       return;
     }
 
+    // A failed batch read lists nothing, so every pane is read on its own below; a pane is never taken as gone for
+    // being absent from a batch that failed (spec 0015).
     const readPanes = async (): Promise<Map<string, PaneObservation>> => {
       try { return new Map(await this.tmux.readAllPaneProcesses?.() ?? []); }
       catch { return new Map(); }
@@ -184,8 +187,10 @@ export class SeatIdentityReconciler {
     const readPane = async (target: string): Promise<PaneObservation> => {
       const existing = panes.get(target);
       if (existing) return existing;
-      const pid = await this.tmux.getPanePid(target);
-      const observed = { pid, command: pid === null ? null : await this.tmux.getPaneCommand(target) };
+      const read = await readPanePid(this.tmux, target);
+      const observed: PaneObservation = read.kind === "pid"
+        ? { pid: read.pid, command: await this.tmux.getPaneCommand(target) }
+        : { pid: null, command: null, ...(read.kind === "unavailable" ? { unavailable: true as const } : {}) };
       panes.set(target, observed);
       return observed;
     };
@@ -305,7 +310,13 @@ export class SeatIdentityReconciler {
 
     // From the sweep's one batched list-panes when the pane is in it; otherwise read per pane as before.
     const batched = panes?.get(seat.tmux_pane) ?? null;
-    const pid = batched ? batched.pid : await this.tmux.getPanePid(seat.tmux_pane);
+    const read = batched
+      ? (batched.pid !== null ? { kind: "pid" as const, pid: batched.pid } : { kind: batched.unavailable ? "unavailable" as const : "absent" as const })
+      : await readPanePid(this.tmux, seat.tmux_pane);
+    // Spec 0015: a failed read is no evidence the pane is gone. Only tmux's own report, or a session absent from the
+    // successful listing above, may give pane_missing; anything else is unavailable and down-ranks no seat.
+    if (read.kind === "unavailable" && liveSessions.has(seat.session_name)) return this.tmuxUnavailableVerdict(seat, observedAt);
+    const pid = read.kind === "pid" ? read.pid : null;
     if (pid === null) {
       // The registered pane no longer resolves. Distinguish "the whole tmux
       // session is gone" from "the pane within a live session is gone".
@@ -329,9 +340,13 @@ export class SeatIdentityReconciler {
       if (verified && seat.runtime === "claude-code" && seat.resume_token == null) {
         // Runtime-only proof must still refer to the sole bound pane after the
         // two shared process snapshots. It does not clear startup/restore state.
-        const currentPanes = await this.tmux.listPanes?.(seat.session_name).catch(() => []);
-        const currentPid = await this.tmux.getPanePid(seat.tmux_pane).catch(() => null);
-        verified = currentPanes?.length === 1 && currentPanes[0]?.id === seat.tmux_pane && currentPid === pid;
+        // Spec 0015: a recheck read that failed says nothing about the pane, so it is unavailable, not ambiguous.
+        let currentPanes: Awaited<ReturnType<NonNullable<typeof this.tmux.listPanes>>> | undefined;
+        try { currentPanes = await this.tmux.listPanes?.(seat.session_name); }
+        catch { return this.tmuxUnavailableVerdict(seat, observedAt); }
+        const current = await readPanePid(this.tmux, seat.tmux_pane);
+        if (current.kind === "unavailable") return this.tmuxUnavailableVerdict(seat, observedAt);
+        verified = currentPanes?.length === 1 && currentPanes[0]?.id === seat.tmux_pane && current.kind === "pid" && current.pid === pid;
       }
       return {
         ...base, verdict: verified ? "verified" : "mismatch",

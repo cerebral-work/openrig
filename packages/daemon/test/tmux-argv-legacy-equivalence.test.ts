@@ -43,7 +43,8 @@ function respond(cmd: string, failing: string[]): string {
     case "list-sessions": return `${SESSION}\nalpha\n`;
     case "list-panes": return "%1|0|/w|80|24|1\n";
     case "display-message":
-      return cmd.includes("session_id") ? "$7\n" : cmd.includes("pane_pid") ? "4242\n" : "1\n";
+      // %9 is a gone pane: tmux 3.4 answers its pid read with an empty reply (spec 0015).
+      return cmd.includes("session_id") ? "$7\n" : cmd.includes("%9") ? "" : cmd.includes("pane_pid") ? "4242\n" : "1\n";
     case "show-environment": return "OPENRIG_NODE_ID=n1\nCLAUDECODE=1\nHERDR_PANE_ID=p1\n";
     case "new-session": return "%1\n";
     default: return "";
@@ -127,6 +128,7 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.isPaneInMode("%1");
   await a.signalPaneProcess("%1", "TERM");
   await a.getPanePid(SESSION);
+  await a.observePanePid("%9"); // the empty reply reaches the confirming list-panes
   await a.getDefaultShell();
   await a.getPaneCommand(SESSION);
   await a.getSessionEnv(SESSION, "OPENRIG_NODE_ID");

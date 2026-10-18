@@ -55,7 +55,9 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
      - **The cycle uses an edge from the request:** leave one of the new edges out and retry.
      - **The cycle is entirely existing edges:** like `rig edge add`, a rig that already holds a cycle refuses any growth. The refusal ends with the same sentence as the restore reason: "There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges."
    - The live database had no such rig on 2026-10-18: a read-only copy, scanned with this detector, showed 0 of 34 rigs holding a cycle.
-3. **`rig import` (instantiate) is unchanged.** It already refused cycles: `computePodLaunchOrder` runs before `createRig`. The schema refuses self-edges on every path (`rigspec-schema.ts`).
+3. **`rig import` (instantiate) is unchanged.** It already refused cycles: `computePodLaunchOrder` runs before `createRig`.
+   - A launch-kind self-edge is refused as a cycle on every path. The legacy schema refuses all self-edges (`rigspec-schema.ts`).
+   - The pod-aware schema stores a non-launch self-edge (for example `can_observe a -> a`): review r1's probe3 on #17. Such an edge doesn't affect launch order or restore.
 4. `heldByLaunchCycles` (`launch-graph-cycles.ts`) is a pure helper. It finds the seats no order can place and the cycle edges at or upstream of each, and both the restore reason and the growth refusal use it. Restore keeps its own ordering. The helper only names edges for the seats that ordering left out, so no seat can be dropped even if the two disagreed.
 
 ## Requirements

@@ -484,10 +484,15 @@ rigsRoutes.post("/:id/archive", async (c) => {
 
   // Preserve main's action decision: only a stored running session with
   // confirmed absence was attention_required before this read projection.
+  // Spec 0015: a liveness guard reads stored state. A stored running seat is attention_required here only on a
+  // confirmed missing session or stored startup/restore attention, never on a pane-read verdict (pane_pid_gone,
+  // mismatch), which a transient tmux failure can produce.
   const lifecycleState = deriveRigLifecycleState(getNodeInventory(repo.db, rigId).map((entry) =>
-    entry.storedSessionStatus === "running" && identityVerdictConfirmsSessionMissing(entry.identityVerdict)
-      ? "attention_required"
-      : entry.lifecycleState
+    entry.storedSessionStatus !== "running" ? entry.lifecycleState
+      : identityVerdictConfirmsSessionMissing(entry.identityVerdict) || entry.storedStartupStatus === "attention_required"
+        || entry.restoreOutcome === "attention_required" || entry.restoreOutcome === "failed"
+        ? "attention_required"
+        : "running"
   ));
   if ((lifecycleState === "running" || lifecycleState === "degraded") && !force) {
     return c.json({

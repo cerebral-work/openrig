@@ -214,6 +214,39 @@ describe("Rig CRUD routes", () => {
     expect((await archive(true)).status).toBe(200);
   });
 
+  // Spec 0015: archive is a liveness guard, so it reads stored liveness. A pane-read verdict, which a transient tmux
+  // failure can produce, never makes a rig with live seats archivable without --force; only a confirmed missing session
+  // does, as on main (the case above).
+  it.each([
+    ["pane_missing", "pane_pid_gone", "claude-code"],
+    ["mismatch", "process_identity_ambiguous", "claude-code"],
+    ["mismatch", "tmux_unavailable", "codex"],
+  ] as const)("refuses without force a rig whose running seats are down-ranked by %s/%s (%s)", async (verdict, reason, runtime) => {
+    const name = `pane-verdict-archive-${runtime}-${reason}`;
+    const rig = repo.createRig(name);
+    const seats = ["dev.a", "dev.b"].map((logicalId) => {
+      const node = repo.addNode(rig.id, logicalId, { runtime });
+      const session = sessionRegistry.registerSession(node.id, `${logicalId.replace(".", "-")}@${name}`);
+      sessionRegistry.updateStatus(session.id, "running");
+      sessionRegistry.updateBinding(node.id, { tmuxSession: session.sessionName, tmuxPane: "%1", attachmentType: "tmux" });
+      return { node, session };
+    });
+    for (const { node, session } of seats) {
+      new SeatIdentityStore(db).upsert({
+        nodeId: node.id, sessionName: session.sessionName, verdict, evidenceSource: "pane_process", reason,
+        evidence: { registeredPane: "%1", observedPid: null, observedCommand: null, matchedLayer: null },
+        observedAt: new Date(Date.now() + 1).toISOString(),
+      });
+    }
+
+    const archive = (force: boolean) => app.request(`/api/rigs/${rig.id}/archive`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ force }),
+    });
+    expect((await archive(false)).status).toBe(409);
+    expect(repo.getRigSummaries({ archivedOnly: true }).map((entry) => entry.id)).not.toContain(rig.id);
+    expect((await archive(true)).status).toBe(200);
+  });
+
   it("POST /api/rigs/:id/attach-self binds an external_cli agent to an existing node", async () => {
     const rig = repo.createRig("rigged-buildout");
     const node = repo.addNode(rig.id, "orch1.lead", { runtime: "claude-code" });

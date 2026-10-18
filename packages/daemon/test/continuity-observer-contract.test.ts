@@ -29,6 +29,7 @@ describe("S20 P5 current-occupant observer contract", () => {
 
     expect(handover).toMatch(/UPDATE bindings[\s\S]*tmux_pane = \?/);
     expect(reconciler).toMatch(/b\.tmux_pane as tmux_pane/);
-    expect(reconciler).toMatch(/getPanePid\(seat\.tmux_pane\)/);
+    // Spec 0015: the pid read is typed (readPanePid), still of the canonical seat.tmux_pane column.
+    expect(reconciler).toMatch(/readPanePid\(this\.tmux, seat\.tmux_pane\)/);
   });
 });
