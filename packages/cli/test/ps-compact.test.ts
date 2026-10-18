@@ -569,6 +569,19 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
     } finally { node.latestError = previous; }
   });
 
+  it.each(["compact", "full"])("names a pending runtime-change declaration after the %s node table", async mode => {
+    const node = RIG_A_NODES[0]! as (typeof RIG_A_NODES)[number] & { pendingDeclaration?: unknown };
+    node.pendingDeclaration = { changeId: "c-1", kind: "change", operator: "operator-agent@kernel", committedAt: "2026-10-18T14:00:00.000Z" };
+    try {
+      const { logs } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", ...(mode === "full" ? ["--full"] : [])]);
+      });
+      const output = logs.join("\n");
+      expect(output).toContain(`Declaration pending (${node.canonicalSessionName}): run rig seat runtime-declare ${node.canonicalSessionName}`);
+      expect(output.match(/Declaration pending/g)).toHaveLength(1);
+    } finally { delete node.pendingDeclaration; }
+  });
+
   it("compact default human table uses compact columns and omits full-only columns", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);

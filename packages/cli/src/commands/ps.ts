@@ -59,6 +59,8 @@ interface NodeEntry {
   intentionallyStopped?: boolean;
   startupStatus: "pending" | "ready" | "attention_required" | "failed" | null;
   restoreOutcome: string;
+  /** Spec 0005: a committed runtime change whose occupant declaration is pending. */
+  pendingDeclaration?: { changeId: string; kind: "change" | "revert"; operator: string; committedAt: string };
   // OPR.0.4.3.06 — challenge-verified orientation, distinct from startupStatus.
   oriented?: string;
   lifecycleState?: "running" | "detached" | "recoverable" | "attention_required";
@@ -1270,6 +1272,11 @@ async function handleNodes(
   for (const n of humanList as NodeEntry[]) {
     if (n.startupStatus === "attention_required" && n.latestError?.includes("rig seat continue ")) {
       console.log(`Startup details (${n.canonicalSessionName ?? n.logicalId}): ${n.latestError}`);
+    }
+    // Spec 0005: a committed runtime change whose occupant declaration is pending, with the command that finishes it.
+    if (n.pendingDeclaration) {
+      const seat = n.canonicalSessionName ?? `${n.logicalId}@${n.rigName}`;
+      console.log(`Declaration pending (${seat}): run rig seat runtime-declare ${seat}`);
     }
   }
   if (humanTruncated) {

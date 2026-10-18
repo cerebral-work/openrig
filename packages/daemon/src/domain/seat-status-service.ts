@@ -25,6 +25,8 @@ export interface SeatStatus {
   previous_occupant: string | null;
   handover_at: string | null;
   restore_outcome: NodeInventoryEntry["restoreOutcome"];
+  /** Spec 0005: a committed runtime change whose occupant declaration is pending (run rig seat runtime-declare), or null. */
+  pending_declaration: { change_id: string; kind: "change" | "revert"; operator: string; committed_at: string } | null;
   permissions: {
     selectionState: "explicit" | "inherit" | "unknown";
     desired: StoredNativePermissionSelection | null;
@@ -122,6 +124,10 @@ export class SeatStatusService {
       previous_occupant: entry.previousOccupant,
       handover_at: entry.handoverAt,
       restore_outcome: entry.restoreOutcome,
+      pending_declaration: entry.pendingDeclaration
+        ? { change_id: entry.pendingDeclaration.changeId, kind: entry.pendingDeclaration.kind,
+          operator: entry.pendingDeclaration.operator, committed_at: entry.pendingDeclaration.committedAt }
+        : null,
       permissions: this.permissionStatus(entry.nodeId, entry.runtime),
     };
   }

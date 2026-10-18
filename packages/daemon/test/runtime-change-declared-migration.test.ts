@@ -7,6 +7,7 @@ import type Database from "better-sqlite3";
 import { createDb } from "../src/db/connection.js";
 import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
+import { NodeRuntimeChangeLedger } from "../src/domain/node-runtime-changes.js";
 
 describe("migration 116 (runtime change declared) on an install that already holds runtime changes", () => {
   let db: Database.Database;
@@ -31,5 +32,10 @@ describe("migration 116 (runtime change declared) on an install that already hol
       { id: "c-1", declared_at: "2026-10-18T10:00:00.000Z", declared_by: "before-116" },
       { id: "c-2", declared_at: null, declared_by: null },
     ]);
+  });
+
+  it("a database from before the runtime-change ledger (an older fixture) has no pending declarations, and never throws", () => {
+    migrate(db, ALL_MIGRATIONS.filter((m) => !/^11[56]_/.test(m.name)));
+    expect(new NodeRuntimeChangeLedger(db).pendingDeclarations()).toEqual(new Map());
   });
 });
