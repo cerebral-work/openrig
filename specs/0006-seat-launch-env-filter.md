@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: complete
 created: 2026-10-18
 priority: high
 scope: daemon, tmux, seat launch
@@ -22,21 +22,20 @@ A tmux server recreated from a herdr pane carries that pane's identity in its gl
 
 ## Requirements
 
-- REQ-0006-01: When the daemon creates a seat's tmux session, it shall mark every `HERDR_*` name in the server's global environment removed for that session.
-- REQ-0006-02: When the daemon respawns a seat's pane, it shall mark every `HERDR_*` name in the server's global environment removed for that pane's session.
+- REQ-0006-01: When the daemon creates a seat's tmux session, it shall mark every `HERDR_*` name in the server's global environment, other than names the launch sets explicitly, removed for that session.
+- REQ-0006-02: When the daemon respawns a seat's pane, it shall mark every `HERDR_*` name in the server's global environment, other than names the launch sets explicitly, removed for that pane's session.
 - REQ-0006-03: When the daemon creates a native resume probe session, it shall mark every `HERDR_*` name removed for that session and restart its pane.
 - REQ-0006-04: The seat launch filter shall keep `OPENRIG_*` metadata, `TMUX` ancestry and credential variables.
 - REQ-0006-05: The daemon shall keep `HERDR_SOCKET_PATH` in its own process environment.
 
 ## Plan
 
-1. Fork PR #7 (`fix/herdr-env-filter`), shipped in cw.4.1 with the pane-mode readiness fix (PR #8). This spec is `in-progress` until it lands.
+1. Fork PR #7 (`fix/herdr-env-filter`), landed on `cerebral` in merge `af21028b` (2026-10-18), shipped in cw.4.1 with the pane-mode readiness fix (PR #8).
 2. Later (SEC-178): replace the deny rules with a seat-env allow-list.
 
 ## Test
 
 ```bash
-# with PR #7
 cd packages/daemon && npx vitest run test/seat-launch-env-filter.test.ts test/seat-launch-env-tmux.test.ts test/tmux-adapter.test.ts test/tmux-argv-legacy-equivalence.test.ts
 ```
 

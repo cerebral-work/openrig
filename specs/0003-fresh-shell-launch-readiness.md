@@ -1,5 +1,5 @@
 ---
-status: in-progress
+status: complete
 created: 2026-10-18
 priority: high
 scope: daemon, launcher, tmux
@@ -35,13 +35,13 @@ Retro spec for fork PR #3 (CER-2889, merged 2026-10-17, shipped in `0.6.10-cw.3`
 
 ## Plan
 
-Implemented in fork PR #3 (`917f2ddf` in cw.3; `6c5fc49f` after the cw.4 rebase), narrow backports of upstream `c336df24` (#1364), `3053354c` (#1373) and the readiness part of `a2a37b16` (#1395). cw.4 gated the handshake to production startup in `e5ce2ce2`. REQ-0003-08 is fork PR #8 (`fix/pane-mode-readiness`, cw.4.1); this spec is `in-progress` until it lands.
+Implemented in fork PR #3 (`917f2ddf` in cw.3; `6c5fc49f` after the cw.4 rebase), narrow backports of upstream `c336df24` (#1364), `3053354c` (#1373) and the readiness part of `a2a37b16` (#1395). cw.4 gated the handshake to production startup in `e5ce2ce2`. REQ-0003-08 is fork PR #8 (`fix/pane-mode-readiness`, cw.4.1), landed on `cerebral` in merge `ba027aac` (2026-10-18).
 
 ## Test
 
 ```bash
 cd packages/daemon && npx vitest run test/fresh-shell-launch.test.ts test/startup-wiring-pins.test.ts
-cd packages/daemon && npx vitest run test/fresh-shell-pane-mode.test.ts   # REQ-0003-08, with PR #8
+cd packages/daemon && npx vitest run test/fresh-shell-pane-mode.test.ts   # REQ-0003-08
 ```
 
 At `6d746c2a` the two suites pass 48 cases (5 todo). `startup-wiring-pins.test.ts` fails if production stops enabling the handshake. Stub-agent scenarios do not use staged Claude or Codex launches, so the first end-to-end proof is a real seat launch after install. `fresh-shell-pane-mode.test.ts` runs a private tmux server where a failing session-created hook leaves the new pane in view-mode and a read-only client is attached; without REQ-0003-08 the launch ends in `shell_not_ready`.
