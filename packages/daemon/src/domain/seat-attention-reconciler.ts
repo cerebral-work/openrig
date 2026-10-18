@@ -9,7 +9,7 @@ import type { AgentActivity, SeatIdentityVerdict } from "./types.js";
 import { readPanePid, type TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
-import { verifyNativePaneTyped, type NativeObservationResult, type NativeProcessRow, type NativeProcessLister, type ClaudeResumeRotation, findExactNativeResumeProcess, listNativeProcesses } from "./native-process-lineage.js";
+import { verifyClaudePaneProcess, verifyClaudePaneRuntime, verifyCodexPaneProcess, type NativeProcessRow, type NativeProcessLister, type ClaudeResumeRotation, findExactNativeResumeProcess, listNativeProcesses } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
 
 type PaneIdentityTmux = Pick<TmuxAdapter, "listPanes" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "observePanePid">>;
@@ -101,53 +101,39 @@ export async function rebindAndVerifyPaneIdentity(input: {
     && input.requireExactResumeLineage !== true
     && /^\d+\.\d+\.\d+(?:[-+][\w.-]+)?$/.test(normalizedCommand);
   const claudeProcessProof = claudeWrapper || claudeVersionLabel;
-  // Spec 0016 item 2: a lookup that read nothing records no verdict and leaves the binding unchanged.
-  const lookupFailed = (reason: string): PaneIdentityReconcileResult => ({ ok: false, detail: `tmux pane identity lookup failed: ${reason}` });
-  const unavailableReason = (native: NativeObservationResult | null) =>
-    native?.kind === "unavailable" ? native.reason
-      : native?.kind === "proof" && native.observation.panePid !== pid ? "the pane process changed during the lookup" : null;
   if (input.runtime === "codex") {
     // A shell/Node label describes the wrapper, not the native occupant.
     runtimeMatch = "match";
-    const native = await verifyNativePaneTyped({ target: pane.id, tmux: input.tmux,
+    const native = await verifyCodexPaneProcess({ target: pane.id, tmux: input.tmux,
       listProcesses: input.listProcesses, expectedToken: expectedResumeToken,
-      requireResume: input.requireExactResumeLineage === true }, "codex", true);
-    const failed = unavailableReason(native);
-    if (failed) return lookupFailed(failed);
-    let currentPanes: Awaited<ReturnType<PaneIdentityTmux["listPanes"]>>;
-    try { currentPanes = await input.tmux.listPanes(input.sessionName); }
-    catch (error) { return lookupFailed((error as Error).message); }
-    if (native.kind === "proof" && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.observation.process;
+      requireResume: input.requireExactResumeLineage === true });
+    const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
+    if (native?.panePid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
   } else if (claudeProcessProof) {
     // A known token always requires exact proof. Only non-strict, tokenless
     // shell wrappers may use runtime occupancy; this never proves resume continuity.
     runtimeMatch = "match";
     const observation = { target: pane.id, tmux: input.tmux, listProcesses: input.listProcesses };
     const native = expectedResumeToken !== null
-      ? await verifyNativePaneTyped({ ...observation, expectedToken: expectedResumeToken,
-        rotation: input.requireExactResumeLineage ? input.resumeRotation ?? null : storedRotation(input.db, input.nodeId, expectedResumeToken) },
-      "claude-code", true)
-      : claudeWrapper && !input.requireExactResumeLineage ? await verifyNativePaneTyped(observation, "claude-code", false) : null;
-    const failed = unavailableReason(native);
-    if (failed) return lookupFailed(failed);
-    let currentPanes: Awaited<ReturnType<PaneIdentityTmux["listPanes"]>>;
-    try { currentPanes = await input.tmux.listPanes(input.sessionName); }
-    catch (error) { return lookupFailed((error as Error).message); }
-    let current: Awaited<ReturnType<typeof readPanePid>>;
-    try { current = await readPanePid(input.tmux, pane.id); }
-    catch (error) { return lookupFailed((error as Error).message); }
-    if (current.kind === "unavailable") return lookupFailed("the pane pid could not be read");
-    if (native?.kind === "proof" && current.kind === "pid" && current.pid === pid
-      && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.observation.process;
+      ? await verifyClaudePaneProcess({ ...observation, expectedToken: expectedResumeToken,
+        rotation: input.requireExactResumeLineage ? input.resumeRotation ?? null : storedRotation(input.db, input.nodeId, expectedResumeToken) })
+      : claudeWrapper && !input.requireExactResumeLineage ? await verifyClaudePaneRuntime(observation) : null;
+    const currentPanes = await input.tmux.listPanes(input.sessionName).catch(() => []);
+    const currentPid = await input.tmux.getPanePid(pane.id).catch(() => null);
+    if (native?.panePid === pid && currentPid === pid && currentPanes.length === 1 && currentPanes[0]?.id === pane.id) lineageMatch = native.process;
   } else if (pid !== null && runtimeMatch === "match" && strictNativeLineage) {
-    let rows: NativeProcessRow[];
-    // Full rows (process group, OS executable): the strict finder's launcher rules need them.
-    try { rows = await (input.listProcesses ?? listNativeProcesses)(); }
-    catch (error) { return lookupFailed(`the process list could not be read: ${(error as Error).message}`); }
-    // A successful `ps -A` always lists at least itself, and the pane process was just read.
-    if (rows.length === 0) return lookupFailed("the process list is empty");
-    if (!rows.some((row) => row.pid === pid)) return lookupFailed("the pane pid is not in the process list");
-    lineageMatch = findExactNativeResumeProcess(rows, pid, input.runtime, expectedResumeToken!, input.resumeRotation);
+    try {
+      lineageMatch = findExactNativeResumeProcess(
+        // Full rows (process group, OS executable): the strict finder's launcher rules need them.
+        await (input.listProcesses ?? listNativeProcesses)(),
+        pid,
+        input.runtime,
+        expectedResumeToken!,
+        input.resumeRotation,
+      );
+    } catch {
+      // Missing process evidence is ambiguity, never positive identity.
+    }
   }
   const runtimeAmbiguous = input.runtime === "codex" || claudeProcessProof ? lineageMatch === null : runtimeMatch === "match" && (strictNativeLineage
     ? lineageMatch === null

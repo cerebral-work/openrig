@@ -659,7 +659,7 @@ export function classifyNativePane(rows: NativeProcessRow[], panePid: number, ru
   // A Claude-like row whose executable witness the Claude match needs: refused is positive, exited is no reading.
   const witnessless = under.filter((row) => runtime === "claude-code" && needsClaudeExecutablePath(row) && !row.executablePath);
   if (witnessless.some((row) => row.executablePathError === "refused")) return contrary("a Claude-like process's executable could not be read (refused)");
-  if (witnessless.length > 0) return unavailable("a Claude-like process exited before its executable could be read");
+  if (witnessless.some((row) => row.executablePathError === "exited")) return unavailable("a Claude-like process exited before its executable could be read");
   if (candidates.length === 0) {
     // "No runtime" needs every process under the pane fully read; a candidate chain breaks on a missing start time.
     if (under.some((row) => !row.startedAt)) return unavailable("a process under the pane was not fully read");
@@ -693,7 +693,8 @@ export async function observeNativePaneTyped(input: Parameters<typeof observeNat
  *  process wins over a failed read; anything else is no reading. */
 export function combineNativeSamples(first: NativeObservationResult, second: NativeObservationResult): NativeObservationResult {
   if (first.kind === "proof" && second.kind === "proof") {
-    return first.observation.fingerprint === second.observation.fingerprint ? second : { kind: "unavailable", reason: "the two samples saw different processes" };
+    // Two proofs of different processes: the process holding the conversation changed moments apart (PID reuse, #273).
+    return first.observation.fingerprint === second.observation.fingerprint ? second : { kind: "contrary", reason: "the two samples saw different processes" };
   }
   if (first.kind === "proof" || second.kind === "proof") return { kind: "unavailable", reason: "the two samples disagree" };
   if (first.kind === "contrary") return first;

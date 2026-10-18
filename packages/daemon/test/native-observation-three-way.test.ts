@@ -71,6 +71,11 @@ describe("the three-way observer (spec 0016 item 1)", () => {
   ])("%s is unavailable", (_label, rows) => {
     expect(kind(classifyNativePane(rows, 10, "claude-code", identity))).toBe("unavailable");
   });
+  it("a native Claude with no executable path and no recorded read error is not a candidate (#273's unknown path)", () => {
+    const unknown = claude(11, "tok", { executableName: "2.1.302" });
+    expect(classifyNativePane([shell(), unknown], 10, "claude-code", identity))
+      .toMatchObject({ kind: "contrary", reason: expect.stringMatching(/no runtime/) });
+  });
   it("a native Claude whose executable read hit ENOENT/ESRCH is unavailable; EACCES is contrary", () => {
     const native = (executablePathError?: "exited" | "refused") =>
       claude(11, "tok", { executableName: "2.1.302", executablePathError });
@@ -79,6 +84,11 @@ describe("the three-way observer (spec 0016 item 1)", () => {
     // Control: the same process with its witness read is proof.
     const witnessed = claude(11, "tok", { executableName: "2.1.302", executablePath: "/opt/u/.local/share/claude/versions/2.1.302" });
     expect(kind(classifyNativePane([shell(), witnessed], 10, "claude-code", identity))).toBe("proof");
+  });
+  it("a refused executable read beside a proven Claude is contrary, not ignored", () => {
+    const refused = row(12, 11, 11, "claude --resume tok", "2.1.302", 11, { executablePathError: "refused" });
+    expect(kind(classifyNativePane([shell(), claude(), refused], 10, "claude-code", identity))).toBe("contrary");
+    expect(kind(classifyNativePane([shell(), claude()], 10, "claude-code", identity))).toBe("proof");
   });
   it("precedence: a candidate naming another conversation beside a failed read is contrary", () => {
     const exited = row(12, 11, 11, "claude --resume tok", "2.1.302", 11, { executablePathError: "exited" });
@@ -114,7 +124,7 @@ describe("combining the sweep's two samples (spec 0016 item 1 table)", () => {
   const unavailable: NativeObservationResult = { kind: "unavailable", reason: "u" };
   const columns = [["proof (same)", proof("a")], ["proof (other)", proof("b")], ["contrary", contrary], ["unavailable", unavailable]] as const;
   const table: Record<string, [NativeObservationResult, string[]]> = {
-    proof: [proof("a"), ["proof", "unavailable", "unavailable", "unavailable"]],
+    proof: [proof("a"), ["proof", "contrary", "unavailable", "unavailable"]],
     contrary: [contrary, ["unavailable", "unavailable", "contrary", "contrary"]],
     unavailable: [unavailable, ["unavailable", "unavailable", "contrary", "unavailable"]],
   };

@@ -1,16 +1,13 @@
-// Spec 0016: the sweep and the rebind read a native observation as proof, contrary or unavailable. A failed or partial
-// read is not evidence that the seat's runtime is gone: the sweep records the runtime's unavailable verdict, and the
-// rebind reports the lookup failed without moving the binding. Positive evidence of another process stays a mismatch.
-// These go through the reconcilers' existing interfaces only, so they run unchanged against the base.
+// Spec 0016: the sweep reads a native observation as proof, contrary or unavailable. A failed or partial read is not
+// evidence that the seat's runtime is gone: the sweep records the runtime's unavailable verdict. Positive evidence of
+// another process stays a mismatch. These go through the reconciler's existing interface only, so they run unchanged
+// against the base. (The rebind is unchanged: spec 0016 item 2 is a follow-up.)
 import { describe, it, expect, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
 import type { NativeProcessRow } from "../src/domain/native-process-lineage.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
-import { rebindAndVerifyPaneIdentity } from "../src/domain/seat-attention-reconciler.js";
-import { SessionRegistry } from "../src/domain/session-registry.js";
-import { RigRepository } from "../src/domain/rig-repository.js";
 
 // A pane whose root shell (pid 10) runs under a terminal session whose foreground group is `fg`.
 const row = (pid: number, ppid: number, pgid: number, command: string, executableName: string, fg = 11, extra: Partial<NativeProcessRow> = {}): NativeProcessRow =>
@@ -93,71 +90,5 @@ describe("the identity sweep (spec 0016 item 1)", () => {
     expect(await sweep(codex, async () => rows)).toMatchObject({ verdict: "verified" });
     expect(await sweep(codex, failingOnce(rows))).toMatchObject({ verdict: "mismatch", reason: "tmux_unavailable" });
     expect(await sweep(codex, async () => [shell(10)])).toMatchObject({ verdict: "mismatch", reason: "process_identity_mismatch" });
-  });
-});
-
-describe("the rebind (spec 0016 item 2)", () => {
-  // A seat bound to %3 whose session now lists one pane, %7 (pid 10). `pidFailsFrom` fails the nth pane pid read on.
-  function rebind(opts: { runtime: string; command: string; token?: string; strict?: boolean;
-    listProcesses: () => Promise<NativeProcessRow[]>; listPanesFailsFrom?: number; pidFailsFrom?: number }) {
-    const db = createFullTestDb();
-    const repo = new RigRepository(db), registry = new SessionRegistry(db);
-    const rig = repo.createRig("r"), node = repo.addNode(rig.id, "pod.seat-a", { runtime: opts.runtime });
-    registry.registerSession(node.id, "seat-a@r");
-    registry.updateBinding(node.id, { tmuxSession: "seat-a@r", tmuxPane: "%3" });
-    let listCalls = 0, pidReads = 0;
-    const pidFails = () => ++pidReads >= (opts.pidFailsFrom ?? Infinity);
-    const tmux = {
-      listPanes: vi.fn(async () => { if (++listCalls >= (opts.listPanesFailsFrom ?? Infinity)) throw new Error("tmux: server exited unexpectedly"); return [{ id: "%7" }] as never; }),
-      getPanePid: vi.fn(async () => (pidFails() ? null : 10)),
-      getPaneCommand: vi.fn(async () => opts.command),
-      observePanePid: vi.fn(async () => (pidFails() ? { kind: "unavailable" as const } : { kind: "pid" as const, pid: 10 })),
-    };
-    return {
-      run: () => rebindAndVerifyPaneIdentity({ db, sessionRegistry: registry, tmux, nodeId: node.id, sessionName: "seat-a@r",
-        runtime: opts.runtime, expectedResumeToken: opts.token ?? null, requireExactResumeLineage: opts.strict, listProcesses: vi.fn(opts.listProcesses) }),
-      verdict: () => new SeatIdentityStore(db).getForNode(node.id),
-      pane: () => registry.getBindingForNode(node.id)?.tmuxPane ?? null,
-      close: () => db.close(),
-    };
-  }
-  const psFails = async (): Promise<NativeProcessRow[]> => { throw new Error("ps: timed out"); };
-  const lookupFailed = { ok: false, detail: expect.stringMatching(/^tmux pane identity lookup failed/) };
-
-  it.each([
-    ["the Claude recheck: a failed ps", { runtime: "claude-code", command: "sh", token: "tok", listProcesses: psFails }],
-    ["the Claude recheck: a failed listPanes", { runtime: "claude-code", command: "sh", token: "tok", listProcesses: async () => [shell(), claude()], listPanesFailsFrom: 2 }],
-    ["the Claude recheck: a failed pid read", { runtime: "claude-code", command: "sh", token: "tok", listProcesses: async () => [shell(), claude()], pidFailsFrom: 4 }],
-    ["the tokenless Claude wrapper: a failed ps", { runtime: "claude-code", command: "sh", listProcesses: psFails }],
-    ["the Codex recheck: a failed ps", { runtime: "codex", command: "node", token: "tok", listProcesses: psFails }],
-    ["the Codex recheck: a failed listPanes", { runtime: "codex", command: "node", token: "tok", listProcesses: async () => [shell(), row(11, 10, 11, "codex resume tok", "codex")], listPanesFailsFrom: 2 }],
-    ["the strict branch: a failed ps", { runtime: "claude-code", command: "claude", token: "tok", strict: true, listProcesses: psFails }],
-    ["the strict branch: an empty ps", { runtime: "claude-code", command: "claude", token: "tok", strict: true, listProcesses: async () => [] }],
-  ])("%s reports the lookup failed, records no verdict and leaves the binding unchanged", async (_label, opts) => {
-    const f = rebind(opts);
-    expect(await f.run()).toMatchObject(lookupFailed);
-    expect(f.verdict()).toBeNull();
-    expect(f.pane()).toBe("%3");
-    f.close();
-  });
-
-  it.each([
-    ["the Claude recheck", { runtime: "claude-code", command: "sh", token: "tok", listProcesses: async () => [shell(), claude()] }],
-    ["the Codex recheck", { runtime: "codex", command: "node", token: "tok", listProcesses: async () => [shell(), row(11, 10, 11, "codex resume tok", "codex")] }],
-    ["the strict branch", { runtime: "claude-code", command: "claude", token: "tok", strict: true, listProcesses: async () => [row(10, 1, 10, "claude --resume tok", "claude", 10)] }],
-  ])("control, %s: a proof verifies and rebinds", async (_label, opts) => {
-    const f = rebind(opts);
-    expect(await f.run()).toMatchObject({ ok: true, pane: "%7" });
-    expect(f.verdict()).toMatchObject({ verdict: "verified" });
-    expect(f.pane()).toBe("%7");
-    f.close();
-  });
-
-  it("a contrary observation still records mismatch, binding first", async () => {
-    const f = rebind({ runtime: "claude-code", command: "sh", token: "tok", listProcesses: async () => [shell(), claude(11, "other")] });
-    expect(await f.run()).toMatchObject({ ok: false });
-    expect(f.verdict()).toMatchObject({ verdict: "mismatch" });
-    expect(f.pane()).toBe("%7");
-    f.close();
   });
 });
