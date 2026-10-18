@@ -116,6 +116,7 @@ import { queueTransitionsTsQitemSchema } from "./migrations/112_queue_transition
 import { appliedLaunchDaemonOptOutSchema } from "./migrations/113_applied_launch_daemon_opt_out.js";
 import { nodeRuntimeChangesSchema } from "./migrations/115_node_runtime_changes.js";
 import { nodeRuntimeChangeDeclaredSchema } from "./migrations/116_node_runtime_change_declared.js";
+import { edgesUniqueSchema } from "./migrations/900_edges_unique.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -231,4 +232,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   appliedLaunchDaemonOptOutSchema,
   nodeRuntimeChangesSchema,
   nodeRuntimeChangeDeclaredSchema,
+  edgesUniqueSchema,
 ];

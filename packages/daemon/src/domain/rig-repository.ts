@@ -546,7 +546,12 @@ export class RigRepository {
     return this.db.prepare("DELETE FROM edges WHERE id = ?").run(edgeId).changes > 0;
   }
 
+  /** Store an edge, or return the stored one: the table holds at most one row per (rig, source, target, kind), so a
+   *  duplicate listed by an expand fragment, a `rig add` member or a rig spec is collapsed, not stored twice (CER-3002). */
   addEdge(rigId: string, sourceId: string, targetId: string, kind: string): Edge {
+    const existing = this.db.prepare("SELECT * FROM edges WHERE rig_id = ? AND source_id = ? AND target_id = ? AND kind = ?")
+      .get(rigId, sourceId, targetId, kind) as EdgeRow | undefined;
+    if (existing) return this.rowToEdge(existing);
     const id = ulid();
     this.db
       .prepare(

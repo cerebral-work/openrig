@@ -205,7 +205,12 @@ describe("DELETE /api/rigs/:rigId/edges (CER-2981)", () => {
 
   it("duplicate rows of one (from, to, kind) are all removed in one call, one event each, leaving no cycle (the lead's ruling)", async () => {
     const { rig, edge } = seed();
-    const twin = setup.rigRepo.addEdge(rig.id, edge.sourceId, edge.targetId, "delegates_to");
+    // Since CER-3002, addEdge collapses a duplicate and migration 900 indexes against one, so a twin exists only in a
+    // database without that index (before 900 ran, or after an upstream rebuild of `edges` dropped it): model that one.
+    db.exec("DROP INDEX idx_edges_unique");
+    const twin = { id: "e-twin" };
+    db.prepare("INSERT INTO edges (id, rig_id, source_id, target_id, kind) VALUES (?, ?, ?, ?, 'delegates_to')")
+      .run(twin.id, rig.id, edge.sourceId, edge.targetId);
     const back = setup.rigRepo.addEdge(rig.id, edge.targetId, edge.sourceId, "delegates_to"); // closes a cycle with either twin
     const res = await del(rig.id, EDGE, { "X-OpenRig-Session": "orch-lead@cortex" });
     expect(res.status, await res.clone().text()).toBe(200);

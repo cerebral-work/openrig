@@ -43,7 +43,27 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 13. **No validity rule applies.** Edges are optional and only shape-checked, and removing one cannot create a cycle. Removing a cycle edge lets the rig grow again and lets restore launch the seats it held.
 14. **Runtime effect:** a removed `delegates_to` edge stops counting for `queue-owner.ts` routing and `rig whoami` at once.
 15. **Authorization** is the same as `rig edge add`: the `/api/*` `browserBoundary`. The add records `rig.edge_added` (item 3, CER-3001) and the remove `rig.edge_removed`, so both directions are audited the same way.
-16. **CLI:** `rig edge remove <rig-id> <from> <to> --kind <kind> [--json]`. Docs: `docs/reference/rig-spec.md` and the capability map describe it.
+16. **CLI:** `rig edge remove <rig-id> <from> <to> --kind <kind> [--json]`.
+
+### At most one row per edge (CER-3002)
+
+17. **The rule.** An edge's identity is (rig, source, target, kind), and the edges table holds at most one row for each. Before CER-3002 the table had no unique constraint, and every path that stores edges inserted each listed entry. So an expand fragment, a `rig add` member or a rig spec that listed an edge twice stored it twice.
+18. **Every insert path:** `RigRepository.addEdge` returns the stored edge when an identical one exists and writes no row. That one choke point covers expand, `rig add`, `rig up` and `instantiate` alike. A duplicate entry is collapsed, not refused, as `rig edge add` already answers a repeat with `exists`.
+19. **Migration `900_edges_unique`** cleans up existing databases, in one migration transaction:
+    - it records one `rig.edge_removed` event for every duplicate row except the earliest of each group, the earliest being the lowest rowid, i.e. insertion order. Each event carries `{ rigId, edgeId, from, to, kind, by }` with `by = { session: "migration 900_edges_unique", provenance: "migration" }`;
+    - it deletes those rows;
+    - it creates the unique index `idx_edges_unique` on `(rig_id, source_id, target_id, kind)`.
+20. **Migration numbering in the fork.** Fork-only migrations take numbers 900 to 999 from CER-3002 on, so they never collide with upstream's sequence. Upstream was at 114 on 2026-10-18 and will continue at 115 and up.
+    - The fork's earlier 115 and 116 keep their numbers: databases record applied migrations by name, so renaming them would re-run them.
+    - `migrate.ts` sorts migrations by name and applies every one not yet recorded, so 900 runs after every 1xx.
+    - An upstream migration that rebuilds the `edges` table would drop the index, so check at each upstream sync.
+21. **Rollback to cw.4.3** (a binary without 900, on a database where it ran):
+    - **Startup:** `migrate.ts` ignores recorded migrations it doesn't know, so the binary starts normally and the unique index stays.
+    - **Insert paths:** cw.4.3's `addEdge` has no duplicate check. A duplicate listed entry then fails on the index (`SQLITE_CONSTRAINT_UNIQUE`):
+      - in materialize (expand, `rig add`) and `instantiate`, the transaction rolls back and the request fails, instead of storing a duplicate;
+      - in `instantiateOnce` (`rig up`) the best-effort catch skips the duplicate;
+      - `rig edge add` checks for the stored edge first and is unaffected.
+    - **No restore:** a rollback does not bring back the duplicate rows 900 removed; their `rig.edge_removed` events record them. Docs: `docs/reference/rig-spec.md` and the capability map describe it.
 
 ## Requirements
 
@@ -62,6 +82,9 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 - REQ-0008-13: If the rig is archived, the kind is invalid, or either logical id is not a node of the rig, then the daemon shall reject the removal before any write.
 - REQ-0008-14: When `rig edge add` inserts an edge, the daemon shall record a `rig.edge_added` event naming the edge, the caller's transport identity and its provenance, in the same transaction as the insert.
 - REQ-0008-15: If `rig edge add` writes no edge row (an existing edge, or a rejection), then the daemon shall record no `rig.edge_added` event.
+- REQ-0008-16: When any path stores an edge identical in rig, source, target and kind to a stored edge, the daemon shall keep the stored edge and write no row.
+- REQ-0008-17: When migration `900_edges_unique` runs, it shall delete every duplicate edge row except the earliest of its group, and record one `rig.edge_removed` event for each deleted row, before adding a unique index on (rig, source, target, kind).
+- REQ-0008-18: The daemon shall number fork-only migrations from 900 to 999.
 
 ## Plan
 
@@ -75,6 +98,8 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 cd packages/daemon && npx vitest run test/rig-edge-add-route.test.ts test/rig-expansion-route.test.ts
 cd packages/cli && npx vitest run test/edge.test.ts test/lazy-program.test.ts test/expand.test.ts
 ```
+
+Duplicates (CER-3002): `rig-growth-graph-cycle.test.ts` (an expand whose fragment lists a pod-local edge, and a cross-pod edge, twice stores each once) and `edges-unique-migration.test.ts` (`addEdge` returns the stored edge; a database at 116 with duplicate groups: the earliest row of each kept, one event per removed row, the index refuses a duplicate; and a binary without 900 still migrates that database).
 
 Audit (CER-3001): `rig-edge-add-route.test.ts` (an add records `rig.edge_added` with the edge and the caller's identity, a relayed caller as `relay:v1`, no caller as null; a repeat and a rejection record none; an insert that fails leaves no event and no row).
 
