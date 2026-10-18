@@ -1726,9 +1726,13 @@ export class SeatHandoverService {
     this.eventBus.notifySubscribers(committed.event);
     if (committed.runtimeRecord) this.eventBus.notifySubscribers(committed.runtimeRecord.event);
     if (swapUndeclared !== null) {
+      const landed = input.change
+        ? `The runtime change is COMMITTED: the seat runs ${input.change.to.runtime ?? "its target runtime"} in "${input.discovered.tmuxSession}".`
+        : `The handover is COMMITTED: "${input.discovered.tmuxSession}" is the seat's occupant.`;
       return { ok: false, code: "handover_committed_swap_undeclared",
         message: `The handover committed and "${input.discovered.tmuxSession}" is the seat's occupant, but the activity oracle did not take the swap: ${swapUndeclared}`,
-        guidance: "Do not retry the handover or relaunch the seat: the change landed. The seat's activity evidence may reflect its predecessor until the successor reports again." };
+        guidance: `${landed} Do NOT retry, relaunch or revert to recover. Only the activity oracle's occupant declaration failed, so the seat's `
+          + "activity state may still reflect its predecessor. No rig command re-declares the occupant; report this to the operator." };
     }
     const postStatus = this.statusService.getStatus(`${input.status.logical_id}@${input.status.rig_name}`);
     const currentStatus = postStatus.ok

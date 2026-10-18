@@ -1140,6 +1140,8 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
   }
 
   if (res.status >= 400) {
+    // A committed handover whose occupant declaration failed names its code, so it is never read as a failed handover.
+    if ((res.data as SeatStatusError).code === "handover_committed_swap_undeclared") console.error("handover_committed_swap_undeclared");
     printSeatError(res.data as SeatStatusError, `Seat handover failed (HTTP ${res.status})`);
     process.exitCode = res.status >= 500 ? 2 : 1;
     return;

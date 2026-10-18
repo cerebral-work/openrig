@@ -220,7 +220,9 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(result.code).toBe("handover_committed_swap_undeclared");
     expect(result.message).toContain("committed");
     expect(result.guidance).not.toContain("--fresh --stop");
-    expect(result.guidance).toContain("Do not retry");
+    expect(result.guidance).toContain("The runtime change is COMMITTED: the seat runs claude-code");
+    expect(result.guidance).toContain("Do NOT retry, relaunch or revert to recover.");
+    expect(result.guidance).toContain("No rig command re-declares the occupant; report this to the operator.");
     expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
     // The committed successor is untouched and is the seat's occupant on the target runtime.
     expect(f.db.prepare("SELECT status FROM discovered_sessions").all()).toEqual([{ status: "claimed" }]);
