@@ -99,6 +99,7 @@ describe("removeTmuxTestRoot", () => {
 
   // Review r1 S1: a test with fake timers (vi.useFakeTimers freezes Date) still gets its 100 ms between attempts.
   it("waits for real between attempts under fake timers", { timeout: 5_000 }, () => {
+    const before = Date.now(); // real time: taken before the timers are faked
     vi.useFakeTimers();
     try {
       const root = mkdtempSync(join(tmpdir(), "tmux-test-root-"));
@@ -109,6 +110,8 @@ describe("removeTmuxTestRoot", () => {
     } finally {
       vi.useRealTimers();
     }
+    // Review r1 on #47: the one retry waited a real ~100 ms, not zero.
+    expect(Date.now() - before).toBeGreaterThanOrEqual(95);
   });
 
   it("rethrows any other error at once", () => {
