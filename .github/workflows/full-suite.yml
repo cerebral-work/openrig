@@ -27,6 +27,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
+          # Full history and tags: the CLI's release-surface tests read release tags (as tests.yml does).
+          fetch-depth: 0
           persist-credentials: false
       - uses: actions/setup-node@v4
         with:
