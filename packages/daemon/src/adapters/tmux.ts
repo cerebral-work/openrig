@@ -847,6 +847,8 @@ export class TmuxAdapter {
       // positive idle-shell process evidence before every write, including an
       // extra Enter for our probe. A startup menu or child process gets no input.
       if (await verifyPaneIdleShell({ target, tmux: this, listProcesses: this.shellReadiness.listProcesses })) {
+        const mode = await this.leavePaneMode(target);
+        if (!mode.ok) return mode;
         if (!sent) {
           const text = await this.sendText(target, probe);
           if (!text.ok) return text;
@@ -859,6 +861,23 @@ export class TmuxAdapter {
     }
     return { ok: false, code: "shell_not_ready",
       message: "The new shell did not execute its readiness probe within 10 seconds; no runtime launch was sent." };
+  }
+
+  /** A failing cosmetic hook (session-created, client-attached) can leave a fresh pane in view-mode, and
+   *  while a read-only client is attached, keys sent to a pane in a mode fail. The pane was created for
+   *  this launch, so leave any mode before writing to it. */
+  private async leavePaneMode(target: string): Promise<TmuxResult> {
+    const pane = exactTarget(target, "pane");
+    try {
+      const inMode = await this.run(["tmux", "display-message", "-p", "-t", pane, "#{pane_in_mode}"],
+        `tmux display-message -p -t ${shellQuote(pane)} ${shellQuote("#{pane_in_mode}")}`);
+      if (inMode.trim() === "1") {
+        await this.run(["tmux", "copy-mode", "-q", "-t", pane], `tmux copy-mode -q -t ${shellQuote(pane)}`);
+      }
+      return { ok: true };
+    } catch (err) {
+      return classifyWriteError(err);
+    }
   }
 
   async sendKeys(target: string, keys: string[], beforeInput?: () => void): Promise<TmuxResult> {

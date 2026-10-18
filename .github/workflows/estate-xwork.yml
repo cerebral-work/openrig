@@ -45,6 +45,7 @@ jobs:
         run: >-
           npx vitest run --maxWorkers 2
           packages/daemon/test/fresh-shell-launch.test.ts
+          packages/daemon/test/fresh-shell-pane-mode.test.ts
           packages/daemon/test/tmux-shell-command.test.ts
           packages/daemon/test/tmux-adapter.test.ts
           packages/daemon/test/tmux-argv-exec.test.ts
