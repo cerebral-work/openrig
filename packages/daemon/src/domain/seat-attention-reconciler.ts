@@ -6,13 +6,13 @@ import { CLAUDE_RESUME_ROTATION_COLUMNS, claudeResumeRotation, type SessionRegis
 import type { EventBus } from "./event-bus.js";
 import type { AgentActivityStore } from "./agent-activity-store.js";
 import type { AgentActivity, SeatIdentityVerdict } from "./types.js";
-import type { TmuxAdapter } from "../adapters/tmux.js";
+import { readPanePid, type TmuxAdapter } from "../adapters/tmux.js";
 import { classifyPaneRuntimeMatch } from "./seat-identity-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { verifyClaudePaneProcess, verifyClaudePaneRuntime, verifyCodexPaneProcess, type NativeProcessRow, type NativeProcessLister, type ClaudeResumeRotation, findExactNativeResumeProcess, listNativeProcesses } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
 
-type PaneIdentityTmux = Pick<TmuxAdapter, "listPanes" | "getPanePid" | "getPaneCommand">;
+type PaneIdentityTmux = Pick<TmuxAdapter, "listPanes" | "getPanePid" | "getPaneCommand"> & Partial<Pick<TmuxAdapter, "observePanePid">>;
 type ProcessRow = NativeProcessRow;
 
 export type PaneIdentityReconcileResult =
@@ -78,7 +78,10 @@ export async function rebindAndVerifyPaneIdentity(input: {
   let pid: number | null;
   let command: string | null;
   try {
-    pid = await input.tmux.getPanePid(pane.id);
+    const read = await readPanePid(input.tmux, pane.id);
+    // Spec 0015: the listing above just showed this pane, so a failed pid read is no evidence it is gone.
+    if (read.kind === "unavailable") return { ok: false, detail: "tmux pane identity lookup failed: the pane pid could not be read" };
+    pid = read.kind === "pid" ? read.pid : null;
     command = await input.tmux.getPaneCommand(pane.id);
   } catch (error) {
     return { ok: false, detail: `tmux pane identity lookup failed: ${(error as Error).message}` };
