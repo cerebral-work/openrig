@@ -217,6 +217,32 @@ describe("POST /api/rigs/:rigId/expand", () => {
     expect(body.ok).toBe(true);
   });
 
+  it("expansion whose cross-pod edges close a launch-order cycle returns 400 cycle_error (spec 0014)", async () => {
+    const rig = seedRig();
+    await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pod: terminalPod("orch", "lead") }),
+    });
+
+    const res = await setup.app.request(`/api/rigs/${rig.id}/expand`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pod: terminalPod("dev", "impl"),
+        crossPodEdges: [
+          { kind: "delegates_to", from: "orch.lead", to: "dev.impl" },
+          { kind: "delegates_to", from: "dev.impl", to: "orch.lead" },
+        ],
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    const body = await res.json();
+    expect(body).toMatchObject({ ok: false, code: "cycle_error" });
+    expect(body.error).toContain("dev.impl delegates_to orch.lead, orch.lead delegates_to dev.impl");
+  });
+
   it("expansion with edge from new pod to existing node launches only the new node", async () => {
     const rig = seedRig();
     await setup.app.request(`/api/rigs/${rig.id}/expand`, {

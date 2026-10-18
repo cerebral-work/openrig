@@ -293,7 +293,7 @@ export function agentImagesRoutes(deps: AgentImageRoutesDeps): Hono {
       const status =
         outcome.code === "rig_not_found" || outcome.code === "pod_not_found" ? 404
         : outcome.code === "member_conflict" ? 409
-        : outcome.code === "edge_unresolved" || outcome.code === "validation_failed" || outcome.code === "preflight_failed" ? 400
+        : outcome.code === "edge_unresolved" || outcome.code === "cycle_error" || outcome.code === "validation_failed" || outcome.code === "preflight_failed" ? 400
         : 500;
       // A kept image is already pinned/protected even if launch failed — report
       // it honestly so the operator knows it was retained.
