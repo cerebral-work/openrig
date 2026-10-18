@@ -277,6 +277,20 @@ describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error
     return { f, oracle, swap };
   };
 
+  it("a respawn refused by the seat env allow-list (#16) says to fix the seat env policy before relaunching", async () => {
+    const f = fixture();
+    f.tmux.respawnPane.mockResolvedValue({ ok: false, code: "seat_env_refused",
+      message: "dev-impl@rt-rig: the seat env allow-list could not be applied (step: resolve the seat env policy), so the launch was refused" });
+    const result = await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(result.guidance).toContain("The seat env allow-list could not be applied");
+    expect(result.guidance).toContain("rig config set seat_env.mode filter");
+    expect(result.guidance).toContain(`then relaunch with: rig seat launch ${SEAT} --fresh --stop`);
+    expect(f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id))
+      .toEqual({ failure: "successor_create_failed at create-successor:create_successor:seat_env_refused" });
+  });
+
   it("a committed change whose declaration succeeds is marked declared at commit, by its operator", async () => {
     const f = fixture();
     expect((await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,

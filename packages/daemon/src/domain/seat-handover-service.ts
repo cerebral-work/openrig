@@ -137,7 +137,7 @@ export interface SeatHandoverInput {
 class RevertSlotMovedError extends Error {}
 
 /** What a failed runtime change leaves the operator to do: nothing, check whether the predecessor still runs, or relaunch. */
-type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch";
+type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch" | "fix-seat-env";
 
 function runtimeSideOf(state: RevertBefore): RuntimeSide {
   return {
@@ -755,7 +755,8 @@ export class SeatHandoverService {
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
         guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
       }, `create-successor:${launch.step}:${launch.code}`,
-        launch.code === "retiree_not_terminated" ? "check-seat" : launch.replacementStarted ? "relaunch" : "none");
+        launch.code === "retiree_not_terminated" ? "check-seat" : launch.code === "seat_env_refused" ? "fix-seat-env"
+          : launch.replacementStarted ? "relaunch" : "none");
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
@@ -1503,6 +1504,12 @@ export class SeatHandoverService {
       const relaunch = `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"`;
       result = { ...result, guidance: recovery === "relaunch"
         ? `The node still records ${previous}. Relaunch the seat under it with: ${relaunch}`
+        : recovery === "fix-seat-env"
+          // Spec 0013 (#16): the respawn was refused because the seat env allow-list could not be applied, after the
+          // predecessor had ended; a relaunch is refused the same way until the policy applies again.
+          ? `The seat env allow-list could not be applied, so no successor started; the predecessor has ended, and the node `
+            + `still records ${previous}. Fix the seat env policy first (rig config set seat_env.mode filter rolls it back), `
+            + `then relaunch with: ${relaunch}`
         : recovery === "check-seat"
           ? `The predecessor may have been signalled (TERM, then KILL) at ${step} and was not seen to exit; its pane is set to `
             + `stay open, and the node still records ${previous}. Check the seat with rig capture ${change.seatRef}: if the `
