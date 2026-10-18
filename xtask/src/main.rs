@@ -5,6 +5,7 @@
 //!   - `projectfile-check`     Validate `projectfile.yaml` identity, repositories and version
 //!   - `stages-check`          Verify `xtask/src/stages.rs` matches `org.projectfile.ci.nodes`
 //!   - `spec-check`            Validate `.lean-spec`, `.ears-spec` and `specs/NNNN-*.md`
+//!   - `workflow-trigger-check` Refuse `pull_request_target` / `workflow_run` in `.github/workflows/` (CER-2908)
 //!   - `branch-hygiene`        Verify the fork branch model (`main`, `cerebral`, `gitbutler/workspace`, `<type>/<slug>`)
 //!   - `cargo-fmt`             `cargo fmt --all -- --check`
 //!   - `cargo-clippy`          `cargo clippy -j 2 -p xtask --all-targets -- -D warnings`
@@ -15,7 +16,7 @@
 //!   - `npm-build-package`     `npm run build:package`
 //!
 //! Commands:
-//!   - `hygiene`               Fast zero-compile gates (projectfile, stages, spec, branch)
+//!   - `hygiene`               Fast zero-compile gates (projectfile, stages, spec, workflow triggers, branch)
 //!   - `check` | `xwork`       All gates, BLAKE3 content-addressed checkpoints in `target/xtask-cas/`
 //!   - `xwork --skip <gate>`   Exclude a gate (repeatable); excluded gates are never recorded as passed
 //!   - `xwork --pre-push`      Hygiene plus cargo gates if Rust inputs changed vs the `origin/cerebral` merge-base
@@ -148,6 +149,7 @@ fn execute_gate(root: &Path, gate: &str, break_check: bool) -> Result<()> {
         "projectfile-check" => checks::check_projectfile(root, break_check),
         "stages-check" => checks::check_stages(root, break_check),
         "spec-check" => checks::check_specs(root, break_check),
+        "workflow-trigger-check" => checks::check_workflow_triggers(root, break_check),
         "branch-hygiene" => checks::check_branch_hygiene(root, break_check),
         "cargo-fmt" => run_cmd(root, "cargo", &["fmt", "--all", "--", "--check"]),
         "cargo-clippy" => run_cmd(
