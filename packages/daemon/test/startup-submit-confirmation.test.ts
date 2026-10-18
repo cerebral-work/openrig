@@ -67,7 +67,9 @@ describe("startup prompt submission", () => {
       binding: { id: "binding", nodeId: node.id, tmuxSession: name, tmuxPane: "%1", tmuxWindow: null,
         cmuxWorkspace: null, cmuxSurface: null, updatedAt: "", cwd: "/fixture" },
       adapter, plan: { runtime: "claude-code", cwd: "/fixture", entries: [], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] },
-      resolvedStartupFiles: challengeOnly ? [] : [{ path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture", deliveryHint: "send_text", required: true, appliesOn: ["fresh_start"] }],
+      // Not required: these cases pin the screen check's mechanics. A required send that stays unverified ends startup
+      // attention_required (spec 0012); that outcome has its own cases, one per unverified path, below.
+      resolvedStartupFiles: challengeOnly ? [] : [{ path: "role.md", absolutePath: "/fixture/role.md", ownerRoot: "/fixture", deliveryHint: "send_text", required: false, appliesOn: ["fresh_start"] }],
       startupActions: challengeOnly ? [{ type: "startup_proof", value: "authenticated", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }] : [{ type: "send_text", builtin: "session_identity", value: "OpenRig session identity: worker@startup-submit", phase: "after_ready", appliesOn: ["fresh_start"], idempotent: true }],
       isRestore: false, ...overrides,
     });
@@ -161,7 +163,8 @@ describe("startup prompt submission", () => {
       const f = fixture(0, "claude-code", false, true);
       if (mode === "throw") f.tmux.capturePaneContent.mockRejectedValueOnce(new Error("capture unavailable"));
       else f.tmux.capturePaneContent.mockResolvedValueOnce(mode === "null" ? null : "❯ a different body\n────────────────────\n? for shortcuts");
-      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("first.md"), file("second.md")] });
+      // first.md is not required here: a required one would end attention_required (spec 0012, covered below).
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("first.md", false), file("second.md")] });
       expect(result).toMatchObject({ ok: true, startupStatus: "ready", submission: { status: "unverified" } });
       expect(result.warnings).toEqual([expect.stringContaining("Startup submission unverified")]);
       expect(result.warnings!.join()).not.toContain("press Enter");
@@ -183,7 +186,8 @@ describe("startup prompt submission", () => {
       f.tmux.capturePaneContent.mockResolvedValueOnce(null);
       const send = f.tmux.sendText.getMockImplementation()!;
       f.tmux.sendText.mockImplementationOnce(send).mockRejectedValueOnce(new Error("paste unavailable"));
-      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("first.md"), file("bad.md", required)] });
+      // first.md is not required, so only bad.md's own requiredness decides the outcome.
+      const result = await f.start({ startupActions: [], resolvedStartupFiles: [file("first.md", false), file("bad.md", required)] });
       expect(result.ok).toBe(!required);
       expect(result.warnings).toEqual([expect.stringContaining("unverified")]);
       if (!result.ok) expect(result.errors).toEqual(["Post-launch file delivery failed: bad.md: paste unavailable"]);
@@ -480,13 +484,15 @@ describe("startup prompt submission", () => {
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(2);
     expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(3);
   });
-  it("stops looking when our collapsed paste gives way to a screen it cannot read", async () => {
+  // Spec 0012: a screen with no closing rule gets the bounded boundary re-look (10 more looks), observation only.
+  it("looks at most the boundary bound when our collapsed paste gives way to a screen it cannot read", async () => {
     const f = fixture(Infinity);
     f.tmux.capturePaneContent.mockImplementationOnce(async () => ownPaste(sentPrompt(f)))
       .mockResolvedValue("A different question\n❯ 1. Continue\n  2. Cancel\n");
     expect(await f.start()).toMatchObject({ ok: true, submission: { status: "unverified",
       reasons: ["Startup submission is unverified: the current composer boundary was not recognized."] } });
-    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(2);
+    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(12);
+    expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
   });
   it("keeps the first observation when a re-look fails", async () => {
@@ -571,14 +577,16 @@ describe("startup prompt submission", () => {
     const event = f.db.prepare("SELECT payload FROM events WHERE type = 'node.startup_ready'").get() as { payload: string };
     const submission = JSON.parse(event.payload).submission;
     expect(result).toMatchObject({ ok: true, startupStatus: "ready", submission });
+    // Spec 0012: at initial, the unrecognized boundary is looked at 10 more times (first look and last look recorded).
+    const observation = { phase, reason: "unrecognized_composer_boundary", markerLine: 2,
+      closingRuleLine: null, observed: null, firstDifferenceByte: null, footerClass: "unrecognized" };
     expect(submission).toMatchObject({ status: "unverified", reasons: [reason], diagnostics: [{
       retry: phase === "initial" ? "not_run" : "ok",
-      observations: [{ phase, reason: "unrecognized_composer_boundary", markerLine: 2,
-        closingRuleLine: null, observed: null, firstDifferenceByte: null }],
+      observations: phase === "initial" ? [{ ...observation, look: 0 }, { ...observation, look: 10 }] : [observation],
     }] });
     expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(phase === "initial" ? 1 : 2);
-    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(phase === "initial" ? 1 : 3);
+    expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(phase === "initial" ? 11 : 3);
     expect(f.submitted).toHaveLength(1);
   });
 
@@ -594,7 +602,7 @@ describe("startup prompt submission", () => {
       startupAttemptId: expect.stringMatching(/^[0-9a-f-]{36}$/), sendOrder: 1, source: "initial_identity", retry: "not_run",
       observations: [{ phase: "initial", reason: "extracted_text_mismatch", normalization: "whitespace-stripped-utf8",
         expected: digest(f.tmux.sendText.mock.calls[0]![1].replace(/\s+/g, "")), observed: digest("Xäb"),
-        firstDifferenceByte: 0, markerLine: 2, closingRuleLine: 4, capturedLines: 5,
+        firstDifferenceByte: 0, markerLine: 2, closingRuleLine: 4, capturedLines: 5, footerClass: "shortcuts_hint",
         captureScrollbackLines: 200, windowsOmitted: "unclassified-startup-text" }],
     }]);
     expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(1);
@@ -707,6 +715,157 @@ describe("startup prompt submission", () => {
     expect(await f.start()).toMatchObject({ ok: true, startupStatus: "ready", submission: { status: "unverified" } });
     expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
     expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(1);
+  });
+
+  // Spec 0012: an unrecognized composer boundary is looked at again; the seat's own transcript may confirm the
+  // send; a required send still unverified ends startup attention_required. Nothing is ever resent.
+  describe("composer boundary re-look, transcript confirmation and required sends (spec 0012)", () => {
+    const UNRECOGNIZED = "Previous turn\n❯ \nWorking…\n"; // a marker, no closing rule
+    const boundaryFirst = (f: ReturnType<typeof fixture>, unrecognizedLooks: number) => {
+      const real = f.tmux.capturePaneContent.getMockImplementation()!;
+      let looks = 0;
+      f.tmux.capturePaneContent.mockImplementation(async (target: string, lines?: number) => (++looks <= unrecognizedLooks ? UNRECOGNIZED : real(target, lines)));
+    };
+    // The launch reports the id on its own command line, as every ClaudeCodeAdapter launch branch does.
+    const withTranscript = (f: ReturnType<typeof fixture>, outcome: object) => {
+      vi.mocked(f.adapter.launchHarness).mockResolvedValue({ ok: true, resumeToken: "own-launch-id", resumeType: "claude_id" });
+      const confirm = vi.fn(async (_binding: unknown, _sessionId: string, _text: string, _sentAtMs: number) => outcome);
+      (f.adapter as unknown as { confirmStartupText: typeof confirm }).confirmStartupText = confirm;
+      return confirm;
+    };
+
+    it("verifies a send whose boundary is unrecognized at first and recognized on a later look", async () => {
+      const f = fixture(0);
+      boundaryFirst(f, 3);
+      const result = await f.start();
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
+      expect(result).not.toHaveProperty("submission");
+      expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(4);
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+    });
+
+    it("looks again at most 10 times, then ends a required send attention_required without resending", async () => {
+      const f = fixture(0);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const result = await f.start({ resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("expected attention_required");
+      expect(result.errors.join("\n")).toMatch(/sent.*not confirmed/);
+      expect(result.errors.join("\n")).toMatch(/Nothing was resent/);
+      expect(f.tmux.capturePaneContent).toHaveBeenCalledTimes(11);
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+      const failed = f.db.prepare("SELECT payload FROM events WHERE type = 'node.startup_failed'").get() as { payload: string };
+      const payload = JSON.parse(failed.payload);
+      expect(payload.freshContextPending).toBeUndefined();
+      expect(payload.submissionDiagnostics[0].observations.at(-1)).toMatchObject({ reason: "unrecognized_composer_boundary", footerClass: "no_rule" });
+    });
+
+    it("verifies from the seat's own transcript while the screen stays unrecognized", async () => {
+      const f = fixture(0);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(f, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      const result = await f.start({ resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
+      expect(result).not.toHaveProperty("submission");
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm.mock.calls[0]![1]).toBe("own-launch-id");
+      expect(confirm.mock.calls[0]![2]).toBe(f.tmux.sendText.mock.calls[0]![1]);
+      expect(typeof confirm.mock.calls[0]![3]).toBe("number");
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+    });
+
+    it("confirms a skipped launch only for the id that launch passed, and never without one", async () => {
+      // The required file goes out through the real Claude delivery as its own checked send.
+      const restore = { isRestore: true, skipHarnessLaunch: true, resolvedStartupFiles: [file("role.md")], startupActions: [] };
+      const unnamed = fixture(0, "claude-code", false, true);
+      unnamed.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const notCalled = withTranscript(unnamed, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      expect(await unnamed.start(restore)).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      expect(unnamed.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(notCalled).not.toHaveBeenCalled();
+      expect(unnamed.adapter.launchHarness).not.toHaveBeenCalled();
+
+      const named = fixture(0, "claude-code", false, true);
+      named.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(named, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      expect(await named.start({ ...restore, launchSessionId: "resumed-T1" })).toMatchObject({ ok: true, startupStatus: "ready" });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm.mock.calls[0]![1]).toBe("resumed-T1");
+    });
+
+    it.each([["claude_id", "seat-token"], ["claude_name", undefined]])("confirms a resume by id with that id, and a resume by name never (%s)", async (resumeType, expected) => {
+      const f = fixture(0, "claude-code", false, true);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(f, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      vi.mocked(f.adapter.launchHarness).mockResolvedValue({ ok: true, resumeToken: "seat-token", resumeType });
+      await f.start({ isRestore: true, resumeToken: "seat-token", resumeType, resolvedStartupFiles: [file("role.md")], startupActions: [] });
+      expect(vi.mocked(f.adapter.launchHarness).mock.calls[0]![1]).toMatchObject({ resumeToken: "seat-token" });
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(confirm.mock.calls.map(c => c[1])).toEqual(expected ? [expected] : []);
+    });
+
+    it("never confirms a fork launch from the transcript", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(f, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      vi.mocked(f.adapter.launchHarness).mockResolvedValue({ ok: true, resumeToken: "fork-id", resumeType: "claude_id" });
+      const result = await f.start({ forkSource: { kind: "native_id", value: "parent-id" }, resolvedStartupFiles: [file("role.md")], startupActions: [] });
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(f.adapter.launchHarness).mock.calls[0]![1]).toMatchObject({ forkSource: { value: "parent-id" } });
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      expect(confirm).not.toHaveBeenCalled();
+    });
+
+    it("names a single text-free enqueue startup_text_enqueued_unconfirmed, still attention_required", async () => {
+      const f = fixture(0);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      withTranscript(f, { outcome: "enqueued_unconfirmed", at: "2026-10-17T23:45:11.080Z" });
+      const result = await f.start({ resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("expected attention_required");
+      expect(result.errors.join("\n")).toMatch(/startup_text_enqueued_unconfirmed.*2026-10-17T23:45:11\.080Z/);
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps today's ready-with-warning for a send that carries no required file", async () => {
+      const f = fixture(0);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const result = await f.start({ resolvedStartupFiles: [file("notes.md", false)] });
+      expect(result).toMatchObject({ ok: true, startupStatus: "ready", submission: { status: "unverified" } });
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+    });
+
+    it("treats a required post-launch file as required on its own send, after a non-required bundle", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.readFile.mockImplementation(p => `Body of ${p}`);
+      const real = f.tmux.capturePaneContent.getMockImplementation()!;
+      f.tmux.capturePaneContent.mockImplementation(async (target: string, lines?: number) =>
+        (f.tmux.sendText.mock.calls.length >= 2 ? UNRECOGNIZED : real(target, lines)));
+      const result = await f.start({ resolvedStartupFiles: [file("notes.md", false), file("context.md", true)] });
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      if (result.ok) throw new Error("expected attention_required");
+      expect(result.errors.join("\n")).toContain("post_launch_file");
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(2);
+      expect(f.tmux.sendKeys).toHaveBeenCalledTimes(2);
+    });
+
+    it.each([
+      ["an unavailable capture", (f: ReturnType<typeof fixture>) => { f.tmux.capturePaneContent.mockResolvedValue(null); }],
+      ["a composer holding other text", (f: ReturnType<typeof fixture>) => {
+        f.tmux.capturePaneContent.mockResolvedValue("Previous turn\n❯ a different body\n────────────────────\n? for shortcuts\n"); }],
+      ["a thrown capture", (f: ReturnType<typeof fixture>) => { f.tmux.capturePaneContent.mockRejectedValue(new Error("capture unavailable")); }],
+    ])("ends a required send attention_required on %s, with one paste and one Enter", async (_name, arrange) => {
+      const f = fixture(0);
+      arrange(f);
+      const result = await f.start({ resolvedStartupFiles: [file("role.md")] });
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+    });
   });
 
 });

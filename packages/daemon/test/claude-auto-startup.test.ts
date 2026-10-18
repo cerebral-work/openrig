@@ -10,7 +10,9 @@ import type { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
 
 const token = "00000000-0000-4000-8000-000000000006";
-const autoScreen = "Restored conversation\n─────────\n❯\u00a0\n─────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n";
+// Claude's composer rules span the pane; a rule shorter than 10 is not recognized, and since spec 0012 a required
+// send the check cannot verify ends startup attention_required.
+const autoScreen = "Restored conversation\n────────────────────\n❯\u00a0\n────────────────────\n  ⏵⏵ auto mode on (shift+tab to cycle) · ← for agents\n";
 const payload = "RC6 harmless startup content";
 const startedAt = "Thu Oct  1 05:53:16 2026";
 

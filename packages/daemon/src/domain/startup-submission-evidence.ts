@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { StartupTranscriptConfirmation } from "./startup-transcript-evidence.js";
 import {
   composerPromptClassForRuntime,
   composerPromptIsAmbiguous,
@@ -23,6 +24,22 @@ const isComposerFooter = (line: string): boolean => {
 // This placeholder occupies an empty composer while submitted text is queued.
 export const QUEUED_PLACEHOLDER = normalize("Press up to edit queued messages");
 
+/** Spec 0012: the first non-blank line under the screen's last rule, named by class and never by text. */
+export type ComposerFooterClass = "mode_bar" | "paste_hint" | "shortcuts_hint" | "vim_insert" | "blank_rule_tail" | "unrecognized" | "no_rule";
+
+function composerFooterClass(lines: string[]): ComposerFooterClass {
+  let rule = -1;
+  for (let i = lines.length - 1; i >= 0; i--) if (/^[─═-]{10,}$/.test(lines[i]!.trim())) { rule = i; break; }
+  if (rule < 0) return "no_rule";
+  const line = (lines.slice(rule + 1).find((next) => next.trim()) ?? "").trim();
+  if (!line) return "blank_rule_tail";
+  if (!isComposerFooter(line)) return "unrecognized";
+  if (VIM_MODE_PREFIX.test(line)) return "vim_insert";
+  const bar = line.replace(VIM_MODE_PREFIX, "");
+  if (PASTE_HINT.test(bar)) return "paste_hint";
+  return MODE_BAR_START.test(bar) ? "mode_bar" : "shortcuts_hint";
+}
+
 /** The same composer region used by the startup Enter guard. No transcript fallback. */
 export function composerRegion(pane: string | null, runtime: string | null = null) {
   const promptClass = composerPromptClassForRuntime(runtime);
@@ -44,7 +61,15 @@ export function composerRegion(pane: string | null, runtime: string | null = nul
     || composerSelectionPrefixPattern(promptClass).test(lines[inputAt]!.trimStart())
     ? null : normalize(lines.slice(inputAt, end).join("\n").trimStart().slice(1));
   return { body, markerLine: inputAt < 0 ? null : inputAt + 1,
-    closingRuleLine: end < 0 ? null : end + 1, capturedLines: pane === null ? 0 : lines.length };
+    closingRuleLine: end < 0 ? null : end + 1, capturedLines: pane === null ? 0 : lines.length,
+    footerClass: composerFooterClass(lines) };
+}
+
+/** Spec 0012: a non-empty capture whose composer has no marker or no closing rule under a recognized footer. */
+export function composerBoundaryUnrecognized(pane: string | null, runtime: string | null = null): boolean {
+  if (!pane?.trim()) return false;
+  const { markerLine, closingRuleLine } = composerRegion(pane, runtime);
+  return markerLine === null || closingRuleLine === null;
 }
 
 /** An echoed turn or a partial/opaque composer stays unverified. */
@@ -76,6 +101,8 @@ export interface StartupSubmissionEvidence {
   closingRuleLine: number | null;
   capturedLines: number;
   captureScrollbackLines: number;
+  /** Spec 0012: the class of the line under the capture's last rule; never its text. */
+  footerClass: ComposerFooterClass;
   /** Zero-based UTF-8 byte offset; null when equal or no valid region exists. */
   firstDifferenceByte: number | null;
   /** Diagnostic only; absent for unavailable captures or an excluded selector. */
@@ -90,10 +117,15 @@ export interface StartupSubmissionDiagnostic {
   source: "initial_identity" | "restore_preload" | "post_launch_file" | "challenge" | "startup_proof_instruction" | "after_files" | "after_ready";
   /** Zero-based index in the authored action list, when applicable. */
   actionIndex?: number;
-  /** `look` is set only when our collapsed paste was looked at again: 0 for the first look, n for the last. */
+  /** `look` is set only when the composer was looked at again (our collapsed paste, or an unrecognized boundary):
+   *  0 for the first look, n for the last. */
   observations: Array<StartupSubmissionEvidence & { phase: "initial" | "guarded_retry" | "after_retry"; look?: number }>;
   /** Transport result only; ok does not assert model consumption. */
   retry: "not_run" | "ok" | "refused_or_failed" | "threw";
+  /** Spec 0012: the seat's own transcript verdict, when the screen could not verify the send. No text. */
+  transcript?: StartupTranscriptConfirmation;
+  /** Whether this send carried a required startup file's content. */
+  required?: true;
 }
 
 /** No excerpts: every startup source accepts arbitrary, potentially credential-bearing text.

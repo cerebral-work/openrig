@@ -920,7 +920,9 @@ export type StartupFailureStage =
   | "after_files"
   | "after_ready"
   | "post_delivery_readiness"
-  | "identity_verification";
+  | "identity_verification"
+  /** Spec 0012: a required startup send was delivered but its submission stayed unverified. */
+  | "startup_submission";
 
 export interface LifecycleDefaults {
   executionMode: "interactive_resident";

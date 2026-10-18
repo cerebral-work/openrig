@@ -1428,6 +1428,10 @@ export class RestoreOrchestrator {
               skipHarnessLaunch: !shouldLaunchHarness,
               resumeToken: (isPodAware && resumeRequested) ? resumeToken ?? undefined : undefined,
               resumeType: (isPodAware && resumeRequested) ? resumeType ?? undefined : undefined,
+              // Spec 0012: a legacy Claude resume by id above passed this exact id; startup text is confirmed only from its
+              // file. A resume by name passed no id.
+              ...(!shouldLaunchHarness && baseStatus === "resumed" && resumeType === "claude_id" && resumeToken
+                && this.claudeResume.canResume(resumeType, resumeToken) ? { launchSessionId: resumeToken } : {}),
               sessionName: sessionName,
               allowFreshFallback: !(isPodAware && resumeRequested),
             });
