@@ -20,8 +20,10 @@ try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); hasTmux = true; } catch
 
 describe.skipIf(!hasTmux || process.platform !== "linux")("handover with a secret-named successor env (review r2 F1 on #35)", () => {
   it.each([
-    ["TOKENIZERS_PARALLELISM", true],
+    ["EXAMPLE_API_KEY", true],
     ["SAFE_SETTING", false],
+    // Spec 0017 item 4: exempt by exact name, so the launch guard lets it through.
+    ["TOKENIZERS_PARALLELISM", false],
   ] as const)("seat env %s: refused before the cutover leaves the retiree running (%s)", async (name, refused) => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "succ-secret-"));
     const socket = path.join(root, "tmux");

@@ -6,7 +6,33 @@
  * Local processes can read them (#306), so they are for non-secret settings only.
  */
 
+import { isSecretSeatEnvName } from "./seat-launch-env-filter.js";
+
 export type SeatEnv = Record<string, string>;
+
+/** Spec 0017 item 4: the refusal code for a secret-named seat env name. */
+export const SEAT_ENV_SECRET_NAME_CODE = "seat_env_secret_name";
+
+/** Spec 0017 item 4: why a secret-named name is refused as seat env, or null. Seat env is stored in plaintext (rig.yaml,
+ *  the database and its backups) or exposed (a CLI's argv, shell history), so a credential comes only from the daemon's
+ *  environment. Names only, never values. */
+export function seatEnvSecretNameError(name: string): string | null {
+  if (!isSecretSeatEnvName(name)) return null;
+  return `${SEAT_ENV_SECRET_NAME_CODE}: "${name}" is secret-named, and seat env is for non-secret settings (it is stored in plaintext). Give a seat credentials through the provider-auth allow-list (recovery.provider_auth_env_allowlist), not seat env`;
+}
+
+/** Spec 0017 item 4: the secret-named names in a request's envOverride mapping, sorted; names only. */
+export function secretSeatEnvOverrideNames(raw: unknown): string[] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
+  return Object.keys(raw).filter(isSecretSeatEnvName).sort();
+}
+
+/** Spec 0017 item 4: the refusal message for a request override that names a secret-named variable. */
+export function secretSeatEnvOverrideMessage(names: readonly string[]): string {
+  return `envOverride ${names.join(", ")}: ${SEAT_ENV_SECRET_NAME_CODE}: secret-named, and --env is for non-secret settings. `
+    + "The value was already exposed on the command line and in the shell history: rotate it if it was a real credential. "
+    + "Give a seat credentials through the provider-auth allow-list (recovery.provider_auth_env_allowlist).";
+}
 
 const NAME = /^[A-Z_][A-Z0-9_]*$/;
 const RESERVED_PREFIX = "OPENRIG_";
@@ -28,7 +54,7 @@ export function validateSeatEnv(raw: unknown, path: string): string[] {
   }
   const errors: string[] = [];
   for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-    const nameError = validateSeatEnvName(name);
+    const nameError = validateSeatEnvName(name) ?? seatEnvSecretNameError(name);
     if (nameError) errors.push(`${path}.${name}: ${nameError}`);
     if (typeof value !== "string") {
       errors.push(`${path}.${name}: value must be a string (quote numbers and booleans, e.g. "1")`);

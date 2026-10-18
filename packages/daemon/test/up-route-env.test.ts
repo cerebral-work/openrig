@@ -91,6 +91,36 @@ describe("POST /api/up envOverride", () => {
   });
 });
 
+describe("a secret-named envOverride is refused (spec 0017 item 4)", () => {
+  it.each(["/api/up", "/api/bundles/install"])("%s answers 400 seat_env_secret_name, naming it and never its value, and launches nothing", async (route) => {
+    const { db, app, specPath, post } = setup();
+    const bootstrap = vi.spyOn(app.bootstrapOrchestrator, "bootstrap");
+    const body = route === "/api/up"
+      ? { sourceRef: specPath, envOverride: { GITHUB_TOKEN: "sentinel-request-value", DEBUG: "1" } }
+      : { bundlePath: path.join(tmpDirs[0]!, "absent.rigbundle"), plan: true, envOverride: { GITHUB_TOKEN: "sentinel-request-value" } };
+    const res = await post(route, body);
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(JSON.parse(text)).toMatchObject({ code: "seat_env_secret_name" });
+    expect(text).toContain("GITHUB_TOKEN");
+    expect(text).toMatch(/rotate/);
+    expect(text).not.toContain("sentinel-request-value");
+    expect(bootstrap).not.toHaveBeenCalled();
+    db.close();
+  });
+
+  it("an exempt name (TOKENIZERS_PARALLELISM) reaches the launch (control)", async () => {
+    const { db, app, specPath, post } = setup();
+    const bootstrap = vi.spyOn(app.bootstrapOrchestrator, "bootstrap").mockResolvedValue({
+      runId: "run", status: "completed", rigId: "rig", stages: [], errors: [],
+    } as never);
+    const res = await post("/api/up", { sourceRef: specPath, envOverride: { TOKENIZERS_PARALLELISM: "false" } });
+    expect(res.status).toBe(201);
+    expect(bootstrap).toHaveBeenCalledWith(expect.objectContaining({ envOverride: { TOKENIZERS_PARALLELISM: "false" } }));
+    db.close();
+  });
+});
+
 describe("POST /api/bundles/install envOverride", () => {
   it.each(NOT_USABLE)("answers a request with %s as it does without the field", async (_label, envOverride) => {
     const { db, post } = setup();

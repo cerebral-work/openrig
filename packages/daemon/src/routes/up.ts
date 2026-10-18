@@ -1,5 +1,5 @@
 import nodePath from "node:path";
-import { readSeatEnvOverride } from "../domain/seat-env.js";
+import { readSeatEnvOverride, SEAT_ENV_SECRET_NAME_CODE, secretSeatEnvOverrideMessage, secretSeatEnvOverrideNames } from "../domain/seat-env.js";
 import { Hono } from "hono";
 import { bootstrapFailureResponse } from "./bootstrap-failure-response.js";
 import type { BootstrapOrchestrator } from "../domain/bootstrap-orchestrator.js";
@@ -214,6 +214,11 @@ upRoutes.post("/", async (c) => {
     return c.json({ error: "sourceRef is required" }, 400);
   }
 
+  // Spec 0017 item 4: a secret-named override is refused, never ignored; other malformed overrides keep today's answer.
+  const secretOverride = secretSeatEnvOverrideNames(body["envOverride"]);
+  if (secretOverride.length > 0) {
+    return c.json({ code: SEAT_ENV_SECRET_NAME_CODE, error: secretSeatEnvOverrideMessage(secretOverride) }, 400);
+  }
   // `rig up --env KEY=VALUE`: environment for this launch only. It is not saved with the rig.
   const envOverride = readSeatEnvOverride(body["envOverride"]);
 

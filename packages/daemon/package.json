@@ -18,6 +18,10 @@
       "types": "./dist/daemon-shutdown.d.ts",
       "import": "./dist/daemon-shutdown.js"
     },
+    "./seat-env-secret-name": {
+      "types": "./dist/seat-env-secret-name-surface.d.ts",
+      "import": "./dist/seat-env-secret-name-surface.js"
+    },
     "./crash-cart": {
       "types": "./dist/crash-cart-surface.d.ts",
       "import": "./dist/crash-cart-surface.js"

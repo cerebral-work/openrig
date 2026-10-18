@@ -551,6 +551,12 @@ describe("Up CLI", () => {
 
     expect(lastBody.envOverride).toEqual({ DEBUG: "1", URL: "http://x/?a=b" });
 
+    // Spec 0017 item 4: an exempt name passes the CLI's check.
+    await captureLogs(async () => {
+      await makeCmd().parseAsync(["node", "rig", "up", "/tmp/rig.yaml", "--env", "TOKENIZERS_PARALLELISM=false"]);
+    });
+    expect(lastBody.envOverride).toEqual({ TOKENIZERS_PARALLELISM: "false" });
+
     server.removeAllListeners("request");
     for (const l of origListeners) server.on("request", l as (...args: unknown[]) => void);
   });
@@ -628,6 +634,21 @@ describe("Up CLI", () => {
       expect(upCalls()).toBe(0);
       expect(exitCode).toBe(1);
       expect(logs.join("\n")).toContain(fragment);
+    });
+  });
+
+  it("up --env with a secret-named name stops before contacting the daemon, says to rotate, and never prints the value (spec 0017 item 4)", async () => {
+    await withListener(() => ({ status: 500, body: {} }), async (upCalls) => {
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "up", "/tmp/rig.yaml", "--env", "GITHUB_TOKEN=sentinel-cli-value"]);
+      });
+      expect(upCalls()).toBe(0);
+      expect(exitCode).toBe(1);
+      const out = logs.join("\n");
+      expect(out).toContain("seat_env_secret_name");
+      expect(out).toContain("GITHUB_TOKEN");
+      expect(out).toMatch(/rotate/);
+      expect(out).not.toContain("sentinel-cli-value");
     });
   });
 

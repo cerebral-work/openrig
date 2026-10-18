@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { readSeatEnvOverride } from "../domain/seat-env.js";
+import { readSeatEnvOverride, SEAT_ENV_SECRET_NAME_CODE, secretSeatEnvOverrideMessage, secretSeatEnvOverrideNames } from "../domain/seat-env.js";
 import os from "node:os";
 import nodePath from "node:path";
 import { Hono } from "hono";
@@ -1125,6 +1125,11 @@ bundleRoutes.post("/install", async (c) => {
   const nonInterruptive = typeof body["nonInterruptive"] === "boolean" ? body["nonInterruptive"] : undefined;
   const targetRoot = typeof body["targetRoot"] === "string" ? body["targetRoot"] : undefined;
   const cwdOverride = typeof body["cwdOverride"] === "string" ? body["cwdOverride"] : undefined;
+  // Spec 0017 item 4: a secret-named override is refused, never ignored; other malformed overrides keep today's answer.
+  const secretOverride = secretSeatEnvOverrideNames(body["envOverride"]);
+  if (secretOverride.length > 0) {
+    return c.json({ code: SEAT_ENV_SECRET_NAME_CODE, error: secretSeatEnvOverrideMessage(secretOverride) }, 400);
+  }
   const envOverride = readSeatEnvOverride(body["envOverride"]);
   // Item 2 / slice-05 Checkpoint 3.3: install-time compatibility check inputs
   const skipVersionCheck = body["skipVersionCheck"] === true;

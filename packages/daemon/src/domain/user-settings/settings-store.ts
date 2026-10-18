@@ -19,6 +19,7 @@ import { readFileSync, writeFileSync, mkdirSync, unlinkSync, existsSync, lstatSy
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import * as os from "node:os";
+import { isSecretSeatEnvName } from "../seat-launch-env-filter.js";
 
 const DEFAULT_CONFIG_PATH = path.join(
   process.env["OPENRIG_HOME"] || process.env["RIGGED_HOME"] || path.join(os.homedir(), ".openrig"),
@@ -784,7 +785,6 @@ function positiveIntegerConstraint(key: string) {
 }
 
 // Spec 0013 (SEC-178): seat_env values. Lockstep with the other settings store.
-const SEAT_ENV_SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE/i;
 function seatEnvModeConstraint(raw: string): void {
   if (raw !== "filter" && raw !== "allowlist") {
     throw new Error(`Invalid value for seat_env.mode: must be "filter" or "allowlist", got "${raw}"`);
@@ -797,7 +797,7 @@ function seatEnvNamesConstraint(key: "seat_env.base" | "seat_env.exceptions" | "
       if (!form.test(name)) throw new Error(`Invalid ${key}: "${name}" is not ${key === "seat_env.base" ? "a name or a PREFIX* pattern" : key === "seat_env.rigs" ? "a rig name" : "an exact name"}`);
       // The never list (spec 0013): 1Password service-account credentials.
       if (key !== "seat_env.rigs" && (name === "OP_SERVICE_ACCOUNT_TOKEN" || name.startsWith("OP_SA_"))) throw new Error(`Invalid ${key}: ${name} is never passed to a seat`);
-      if (key === "seat_env.base" && SEAT_ENV_SECRET_NAME.test(name)) throw new Error(`Invalid seat_env.base: ${name} is secret-named; list it in seat_env.exceptions instead`);
+      if (key === "seat_env.base" && isSecretSeatEnvName(name)) throw new Error(`Invalid seat_env.base: ${name} is secret-named; list it in seat_env.exceptions instead`);
     }
   };
 }

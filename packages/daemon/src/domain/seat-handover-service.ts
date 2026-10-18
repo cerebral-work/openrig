@@ -20,6 +20,7 @@ import { RigSpecSchema as PodRigSpecSchema } from "./rigspec-schema.js";
 import type { PodRigInstantiator } from "./rigspec-instantiator.js";
 import type { RigSpec as PodRigSpec, RigSpecPod, RigSpecPodMember } from "./types.js";
 import { mergeSeatEnv, parseSeatEnvAssignment, parseStoredSeatEnv, type SeatEnv } from "./seat-env.js";
+import { isSecretSeatEnvName } from "./seat-launch-env-filter.js";
 import type { NativePermissionSelection } from "./native-permission-selection.js";
 import { NodeRuntimeChangeLedger, envFingerprint, type RevertBefore, type RuntimeSide } from "./node-runtime-changes.js";
 import { partitionStartupFiles, persistStartupContext } from "./startup-orchestrator.js";
@@ -169,7 +170,6 @@ export interface RuntimeChangeSummary {
 }
 
 /** Env names the runtime-change verb refuses: the estate's secret-name rule. Secrets travel by the credential channel. */
-const SECRET_ENV_NAME = /KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE/i;
 const RUNTIME_CHANGE_RUNTIMES = new Set(["codex", "claude-code"]);
 const RUNTIME_CHANGE_PERMISSIONS = new Set(["inherit", "floor", "full_bypass"]);
 
@@ -1336,7 +1336,7 @@ export class SeatHandoverService {
           message: `--to-env ${parsedEnv.name} is not in runtime.change_env_allowlist (${[...envAllowlist].join(", ") || "empty"}).`,
           guidance: "Only allow-listed names may be set on a runtime change. Declare other env in the rig spec, or extend the allow-list deliberately." };
       }
-      if (SECRET_ENV_NAME.test(parsedEnv.name)) {
+      if (isSecretSeatEnvName(parsedEnv.name)) {
         return { ok: false, code: "runtime_change_secret_env",
           message: `--to-env ${parsedEnv.name}: a secret-named variable is refused; its value would be stored in the node row and in shell history.`,
           guidance: "Give the seat its credentials through its credential channel, not member env." };

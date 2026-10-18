@@ -41,4 +41,13 @@ describe("seat_env settings (spec 0013)", () => {
     expect(store.resolveOne("seat_env.mode").value).toBe("allowlist");
     expect(store.resolveOne("seat_env.exceptions").value).toBe("EXAMPLE_API_KEY");
   });
+
+  it("takes the secret-name rule from the shared export: both stores accept an exempt base name (spec 0017 item 4)", () => {
+    store.set("seat_env.base", "HOME,TOKENIZERS_PARALLELISM");
+    expect(store.resolveOne("seat_env.base").value).toBe("HOME,TOKENIZERS_PARALLELISM");
+    const cli = new ConfigStore(join(dir, "cli.json"));
+    cli.set("seat_env.base", "HOME,TOKENIZERS_PARALLELISM");
+    expect(cli.resolve().seatEnv.base).toBe("HOME,TOKENIZERS_PARALLELISM");
+    expect(() => cli.set("seat_env.base", "HOME,EXAMPLE_API_KEY")).toThrow(/secret-named/);
+  });
 });

@@ -135,6 +135,12 @@ describe("spec 0005: runtime-change refusals and dry run", () => {
     f.unchanged();
   });
 
+  it("takes the secret-name rule from the shared export: an exempt name is not runtime_change_secret_env (spec 0017 item 4)", async () => {
+    const f = fixture({ envAllowlist: ["TOKENIZERS_PARALLELISM"] });
+    const result = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", caller: OPERATOR, runtimeChange: f.request({ toEnv: ["TOKENIZERS_PARALLELISM=false"] }) });
+    expect((result as { code?: string }).code).not.toBe("runtime_change_secret_env");
+  });
+
   it("refuses a secret-named --to-env before any change, even when the allow-list names it", async () => {
     const f = fixture({ envAllowlist: ["ANTHROPIC_API_KEY", "GH_TOKEN", "DB_PASSWORD", "MY_SECRET", "AWS_CREDS", "SSH_PRIVATE", "GPG_PASSPHRASE"] });
     for (const name of ["ANTHROPIC_API_KEY", "GH_TOKEN", "DB_PASSWORD", "MY_SECRET", "AWS_CREDS", "SSH_PRIVATE", "GPG_PASSPHRASE"]) {
