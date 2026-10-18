@@ -18,6 +18,7 @@ import type {
   SnapshotData,
   SessionSourceSpec,
 } from "./types.js";
+import { isSecretSeatEnvName } from "./seat-launch-env-filter.js";
 
 /**
  * Free helper: returns the latest snapshot for a rig whose data carries non-null
@@ -239,6 +240,20 @@ export class RigRepository {
       .get(nodeId) as { rig_id: string; env_json: string | null } | undefined;
     if (!row) return {};
     return mergeSeatEnv(this.getRigEnv(row.rig_id), parseStoredSeatEnv(row.env_json));
+  }
+
+  /** Spec 0017 item 4: the node's stored seat env names that are secret-named, each with the rig spec field that
+   *  declares it. Names only, never values. */
+  secretSeatEnvFields(nodeId: string): string[] {
+    if (!this.hasNodeColumn("env_json")) return [];
+    const row = this.db.prepare("SELECT rig_id, logical_id, env_json FROM nodes WHERE id = ?")
+      .get(nodeId) as { rig_id: string; logical_id: string; env_json: string | null } | undefined;
+    if (!row) return [];
+    const secret = (env: SeatEnv | null) => Object.keys(env ?? {}).filter(isSecretSeatEnvName).sort();
+    return [
+      ...secret(this.getRigEnv(row.rig_id)).map((name) => `${name} (rig-level env:)`),
+      ...secret(parseStoredSeatEnv(row.env_json)).map((name) => `${name} (env: of member ${row.logical_id})`),
+    ];
   }
 
   /** OPR.0.4.8.3 Seam B — persist a rig's attached permission_policy REF (builtin:<name> or a

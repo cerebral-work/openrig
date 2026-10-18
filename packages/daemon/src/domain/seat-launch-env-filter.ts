@@ -42,8 +42,21 @@ export const SEAT_ENV_DEFAULT_BASE: readonly string[] = [
   "WSL_INTEROP", "WSL_DISTRO_NAME", "WSLENV", "CLAUDE_CONFIG_DIR", "CODEX_HOME",
 ];
 
-/** Secret-named: refused in allow-list mode even when the base list or the launch names it. */
+/** Secret-named: refused in allow-list mode even when the base list or the launch names it. Spec 0017 item 4: the
+ *  one copy of the rule. Check a name with `isSecretSeatEnvName`, which also applies the exemption list. */
 export const SEAT_ENV_SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE/i;
+
+/** Spec 0017 item 4: exact names the rule matches that are not secrets, each with its reason. Adding one takes a pull
+ *  request; never a pattern. */
+export const SEAT_ENV_SECRET_NAME_EXEMPTIONS: Readonly<Record<string, string>> = Object.freeze({
+  TOKENIZERS_PARALLELISM: "the tokenizers library's thread setting; it matches the rule only through TOKEN",
+});
+
+/** Spec 0017 item 4: whether `name` is secret-named and not exempt. Every seat env check uses this one function:
+ *  seat env validation, the tmux launch guard, the runtime-change refusal and both seat_env.base checks. */
+export function isSecretSeatEnvName(name: string): boolean {
+  return SEAT_ENV_SECRET_NAME.test(name) && !Object.hasOwn(SEAT_ENV_SECRET_NAME_EXEMPTIONS, name);
+}
 
 /** Never kept in allow-list mode, not by the base list, a named exception or a launch's own names:
  *  1Password service-account credentials. `PREFIX*` entries match by prefix. */
@@ -72,7 +85,7 @@ export function seatEnvNever(name: string): boolean {
 export function seatEnvKeeps(name: string, policy: SeatEnvPolicy, explicit: readonly string[] = []): boolean {
   if (seatEnvNever(name)) return false;
   if (name === SEAT_ENV_ACTIVITY_TOKEN || policy.exceptions.includes(name)) return true;
-  if (SEAT_ENV_SECRET_NAME.test(name)) return false;
+  if (isSecretSeatEnvName(name)) return false;
   return explicit.includes(name) || matchesBase(name, policy.base);
 }
 
@@ -118,7 +131,7 @@ export function seatEnvPolicyFromSettings(raw: { mode: string; base: string; exc
       warnings.push(`seat_env.base names ${name}, which is never passed to a seat`);
       return false;
     }
-    if (!SEAT_ENV_SECRET_NAME.test(name)) return true;
+    if (!isSecretSeatEnvName(name)) return true;
     warnings.push(`seat_env.base names ${name}, which is secret-named; list it in seat_env.exceptions instead`);
     return false;
   });

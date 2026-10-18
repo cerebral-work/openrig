@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { SEAT_ENV_SECRET_NAME, seatEnvAllowlistApplies, seatEnvScrubScript, seatKubeconfig, seatLaunchExcludedEnvKeys,
+import { isSecretSeatEnvName, seatEnvAllowlistApplies, seatEnvScrubScript, seatKubeconfig, seatLaunchExcludedEnvKeys,
   type SeatEnvPolicy } from "../domain/seat-launch-env-filter.js";
 import { SEAT_ENV_KEYS_VAR } from "../domain/seat-env.js";
 import type { TmuxControlExec } from "./tmux-control.js";
@@ -80,7 +80,7 @@ export function secretNamedLaunchVars(env: Readonly<Record<string, string | unde
   // OPENRIG_SEAT_ENV_KEYS matches the name rule (KEY) but carries a list of declared variable names, never a value: it is
   // exempt only while its value has that shape (review r2 on #35).
   const nameList = (name: string) => name === SEAT_ENV_KEYS_VAR && /^[A-Z_][A-Z0-9_]*(,[A-Z_][A-Z0-9_]*)*$/.test(env?.[name] ?? "");
-  return Object.keys(env ?? {}).filter((name) => SEAT_ENV_SECRET_NAME.test(name) && !nameList(name)).sort();
+  return Object.keys(env ?? {}).filter((name) => isSecretSeatEnvName(name) && !nameList(name)).sort();
 }
 
 function secretOnArgvRefusal(env: Record<string, string> | undefined, step: string): TmuxResult | null {
@@ -575,7 +575,7 @@ export class TmuxAdapter {
     step.name = "set KUBECONFIG";
     const argv = ["tmux", "set-environment", "-t", sessionTarget, "KUBECONFIG", kube.path];
     await this.run(argv, posixJoinArgv(argv));
-    const secret = dropped.filter((key) => SEAT_ENV_SECRET_NAME.test(key)).sort();
+    const secret = dropped.filter((key) => isSecretSeatEnvName(key)).sort();
     console.info(`[seat env] ${sessionTarget}: allow-list dropped ${dropped.length} names${secret.length ? `; secret-named: ${secret.join(", ")}` : ""}`);
     return kube.warning ? [`${sessionTarget}: ${kube.warning}`] : [];
   }
