@@ -97,8 +97,7 @@ describe("growing an existing rig never closes a launch-dependency cycle (spec 0
     expect(result).toMatchObject({ ok: false, code: "cycle_error" });
     if (result.ok) return;
     expect(result.error).toContain("This rig already holds a launch-order cycle: orch.lead delegates_to orch.peer, orch.peer delegates_to orch.lead");
-    expect(result.error).toContain("There is no edge-removal command yet");
-    expect(result.error).toContain("'rig remove <rigId> <seat>'");
+    expect(result.error).toMatch(/Nothing was written\. There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges\.$/);
     expect(shape(rig.id)).toEqual(before);
   });
 });

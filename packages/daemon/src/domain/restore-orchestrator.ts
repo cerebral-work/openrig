@@ -43,7 +43,7 @@ import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore } from "./restore-preconditions.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
-import { describeLaunchEdges, heldByLaunchCycles } from "./launch-graph-cycles.js";
+import { describeLaunchEdges, heldByLaunchCycles, NO_EDGE_REMOVAL } from "./launch-graph-cycles.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
 // does NOT meet all four evidence preconditions is a no-op with a missing
@@ -844,7 +844,7 @@ export class RestoreOrchestrator {
     const held = nodeIds.filter((id) => !placed.has(id)).map((id) => ({
       node: nodeById.get(id)!,
       error: `restore_graph_cycle: ${describeLaunchEdges((cycles.get(id) ?? []).map((edge) => ({ from: logicalOf(edge.from), to: logicalOf(edge.to), kind: edge.kind })))}`
-        + "; no session was started; remove one of these edges, then restore",
+        + `; no session was started; remove one of these edges, then restore. ${NO_EDGE_REMOVAL}`,
     }));
 
     return {

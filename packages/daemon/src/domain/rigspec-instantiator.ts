@@ -17,7 +17,7 @@ import { LegacyRigSpecSchema as RigSpecSchema } from "./rigspec-schema.js"; // T
 import { LegacyRigSpecCodec as RigSpecCodec } from "./rigspec-codec.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import type { LegacyRigSpec as RigSpec, LegacyRigSpecEdge as RigSpecEdge, InstantiateOutcome, InstantiateResult } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { resolveLaunchCwd } from "./cwd-resolution.js";
-import { describeLaunchEdges, heldByLaunchCycles } from "./launch-graph-cycles.js";
+import { describeLaunchEdges, heldByLaunchCycles, NO_EDGE_REMOVAL } from "./launch-graph-cycles.js";
 
 // Only these edge kinds constrain launch order
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
@@ -1767,9 +1767,7 @@ export class PodRigInstantiator {
       if (cycle.some((edge) => !storedLabels.has(describeLaunchEdges([edge])))) {
         return `This change would close a launch-order cycle: ${describeLaunchEdges(cycle)}. Nothing was written. Leave one of the new edges out and retry.`;
       }
-      return `This rig already holds a launch-order cycle: ${describeLaunchEdges(cycle)}. Nothing was written. There is no edge-removal `
-        + "command yet: the only command that drops one of these edges today is 'rig remove <rigId> <seat>' on a seat named here, "
-        + "which removes that seat together with its edges.";
+      return `This rig already holds a launch-order cycle: ${describeLaunchEdges(cycle)}. Nothing was written. ${NO_EDGE_REMOVAL}`;
     }
   }
 

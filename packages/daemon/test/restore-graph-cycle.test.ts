@@ -61,7 +61,7 @@ function harness(edges: Array<[string, "delegates_to" | "spawned_by", string]>) 
   return { restore };
 }
 
-const CYCLE = /^restore_graph_cycle: (.+); no session was started; remove one of these edges, then restore$/;
+const CYCLE = /^restore_graph_cycle: (.+); no session was started; remove one of these edges, then restore\. There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges\.$/;
 const cycleEdges = (node: RestoreNodeResult | undefined) => node?.error?.match(CYCLE)?.[1]?.split(", ");
 
 describe("restore with a launch-dependency cycle (spec 0014)", () => {
