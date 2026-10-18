@@ -155,6 +155,17 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   // A failed paste deletes the loaded buffer; the guarded kill reads the session id first.
   await recordingAdapter(calls, { failing: ["paste-buffer"] }).sendText(SESSION, "hello");
   await recordingAdapter(calls, { guard: true }).killSession(SESSION);
+  // Spec 0013: allow-list mode's launch paths, piloted on a rig so a pane id resolves its session, and its refusal.
+  const allowlist = { mode: "allowlist" as const, base: ["HOME"], exceptions: [], kubeconfig: "/k it's", rigs: ["rig"] };
+  const allow = recordingAdapter(calls);
+  allow.setSeatEnvPolicy(() => allowlist, () => false);
+  await allow.createSession("dev@rig", "/w x", { PATH: "/a b" });
+  await allow.createProbeSession("probe x", "/w x");
+  await allow.sendShellCommand("%1", "echo 'hi there'", undefined, { sourceInPane: true });
+  await allow.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", env: { A: "b c" } });
+  const refused = recordingAdapter(calls, { failing: ["set-environment"] });
+  refused.setSeatEnvPolicy(() => allowlist, () => false);
+  await refused.createSession("dev@rig", "/w x");
   return calls;
 }
 

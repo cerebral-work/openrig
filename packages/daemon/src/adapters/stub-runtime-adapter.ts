@@ -190,10 +190,9 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
         posture,
         resumeToken: opts.resumeToken,
       });
-      const textResult = await this.tmux.sendText(sessionName, cmd);
-      if (!textResult.ok) return { ok: false, error: `Failed to send stub launch command: ${textResult.message}` };
-      const enterResult = await this.tmux.sendKeys(sessionName, ["Enter"]);
-      if (!enterResult.ok) return { ok: false, error: `Failed to send Enter: ${enterResult.message}` };
+      // Spec 0013: a launch, so in allow-list mode it is staged behind the prologue.
+      const launched = await this.tmux.sendLaunchCommand(sessionName, cmd);
+      if (!launched.ok) return { ok: false, error: `Failed to send stub launch command: ${launched.message}` };
 
       const ready = await this.waitForRunnerReady(binding, launchId);
       if (!ready.ok) return ready.failure;

@@ -78,6 +78,8 @@ Keys:
   ui.enabled             serve the web UI and its terminal WebSocket (default off; restart the daemon)
   ui.preview.*           refresh_interval_seconds, max_pins, default_lines
   recovery.*             auto_drive_provider_prompts, provider_auth_env_allowlist
+  seat_env.*             mode (filter | allowlist; default filter), base, exceptions (exact names), kubeconfig,
+                           rigs (allow-list pilot rigs; empty = all). Applies at the next seat launch
   agents.*               advisor_session, operator_session
   feed.subscriptions.*   action_required, approvals, shipped, progress, audit_log
   runtime.codex.*        hooks_enabled

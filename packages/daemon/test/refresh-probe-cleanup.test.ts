@@ -113,6 +113,28 @@ describe("#188 snapshot refresh probe cleanup", () => {
     return new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter: adapter, sleep: async () => {}, homeDir: "/tmp" });
   }
 
+  // Spec 0013 (review r2, R2): the probe starts a real Claude, so in allow-list mode it is staged behind the prologue.
+  it("in allow-list mode the probe's resume command is staged behind the scrub prologue; filter mode types it", async () => {
+    for (const mode of ["allowlist", "filter"] as const) {
+      const tmux = new FakeTmux(40);
+      const written: string[] = [];
+      const adapter = new TmuxAdapter(tmux.exec, { ...fileOps, writeFile: async (_p, content) => { written.push(content); } });
+      adapter.deliveryGuard = new SeatDeliveryGuard(db, (target) => resolveGuardTarget(db, target));
+      adapter.setSeatEnvPolicy(() => ({ mode, base: ["HOME", "PATH"], exceptions: [], kubeconfig: "/k", rigs: [] }), () => false);
+      await new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter: adapter, sleep: async () => {}, homeDir: "/tmp" })
+        .refresh([claudeSeat(mode === "allowlist" ? "%7" : "%8")]);
+      const staged = written.filter((content) => content.includes("__openrig_names"));
+      if (mode === "allowlist") {
+        expect(staged).toHaveLength(1);
+        expect(staged[0]).toMatch(/--resume/);
+      } else {
+        expect(staged).toEqual([]);
+        expect(written.some((content) => content.includes("--resume"))).toBe(true);
+      }
+      db.prepare("DELETE FROM bindings").run();
+    }
+  });
+
   it("control: a probe whose pane is its own is killed after the probe", async () => {
     const tmux = new FakeTmux(40);
     const seat = claudeSeat("%7");
