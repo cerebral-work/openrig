@@ -65,3 +65,11 @@ jobs:
           packages/daemon/test/send-prompt-guard.test.ts
           packages/daemon/test/prompt-blocked-alert.test.ts
           packages/daemon/test/prompt-clear-continuation.test.ts
+      # A private tmux server whose global environment carries a herdr pane's identity.
+      - name: Seat launch environment (HERDR_* filter)
+        run: >-
+          npx vitest run --maxWorkers 2
+          packages/daemon/test/seat-launch-env-filter.test.ts
+          packages/daemon/test/seat-launch-env-tmux.test.ts
+          packages/daemon/test/parent-session-env.test.ts
+          packages/daemon/test/tmux-argv-legacy-equivalence.test.ts

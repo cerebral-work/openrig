@@ -3,7 +3,7 @@ import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
-import { parentSessionEnvKeys } from "../domain/parent-session-env.js";
+import { seatLaunchExcludedEnvKeys } from "../domain/seat-launch-env-filter.js";
 import type { TmuxControlExec } from "./tmux-control.js";
 import { stat } from "node:fs/promises";
 import { verifyPaneIdleShell, type NativeProcessLister } from "../domain/native-process-lineage.js";
@@ -371,7 +371,7 @@ export class TmuxAdapter {
       // #188: a fresh tmux server reuses pane ids, so a stale seat binding can name the new pane. That
       // probe could not be cleaned up safely later, so it is not used.
       if (pane && this.deliveryGuard?.maybeTarget(pane)) message = "New probe pane is named by a managed record; no input written.";
-      else if (pane) { this.freshProbes.set(name, pane); this.freshProbes.set(pane, pane); return { ok: true }; }
+      else if (pane) { this.freshProbes.set(name, pane); this.freshProbes.set(pane, pane); return await this.excludeFromProbe(name, pane, cwd); }
     } catch { /* no target proof, no input */ }
     // #188: remove the unusable helper by the id its own create returned, unless a managed record has
     // since claimed its name (a binding naming only the reused pane id, under another session name, is
@@ -648,14 +648,30 @@ export class TmuxAdapter {
     }
   }
 
-  /** Mark the server's inherited parent-session identity as removed in one
+  /** The native resume probe starts a runtime in its pane, so it drops what a seat launch drops
+   *  (seat-launch-env-filter) and restarts that pane, as createSession does. Fails open with a warning. */
+  private async excludeFromProbe(name: string, pane: string, cwd?: string): Promise<TmuxResult> {
+    try {
+      if (await this.excludeParentSessionEnv(exactTarget(name, "session"))) {
+        const respawn = ["tmux", "respawn-pane", "-k", "-t", pane];
+        if (cwd != null) respawn.push("-c", cwd);
+        await this.run(respawn, posixJoinArgv(respawn));
+      }
+      return { ok: true };
+    } catch (err) {
+      return { ok: true, warnings: [parentSessionEnvWarning(name, err)] };
+    }
+  }
+
+  /** Mark the server's inherited parent-session identity, and every other name a seat launch
+   * excludes (seat-launch-env-filter), as removed in one
    * session's environment, never the server's global one. Explicit seat
    * values stay. Returns whether anything was marked. Throws when the global
    * environment can't be read: the caller can't tell whether the seat inherits
    * an identity, so it reports a warning (the launch still goes ahead). */
   private async excludeParentSessionEnv(sessionTarget: string, keep: readonly string[] = []): Promise<boolean> {
     const inherited = await this.globalEnvironment();
-    const keys = parentSessionEnvKeys(inherited).filter((key) => !keep.includes(key));
+    const keys = seatLaunchExcludedEnvKeys(inherited).filter((key) => !keep.includes(key));
     for (const key of keys) {
       const argv = ["tmux", "set-environment", "-t", sessionTarget, "-r", key];
       await this.run(argv, posixJoinArgv(argv));
@@ -1172,12 +1188,12 @@ export class TmuxAdapter {
 
   /** Remove one variable from a session's environment, so a process spawned there afterwards
    *  inherits the server's value for it, or none. A name that is the launching session's own
-   *  identity in the server's environment (see parent-session-env) is marked removed instead, as a
+   *  identity in the server's environment (see seat-launch-env-filter) is marked removed instead, as a
    *  launch does, so the server's value does not come back. */
   async unsetSessionEnv(session: string, key: string): Promise<void> {
     if (!/^[A-Z_][A-Z0-9_]*$/.test(key)) throw new Error("Invalid session environment key.");
     const target = exactTarget(session, "session");
-    const parentIdentity = parentSessionEnvKeys(await this.globalEnvironment()).includes(key);
+    const parentIdentity = seatLaunchExcludedEnvKeys(await this.globalEnvironment()).includes(key);
     const flag = parentIdentity ? "-r" : "-u";
     await this.run(["tmux", "set-environment", "-t", target, flag, key],
       `tmux set-environment -t ${shellQuote(target)} ${flag} ${shellQuote(key)}`);
