@@ -108,7 +108,8 @@ import { StreamStore } from "./domain/stream-store.js";
 import { SlowOpRecorder, type SlowOperationInstrumentation } from "./domain/slow-op-recorder.js";
 import { configureSyncSiteRecorder } from "./domain/sync-site-wrap.js";
 import { RequestPhaseObserver } from "./domain/request-phase-observer.js";
-import { QueueRepository, isBlockerLive } from "./domain/queue-repository.js";
+import { DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES, QueueRepository, isBlockerLive } from "./domain/queue-repository.js";
+import { resolveQueueMinutesSetting } from "./domain/queue-stuck-sweep.js";
 import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guard.js";
 import { InboxHandler } from "./domain/inbox-handler.js";
 import { OutboxHandler } from "./domain/outbox-handler.js";
@@ -135,7 +136,7 @@ import { WorkflowRuntime } from "./domain/workflow-runtime.js";
 import { resolveWorkflowHumanDestination } from "./domain/workflow-human-destination.js";
 import { makeWorkflowKeepalivePolicy } from "./domain/policies/workflow-keepalive.js";
 import { makeIdleGateQitemPolicy } from "./domain/policies/idle-gate-qitem.js";
-import { makeParkedOwnerConsumerPolicy, makeRigAnchor, PARKED_OWNER_POLICY_NAME } from "./domain/policies/parked-owner-consumer.js";
+import { DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES, makeParkedOwnerConsumerPolicy, makeRigAnchor, PARKED_OWNER_POLICY_NAME } from "./domain/policies/parked-owner-consumer.js";
 import { diagnoseRigParked } from "./domain/parked-query.js";
 import { SpecReviewService } from "./domain/spec-review-service.js";
 import { SpecLibraryService } from "./domain/spec-library-service.js";
@@ -450,6 +451,9 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // GHOST-STAGE (h): resolve the source seat's atom-B generation for the handoff-nudge Sent: line
     // (same injected-predicate layering — the queue never imports the session domain).
     resolveOccupantGeneration: (sessionName) => sessionRegistry.currentOccupantGenerationForSession(sessionName),
+    // Queue churn C (cerebral-work fork): the per-owner blocker-resume window, read fresh per notice.
+    blockerResumeCoalesceMinutes: () =>
+      resolveQueueMinutesSetting("queue.blocker_resume_coalesce_minutes", DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES),
   });
   // W1 (transactional closure): ONE OutboxHandler shared between the deps slot
   // (sender-side audit surface) and the queue repo's durable wake-intent
@@ -2184,6 +2188,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
               queueRepoInstance.listOpenObligations(destinationSession, 500).map((r) => r.qitemId),
           },
           occupantGeneration: (sessionName) => sessionRegistry.currentOccupantGenerationForSession(sessionName),
+          // Queue churn D (cerebral-work fork): wait out the grace after the seat's own last queue write.
+          lastSeatWriteAt: (sessionName) =>
+            (db.prepare("SELECT MAX(ts) AS ts FROM queue_transitions WHERE actor_session = ?").get(sessionName) as { ts: string | null } | undefined)?.ts ?? null,
+          wakeGraceMinutes: () =>
+            resolveQueueMinutesSetting("queue.parked_owner_wake_grace_minutes", DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES),
         }),
         // OPR.0.5.6.1 AM-F1 — the delivery engine's two timing legs on THIS
         // substrate. The gateway dispatch binds late (the subsystem is built

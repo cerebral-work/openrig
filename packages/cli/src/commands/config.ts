@@ -92,6 +92,9 @@ Keys:
   snapshots.periodic.*   enabled, interval_seconds, retention_keep
   queue.*                pickup_stall_threshold_minutes (S04 pickup-receipt stall threshold),
                          stuck_sweep_interval_seconds, stuck_sweep_unclaimed_age_minutes (S02 standing stuck sweep),
+                         stuck_sweep_undelivered_grace_minutes, stuck_sweep_owner_active_minutes,
+                         stuck_sweep_quiet_kinds, blocker_resume_coalesce_minutes,
+                         parked_owner_wake_grace_minutes (queue churn A-D; minute keys 0-1440, 0 turns that fix off),
                          wake_retry_interval_seconds, wake_retry_cap, wake_unconfirmed_window_minutes,
                          wake_swap_grace_seconds (S01 wake-or-escalate ladder),
                          wake_human_rung (always | explicit-only — post agent-to-agent escalations to a person;

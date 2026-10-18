@@ -82,6 +82,8 @@ export function hasLiveHumanGate(item: {
 
 const AUTO_UNPARK_WAKE_TAG = "queue:auto-unpark:blocker";
 const AUTO_UNPARK_BLOCKER_TAG_PREFIX = "queue:auto-unpark:blocker-ref:";
+/** Queue churn C (cerebral-work fork): the measured default (vilicus churn baseline, 2026-10-18). */
+export const DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES = 10;
 
 /** The actor on the transition routeToFallback writes; the row's own history is how a later reroute finds the line it wrote. */
 const FALLBACK_ACTOR = "system:queue-fallback";
@@ -797,6 +799,10 @@ export class QueueRepository {
    *     fallback real code rather than a promise in a comment). */
   private outbox: OutboxHandler | undefined;
   private resolveOccupantGeneration?: (sessionName: string) => string | null;
+  // Queue churn C (cerebral-work fork): the per-owner blocker-resume window and its flush timer.
+  private now: () => Date;
+  private scheduleCoalesceFlush: (flush: () => void, delayMs: number) => void;
+  private blockerResumeCoalesceMinutes: () => number;
   private readonly wakeRepo: QueueWakeRepository;
   private watchdogJobsRepo: WatchdogJobsRepository | undefined;
   /** PL-007 Workspace Primitive — true when migration 038 has applied the
@@ -855,6 +861,12 @@ export class QueueRepository {
        */
       resolveOccupantGeneration?: (sessionName: string) => string | null;
       loadHumanRegistry?: () => LoadResult;
+      /** Queue churn C (cerebral-work fork): the clock, the flush scheduler and the window (minutes, read fresh
+       *  per notice) for coalescing blocker-resolved notices per owner. Startup wires the window from
+       *  `queue.blocker_resume_coalesce_minutes`; absent ⇒ the measured default. */
+      now?: () => Date;
+      scheduleCoalesceFlush?: (flush: () => void, delayMs: number) => void;
+      blockerResumeCoalesceMinutes?: () => number;
     }
   ) {
     this.db = db;
@@ -866,6 +878,9 @@ export class QueueRepository {
     this.transport = opts?.transport;
     this.workflowFrontierPredicate = opts?.workflowFrontierPredicate;
     this.resolveOccupantGeneration = opts?.resolveOccupantGeneration;
+    this.now = opts?.now ?? (() => new Date());
+    this.scheduleCoalesceFlush = opts?.scheduleCoalesceFlush ?? ((flush, delayMs) => { setTimeout(flush, delayMs).unref?.(); });
+    this.blockerResumeCoalesceMinutes = opts?.blockerResumeCoalesceMinutes ?? (() => DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES);
     this.loadHumanRegistryFn = opts?.loadHumanRegistry ?? (() => loadHumanRegistry());
     this.hasTargetRepoColumn = detectQueueColumn(db, "target_repo");
     this.hasSummaryColumn = detectQueueColumn(db, "summary");
@@ -1083,6 +1098,33 @@ export class QueueRepository {
     });
   }
 
+  /** Queue churn C: hold a blocker-resolved notice while the owner's last non-failed one is younger than the
+   *  window, scheduling its flush at the window's end. A failed notice opens no window. */
+  private holdForBlockerResumeWindow(entry: import("./outbox-handler.js").OutboxEntry): boolean {
+    if (!entry.tags?.includes(AUTO_UNPARK_WAKE_TAG)) return false;
+    let last: string | null | undefined;
+    try {
+      last = (this.db.prepare(`SELECT MAX(t.ts) AS ts FROM queue_transition_wakes w
+          JOIN queue_transitions t ON t.transition_id = w.transition_id
+          JOIN queue_items i ON i.qitem_id = w.qitem_id
+         WHERE w.phase = 'fired' AND w.wake_kind = 'blocker' AND i.destination_session = ?
+           AND (w.delivery_status IS NULL OR w.delivery_status NOT LIKE 'failed%')`)
+        .get(entry.destinationSession) as { ts: string | null } | undefined)?.ts;
+    } catch {
+      return false; // no wake ledger (older schema): deliver as before
+    }
+    if (!last) return false;
+    const windowMinutes = this.blockerResumeCoalesceMinutes();
+    if (!(windowMinutes > 0)) return false; // 0 is off, whatever the clock says
+    const remaining = Date.parse(last) + windowMinutes * 60_000 - this.now().getTime();
+    if (!(remaining > 0)) return false;
+    const outboxId = entry.outboxId;
+    this.scheduleCoalesceFlush(() => {
+      void this.deliverWakeIntent(outboxId).catch((err) => console.error(`Queue wake delivery failed for ${outboxId}:`, err));
+    }, remaining);
+    return true;
+  }
+
   private deliverWakeIntentAfterCommit(outboxId: string): void {
     queueMicrotask(() => {
       void this.deliverWakeIntent(outboxId).catch((err) => {
@@ -1155,6 +1197,10 @@ export class QueueRepository {
       if (alreadyHeld.auditPointer) this.recordNudgeAttempt(alreadyHeld.auditPointer, "retained:typing_guard");
       return "retained";
     }
+    // Queue churn C: while the owner's last blocker-resolved notice is younger than the window, this one stays
+    // pending and is flushed at the window's end. The flush claims every held notice for the owner, so one
+    // message names them all, and a held intent is still pending for the startup drain after a crash.
+    if (alreadyHeld?.deliveryState === "pending" && this.holdForBlockerResumeWindow(alreadyHeld)) return "skipped";
     // MF3: CLAIM (pending→sending) BEFORE the external send so overlapping drains
     // cannot both send. A losing claim — the row is no longer `pending` (already
     // resolved, in-flight under another drainer, or claimed) — simply skips: no
@@ -1198,6 +1244,18 @@ export class QueueRepository {
           AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
           ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, correlation) as Array<{ outbox_id: string }>;
         for (const peer of peers) if (actionable(this.outbox!.getById(peer.outbox_id)!) && this.outbox!.claimForDelivery(peer.outbox_id)) intents.push(this.outbox!.getById(peer.outbox_id)!);
+      }
+      // Queue churn C: a blocker-resolved notice also carries the owner's other pending ones, whatever blocker
+      // resolved them, so held notices leave in one message.
+      if (first.tags?.includes(AUTO_UNPARK_WAKE_TAG)) {
+        const resumes = this.db.prepare(`SELECT outbox_id FROM outbox_entries
+          WHERE delivery_state = 'pending' AND destination_session = ? AND substr(outbox_id, 1, ?) = ?
+          AND EXISTS (SELECT 1 FROM json_each(outbox_entries.tags) WHERE value = ?)
+          ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, AUTO_UNPARK_WAKE_TAG) as Array<{ outbox_id: string }>;
+        for (const peer of resumes) {
+          const entry = this.outbox!.getById(peer.outbox_id)!;
+          if (actionable(entry) && this.outbox!.claimForDelivery(peer.outbox_id)) intents.push(this.outbox!.getById(peer.outbox_id)!);
+        }
       }
       return intents;
     })();
@@ -1336,8 +1394,13 @@ export class QueueRepository {
     const tally = { delivered: 0, indeterminate: 0, failed: 0, retained: 0 };
     if (!this.outbox || !this.transport) return tally;
     const BATCH = 200;
+    // Queue churn C (cerebral-work fork): an intent held for its owner's resume window stays pending, so each
+    // round pages past the ones already held in this drain; a full batch of held intents can't hide later ones.
+    const held = new Set<string>();
     for (;;) {
-      const pending = this.outbox.listPending(WAKE_INTENT_PREFIX, BATCH);
+      const limit = BATCH + held.size;
+      const listed = this.outbox.listPending(WAKE_INTENT_PREFIX, limit);
+      const pending = listed.filter((intent) => !held.has(intent.outboxId));
       if (pending.length === 0) break;
       let progressed = 0;
       for (const intent of pending) {
@@ -1346,11 +1409,12 @@ export class QueueRepository {
         else if (outcome === "indeterminate") { tally.indeterminate++; progressed++; }
         else if (outcome === "failed") { tally.failed++; progressed++; }
         else if (outcome === "retained") { tally.retained++; progressed++; }
+        else if (this.outbox.getById(intent.outboxId)?.deliveryState === "pending") { held.add(intent.outboxId); progressed++; }
       }
       // Nothing left pending changed state this round (e.g. transport gone
       // mid-sweep) — stop rather than spin; the next daemon start retries.
       if (progressed === 0) break;
-      if (pending.length < BATCH) break; // served short batch ⇒ drained
+      if (listed.length < limit) break; // served short batch ⇒ drained
     }
     return tally;
   }

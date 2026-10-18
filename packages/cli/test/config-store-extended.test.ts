@@ -190,6 +190,11 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       // S02 — standing-stuck-sweep cadence + unclaimed-obligation age.
       "queue.stuck_sweep_interval_seconds",
       "queue.stuck_sweep_unclaimed_age_minutes",
+      "queue.stuck_sweep_undelivered_grace_minutes",
+      "queue.stuck_sweep_owner_active_minutes",
+      "queue.stuck_sweep_quiet_kinds",
+      "queue.blocker_resume_coalesce_minutes",
+      "queue.parked_owner_wake_grace_minutes",
       // S01 — wake-or-escalate ladder knobs.
       "queue.wake_retry_interval_seconds",
       "queue.wake_retry_cap",
@@ -214,6 +219,46 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
   it("defaults the advisor session to the kernel's advisor seat", () => {
     const store = new ConfigStore(configPath);
     expect(store.resolveWithSource("agents.advisor_session")).toMatchObject({ value: "advisor-lead@kernel", source: "default" });
+  });
+
+  // Queue churn R1/L1 (cerebral-work fork): the CLI twin of the daemon store's 0-to-1440 minute keys.
+  const CHURN_MINUTE_KEYS = [
+    ["queue.stuck_sweep_undelivered_grace_minutes", "OPENRIG_QUEUE_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES"],
+    ["queue.stuck_sweep_owner_active_minutes", "OPENRIG_QUEUE_STUCK_SWEEP_OWNER_ACTIVE_MINUTES"],
+    ["queue.blocker_resume_coalesce_minutes", "OPENRIG_QUEUE_BLOCKER_RESUME_COALESCE_MINUTES"],
+    ["queue.parked_owner_wake_grace_minutes", "OPENRIG_QUEUE_PARKED_OWNER_WAKE_GRACE_MINUTES"],
+  ] as const;
+  it("queue.stuck_sweep_quiet_kinds: an explicitly empty value is no quiet kinds (B2 off), from the file and the environment; unset is the default", () => {
+    const key = "queue.stuck_sweep_quiet_kinds";
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource(key)).toMatchObject({ value: "dangling-closure,undelivered-wake", source: "default" });
+    store.set(key, "");
+    expect(store.resolveWithSource(key)).toMatchObject({ value: "", source: "file" });
+    process.env["OPENRIG_QUEUE_STUCK_SWEEP_QUIET_KINDS"] = "";
+    try {
+      expect(new ConfigStore(configPath).resolveWithSource(key)).toMatchObject({ value: "", source: "env" });
+    } finally {
+      delete process.env["OPENRIG_QUEUE_STUCK_SWEEP_QUIET_KINDS"];
+    }
+  });
+
+  it("accepts 0 (off) to 1440 for the churn minute keys, from the file and the environment", () => {
+    const store = new ConfigStore(configPath);
+    for (const [key, envName] of CHURN_MINUTE_KEYS) {
+      store.set(key, "0");
+      expect(store.resolveWithSource(key)).toMatchObject({ value: 0, source: "file" });
+      store.set(key, "1440");
+      expect(store.resolveWithSource(key)).toMatchObject({ value: 1440, source: "file" });
+      for (const raw of ["1441", "-1", "2.5", "10junk"]) {
+        expect(() => store.set(key, raw)).toThrow(key);
+      }
+      process.env[envName] = "0";
+      try {
+        expect(store.resolveWithSource(key)).toMatchObject({ value: 0, source: "env" });
+      } finally {
+        delete process.env[envName];
+      }
+    }
   });
 
   it("resolves context.system_world with visible default, file, and env provenance", () => {

@@ -202,6 +202,11 @@ export interface RiggedConfig {
     pickupStallThresholdMinutes: number;
     stuckSweepIntervalSeconds: number;
     stuckSweepUnclaimedAgeMinutes: number;
+    stuckSweepUndeliveredGraceMinutes: number;
+    stuckSweepOwnerActiveMinutes: number;
+    stuckSweepQuietKinds: string;
+    blockerResumeCoalesceMinutes: number;
+    parkedOwnerWakeGraceMinutes: number;
     wakeRetryIntervalSeconds: number;
     wakeRetryCap: number;
     wakeUnconfirmedWindowMinutes: number;
@@ -367,6 +372,11 @@ const DEFAULTS = {
     pickupStallThresholdMinutes: 3,
     stuckSweepIntervalSeconds: 300,
     stuckSweepUnclaimedAgeMinutes: 60,
+    stuckSweepUndeliveredGraceMinutes: 10,
+    stuckSweepOwnerActiveMinutes: 5,
+    stuckSweepQuietKinds: "dangling-closure,undelivered-wake",
+    blockerResumeCoalesceMinutes: 10,
+    parkedOwnerWakeGraceMinutes: 10,
     wakeRetryIntervalSeconds: 300,
     wakeRetryCap: 3,
     wakeUnconfirmedWindowMinutes: 30,
@@ -487,6 +497,11 @@ export const VALID_KEYS = [
   // S02 — standing-stuck-sweep cadence + unclaimed-obligation age; same lockstep.
   "queue.stuck_sweep_interval_seconds",
   "queue.stuck_sweep_unclaimed_age_minutes",
+  "queue.stuck_sweep_undelivered_grace_minutes",
+  "queue.stuck_sweep_owner_active_minutes",
+  "queue.stuck_sweep_quiet_kinds",
+  "queue.blocker_resume_coalesce_minutes",
+  "queue.parked_owner_wake_grace_minutes",
   // S01 — wake-or-escalate ladder: retry cadence + cap, F1 window, F2 swap grace.
   "queue.wake_retry_interval_seconds",
   "queue.wake_retry_cap",
@@ -586,6 +601,11 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "queue.pickup_stall_threshold_minutes": { primary: "OPENRIG_QUEUE_PICKUP_STALL_THRESHOLD_MINUTES" },
   "queue.stuck_sweep_interval_seconds": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_INTERVAL_SECONDS" },
   "queue.stuck_sweep_unclaimed_age_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_UNCLAIMED_AGE_MINUTES" },
+  "queue.stuck_sweep_undelivered_grace_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES" },
+  "queue.stuck_sweep_owner_active_minutes": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_OWNER_ACTIVE_MINUTES" },
+  "queue.stuck_sweep_quiet_kinds": { primary: "OPENRIG_QUEUE_STUCK_SWEEP_QUIET_KINDS" },
+  "queue.blocker_resume_coalesce_minutes": { primary: "OPENRIG_QUEUE_BLOCKER_RESUME_COALESCE_MINUTES" },
+  "queue.parked_owner_wake_grace_minutes": { primary: "OPENRIG_QUEUE_PARKED_OWNER_WAKE_GRACE_MINUTES" },
   "queue.wake_retry_interval_seconds": { primary: "OPENRIG_QUEUE_WAKE_RETRY_INTERVAL_SECONDS" },
   "queue.wake_retry_cap": { primary: "OPENRIG_QUEUE_WAKE_RETRY_CAP" },
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
@@ -670,6 +690,11 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "queue.pickup_stall_threshold_minutes": ["queue", "pickupStallThresholdMinutes"],
   "queue.stuck_sweep_interval_seconds": ["queue", "stuckSweepIntervalSeconds"],
   "queue.stuck_sweep_unclaimed_age_minutes": ["queue", "stuckSweepUnclaimedAgeMinutes"],
+  "queue.stuck_sweep_undelivered_grace_minutes": ["queue", "stuckSweepUndeliveredGraceMinutes"],
+  "queue.stuck_sweep_owner_active_minutes": ["queue", "stuckSweepOwnerActiveMinutes"],
+  "queue.stuck_sweep_quiet_kinds": ["queue", "stuckSweepQuietKinds"],
+  "queue.blocker_resume_coalesce_minutes": ["queue", "blockerResumeCoalesceMinutes"],
+  "queue.parked_owner_wake_grace_minutes": ["queue", "parkedOwnerWakeGraceMinutes"],
   "queue.wake_retry_interval_seconds": ["queue", "wakeRetryIntervalSeconds"],
   "queue.wake_retry_cap": ["queue", "wakeRetryCap"],
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
@@ -828,6 +853,30 @@ function coerceValue(key: ValidKey, raw: string, workspaceRoot: string): string 
 // banked feedback_static_gates_mirror_runtime_validators, the runtime
 // validator is the source of truth and must reject what the contract
 // forbids.
+// Queue churn A-D — the stuck-sweep finding kinds created without a wake (comma list; empty = every kind wakes).
+const STUCK_SWEEP_FINDING_KINDS = ["unconsumed-wait", "overdue-claim", "stalled-after-claim", "undelivered-wake", "unclaimed-obligation", "dangling-closure"];
+/** Keys whose explicitly empty value means "none" rather than "unset": an empty queue.stuck_sweep_quiet_kinds is no
+ *  quiet kinds, so every finding kind wakes (B2 off). */
+const EXPLICIT_EMPTY_KEYS: ReadonlySet<string> = new Set(["queue.stuck_sweep_quiet_kinds"]);
+
+function stuckSweepKindsConstraint(raw: string): void {
+  const unknown = (raw ?? "").split(",").map((kind) => kind.trim()).filter(Boolean).filter((kind) => !STUCK_SWEEP_FINDING_KINDS.includes(kind));
+  if (unknown.length > 0) {
+    throw new Error(`Invalid value for queue.stuck_sweep_quiet_kinds: unknown finding kind(s) ${unknown.join(", ")}; known: ${STUCK_SWEEP_FINDING_KINDS.join(", ")}`);
+  }
+}
+
+// Queue churn R1/L1 (cerebral-work fork): a churn window in whole minutes. 0 turns that fix off; the cap of a day
+// keeps every window far below setTimeout's ceiling (about 35 791 minutes), where Node fires after 1 ms.
+const QUEUE_MINUTES_MAX = 1440;
+function queueMinutesConstraint(key: string) {
+  return (raw: string, coerced: string | number | boolean): void => {
+    if (!/^\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0 || coerced > QUEUE_MINUTES_MAX) {
+      throw new Error(`Invalid value for ${key}: must be an integer from 0 (off) to ${QUEUE_MINUTES_MAX} minutes, got "${raw}"`);
+    }
+  };
+}
+
 function positiveIntegerConstraint(key: string) {
   return (raw: string, coerced: string | number | boolean): void => {
     if (!/^\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced <= 0) {
@@ -986,6 +1035,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "queue.pickup_stall_threshold_minutes": positiveIntegerConstraint("queue.pickup_stall_threshold_minutes"),
   "queue.stuck_sweep_interval_seconds": positiveIntegerConstraint("queue.stuck_sweep_interval_seconds"),
   "queue.stuck_sweep_unclaimed_age_minutes": positiveIntegerConstraint("queue.stuck_sweep_unclaimed_age_minutes"),
+  "queue.stuck_sweep_undelivered_grace_minutes": queueMinutesConstraint("queue.stuck_sweep_undelivered_grace_minutes"),
+  "queue.stuck_sweep_owner_active_minutes": queueMinutesConstraint("queue.stuck_sweep_owner_active_minutes"),
+  "queue.stuck_sweep_quiet_kinds": stuckSweepKindsConstraint,
+  "queue.blocker_resume_coalesce_minutes": queueMinutesConstraint("queue.blocker_resume_coalesce_minutes"),
+  "queue.parked_owner_wake_grace_minutes": queueMinutesConstraint("queue.parked_owner_wake_grace_minutes"),
   // S01 — wake-or-escalate ladder knobs (same positive-integer contract).
   "queue.wake_retry_interval_seconds": positiveIntegerConstraint("queue.wake_retry_interval_seconds"),
   "queue.wake_retry_cap": positiveIntegerConstraint("queue.wake_retry_cap"),
@@ -1222,6 +1276,11 @@ export class ConfigStore {
         pickupStallThresholdMinutes: v("queue.pickup_stall_threshold_minutes") as number,
         stuckSweepIntervalSeconds: v("queue.stuck_sweep_interval_seconds") as number,
         stuckSweepUnclaimedAgeMinutes: v("queue.stuck_sweep_unclaimed_age_minutes") as number,
+        stuckSweepUndeliveredGraceMinutes: v("queue.stuck_sweep_undelivered_grace_minutes") as number,
+        stuckSweepOwnerActiveMinutes: v("queue.stuck_sweep_owner_active_minutes") as number,
+        stuckSweepQuietKinds: v("queue.stuck_sweep_quiet_kinds") as string,
+        blockerResumeCoalesceMinutes: v("queue.blocker_resume_coalesce_minutes") as number,
+        parkedOwnerWakeGraceMinutes: v("queue.parked_owner_wake_grace_minutes") as number,
         wakeRetryIntervalSeconds: v("queue.wake_retry_interval_seconds") as number,
         wakeRetryCap: v("queue.wake_retry_cap") as number,
         wakeUnconfirmedWindowMinutes: v("queue.wake_unconfirmed_window_minutes") as number,
@@ -1299,8 +1358,11 @@ export class ConfigStore {
     //    override and fall through to file/default (safer-failure than
     //    crashing or accepting a bad value). Warn so the operator sees
     //    the misconfigured env on stderr.
-    const envVal = readOpenRigEnv(ENV_MAP[key].primary, ENV_MAP[key].legacy);
-    if (envVal !== undefined && envVal !== "") {
+    // Queue churn Q1 (cerebral-work fork): for a key whose empty value means "none", an explicitly empty value
+    // (environment or file) is a value; only an absent one falls back to the default.
+    const explicitEmpty = EXPLICIT_EMPTY_KEYS.has(key);
+    const envVal = explicitEmpty && process.env[ENV_MAP[key].primary] === "" ? "" : readOpenRigEnv(ENV_MAP[key].primary, ENV_MAP[key].legacy);
+    if (envVal !== undefined && (envVal !== "" || explicitEmpty)) {
       try {
         return { value: coerceAndValidate(key, envVal, workspaceRoot), source: "env", defaultValue };
       } catch (err) {
@@ -1312,7 +1374,7 @@ export class ConfigStore {
     }
     // 2. Config file
     const fileVal = getNestedValue(fileConfig, KEY_TO_PATH[key]);
-    if (fileVal !== undefined && fileVal !== null && fileVal !== "") {
+    if (fileVal !== undefined && fileVal !== null && (fileVal !== "" || explicitEmpty)) {
       const legacyDefault = deriveLegacyWorkspaceDefault(key, workspaceRoot);
       if (legacyDefault !== null && fileVal === legacyDefault) {
         return { value: defaultValue, source: "default", defaultValue };
