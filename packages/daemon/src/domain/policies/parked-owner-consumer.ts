@@ -72,7 +72,14 @@ export interface ParkedOwnerConsumerDeps {
   /** The seat's live occupant generation, null when unknown. A delivered wake makes a repeat wait only
    *  for the occupant it reached, so without this reader every repeat is sent as on main. */
   occupantGeneration?: (sessionName: string) => string | null;
+  /** Queue churn D (cerebral-work fork): the seat's last queue transition as actor, ISO, or null. Absent = no grace. */
+  lastSeatWriteAt?: (sessionName: string) => string | null;
+  /** The grace in minutes, read fresh each evaluation (`queue.parked_owner_wake_grace_minutes`). */
+  wakeGraceMinutes?: () => number;
+  now?: () => Date;
 }
+
+export const DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES = 10;
 
 export const PARKED_OWNER_POLICY_NAME = "parked-owner-consumer";
 
@@ -339,6 +346,18 @@ export function makeParkedOwnerConsumerPolicy(deps: ParkedOwnerConsumerDeps): Po
         if (ep.lastDelivered !== null && !changedSince(deps.rows.listTransitions, namedIds, seat.sessionName, ep.lastDelivered)) {
           skipped.push({ seat: seat.sessionName, why: "unchanged-since-last-wake" });
           continue;
+        }
+
+        // Churn D: a seat that wrote a queue transition within the grace is working its queue. Skip without
+        // reserving, so the next evaluation after the grace still wakes it; nothing is dropped.
+        const lastWrite = deps.lastSeatWriteAt?.(seat.sessionName) ?? null;
+        if (lastWrite) {
+          const graceMs = (deps.wakeGraceMinutes?.() ?? DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES) * 60_000;
+          const wroteAt = Date.parse(lastWrite);
+          if (!Number.isNaN(wroteAt) && (deps.now?.() ?? new Date()).getTime() - wroteAt < graceMs) {
+            skipped.push({ seat: seat.sessionName, why: "seat-wrote-within-grace" });
+            continue;
+          }
         }
 
         // B4 — reserve BEFORE the engine delivers: the durable receipt is this

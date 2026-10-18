@@ -680,3 +680,42 @@ describe("parked-owner-consumer — R2 integration hard checks (OPR.0.5.6.24)", 
     expect(job).toBeDefined();
   });
 });
+
+// Queue churn D (cerebral-work fork): a seat that wrote a queue transition within the grace is working its
+// queue, so the wake waits. Nothing is reserved while it waits, and the next tick after the grace wakes it.
+describe("churn D — parked-owner wake grace", () => {
+  const NOW = Date.parse("2026-10-18T04:30:00.000Z");
+  const graceDeps = (store: RowStore, lastWrite: string | null, now: number, graceMinutes = 10): ParkedOwnerConsumerDeps => ({
+    ...makeDeps([parkedSeat()], store),
+    lastSeatWriteAt: () => lastWrite,
+    wakeGraceMinutes: () => graceMinutes,
+    now: () => new Date(now),
+  });
+  const minutesBefore = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+
+  it("a seat that wrote within the grace is not woken, and nothing is reserved", async () => {
+    const store = new RowStore();
+    const result = await makeParkedOwnerConsumerPolicy(graceDeps(store, minutesBefore(2), NOW)).evaluate(makeJob());
+    expect(result.action).toBe("skip");
+    expect(JSON.stringify(result.notes)).toContain("seat-wrote-within-grace");
+    expect(store.appended).toEqual([]);
+  });
+
+  it("the skipped wake is sent at the first tick after the grace", async () => {
+    const store = new RowStore();
+    const lastWrite = minutesBefore(2);
+    expect((await makeParkedOwnerConsumerPolicy(graceDeps(store, lastWrite, NOW)).evaluate(makeJob())).action).toBe("skip");
+    const later = NOW + 9 * 60_000;
+    expect((await makeParkedOwnerConsumerPolicy(graceDeps(store, lastWrite, later)).evaluate(makeJob())).action).toBe("send");
+  });
+
+  it("a seat whose last write is older than the grace is woken", async () => {
+    const store = new RowStore();
+    expect((await makeParkedOwnerConsumerPolicy(graceDeps(store, minutesBefore(11), NOW)).evaluate(makeJob())).action).toBe("send");
+  });
+
+  it("the grace is the configured value, not a constant", async () => {
+    const store = new RowStore();
+    expect((await makeParkedOwnerConsumerPolicy(graceDeps(store, minutesBefore(2), NOW, 1)).evaluate(makeJob())).action).toBe("send");
+  });
+});
