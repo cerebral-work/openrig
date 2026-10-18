@@ -633,6 +633,26 @@ describe("rig seat status", () => {
     expect(errors.join("\n")).toContain("original seat/binding is untouched");
   });
 
+  it("a committed handover whose occupant declaration failed prints its code and the committed-state guidance, and exits non-zero", async () => {
+    const guidance = "The runtime change is COMMITTED: the seat runs claude-code in \"dev-impl@seat-rig\". Do NOT retry, relaunch or revert to recover. "
+      + "Only the activity oracle's occupant declaration failed, so the seat's activity state may still reflect its predecessor. "
+      + "No rig command re-declares the occupant; report this to the operator.";
+    const deps = makeDeps({
+      status: 500,
+      data: { ok: false, code: "handover_committed_swap_undeclared",
+        message: "The handover committed and \"dev-impl@seat-rig\" is the seat's occupant, but the activity oracle did not take the swap: oracle down",
+        guidance },
+    }, []);
+
+    const { errors, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "handover", "dev-impl@seat-rig", "--source", "fresh", "--reason", "opus-swap"]);
+    });
+
+    expect(exitCode).toBe(2);
+    expect(errors).toContain("handover_committed_swap_undeclared");
+    expect(errors).toContain(guidance);
+  });
+
   it("top-level `rig handover` posts to the same route and requires --reason", async () => {
     const paths: string[] = [];
     const deps = makeDeps({ status: 200, data: HANDOVER_RESULT }, paths);

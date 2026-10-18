@@ -30,7 +30,7 @@ afterEach(() => {
 const OPERATOR = { session: "operator-agent@kernel", provenance: "transport:v1" };
 const ADVISOR = { session: "advisor-lead@kernel", provenance: "transport:v1" };
 
-function fixture(opts: { guard?: boolean } = {}) {
+function fixture(opts: { guard?: boolean; authoredRecapResolver?: (seatRef: string) => never; activityOracle?: { declareOccupantSwap: () => void } } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-rtc-race-")));
   tmpDirs.push(root);
   const rigRoot = nodePath.join(root, "rig");
@@ -101,6 +101,7 @@ function fixture(opts: { guard?: boolean } = {}) {
   const service = new SeatHandoverService({
     db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus, tmuxAdapter: tmux,
     runtimeAdapters: adapters, memberStartup, readinessTimeoutMs: 50, sleep: async () => {},
+    authoredRecapResolver: opts.authoredRecapResolver, activityOracle: opts.activityOracle,
   });
   const change = (runtime: string, model: string): RuntimeChangeRequest => ({
     toRuntime: runtime, toModel: model, toPermissions: "floor", spec: spec(runtime, model), approval: "go",
@@ -109,7 +110,7 @@ function fixture(opts: { guard?: boolean } = {}) {
   const ledger = () => db.prepare("SELECT kind, outcome FROM node_runtime_changes WHERE node_id = ? ORDER BY created_at, rowid").all(node.id);
   const slot = () => db.prepare("SELECT change_id FROM node_runtime_revert_slots WHERE node_id = ?").get(node.id) as { change_id: string } | undefined;
   return {
-    db, node, service, change, held, held1, ledger, slot, launches, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn> },
+    db, node, service, change, held, held1, ledger, slot, launches, eventBus, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn>; isPaneDead: ReturnType<typeof vi.fn> },
     hold: () => { holdNext = true; },
   };
 }
@@ -172,5 +173,75 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(result.guidance).toContain("resolve_pane");
     expect(result.guidance).toContain("was not changed");
     expect(result.guidance).not.toContain("--fresh --stop");
+  });
+
+  it("N1b: a retiree that was not seen to exit gets check-the-seat advice, not 'not changed'", async () => {
+    const f = fixture();
+    f.tmux.isPaneDead.mockResolvedValue(false); // TERM and KILL sent, the pane never reported dead
+    const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(f.tmux.respawnPane).not.toHaveBeenCalled();
+    expect(result.guidance).not.toContain("was not changed");
+    expect(result.guidance).toContain("not seen to exit");
+    expect(result.guidance).toContain("rig capture dev-impl@rt-rig");
+    expect(result.guidance).toContain("rig seat launch dev-impl@rt-rig --fresh --stop");
+  });
+
+  it("the ledger step names the launcher's code, so a retiree failure and a respawn failure differ (code and step only)", async () => {
+    const failureOf = async (arrange: (f: ReturnType<typeof fixture>) => void) => {
+      const f = fixture();
+      arrange(f);
+      const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+        runtimeChange: f.change("claude-code", "claude-opus-5-5") });
+      expect(result.ok).toBe(false);
+      return (f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id) as { failure: string }).failure;
+    };
+    const retiree = await failureOf((f) => { f.tmux.isPaneDead.mockResolvedValue(false); });
+    const respawn = await failureOf((f) => { f.tmux.respawnPane.mockResolvedValue({ ok: false, code: "respawn_failed", message: "tmux said no" }); });
+    expect(retiree).toBe("successor_create_failed at create-successor:create_successor:retiree_not_terminated");
+    expect(respawn).toBe("successor_create_failed at create-successor:create_successor:respawn_failed");
+  });
+
+  it("a throw after the respawn is still recorded as failed: code and step, never the error", async () => {
+    const f = fixture({ authoredRecapResolver: () => { throw new Error("recap store down SENTINEL-7c1e"); } });
+    await expect(f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).rejects.toThrow("SENTINEL-7c1e");
+    expect(f.tmux.respawnPane).toHaveBeenCalled();
+    const rows = f.db.prepare("SELECT outcome, failure FROM node_runtime_changes WHERE node_id = ?").all(f.node.id);
+    expect(rows).toEqual([{ outcome: "failed", failure: "threw_after_respawn at deliver-context" }]);
+  });
+
+  it("an oracle failure after the commit landed reports the commit, unwinds nothing and writes no failed row", async () => {
+    const f = fixture({ activityOracle: { declareOccupantSwap: () => { throw new Error("oracle down"); } } });
+    const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; code?: string; message?: string; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("handover_committed_swap_undeclared");
+    expect(result.message).toContain("committed");
+    expect(result.guidance).not.toContain("--fresh --stop");
+    expect(result.guidance).toContain("The runtime change is COMMITTED: the seat runs claude-code");
+    expect(result.guidance).toContain("Do NOT retry, relaunch or revert to recover.");
+    expect(result.guidance).toContain("No rig command re-declares the occupant; report this to the operator.");
+    expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
+    // The committed successor is untouched and is the seat's occupant on the target runtime.
+    expect(f.db.prepare("SELECT status FROM discovered_sessions").all()).toEqual([{ status: "claimed" }]);
+    expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
+    const live = f.db.prepare("SELECT session_name FROM sessions WHERE node_id = ? AND status NOT IN ('superseded', 'detached', 'exited')").all(f.node.id);
+    expect(live).toHaveLength(1);
+  });
+
+  it("a throw after the commit landed propagates and leaves exactly one committed row, no failed row (review r2 L1)", async () => {
+    const f = fixture();
+    const notify = f.eventBus.notifySubscribers.bind(f.eventBus);
+    // seat.handover_completed is persisted inside the commit transaction and notified only after tx() returns.
+    vi.spyOn(f.eventBus, "notifySubscribers").mockImplementation((event) => {
+      if (event.type === "seat.handover_completed") throw new Error("subscriber down after the commit");
+      notify(event);
+    });
+    await expect(f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).rejects.toThrow("subscriber down after the commit");
+    expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
+    expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
   });
 });

@@ -430,9 +430,12 @@ Examples:
     --to-cwd ~/kernel/operator --to-env CLAUDE_CONFIG_DIR=$HOME/.claude-operator \\
     --spec <kernel package>/specs/rigs/launch/kernel/rig-claude-only.yaml --approval <go ref> --reason opus-swap --dry-run
 
-If a runtime change fails before the respawn, the seat was not changed and no recovery is needed. If it fails after
-the successor started, the node still records the old runtime: relaunch with
-rig seat launch <seat> --fresh --stop --reason <why>. After a committed change, undo it with rig seat runtime-revert.`)
+If a runtime change fails before the respawn, the seat was not changed and no recovery is needed. If the predecessor
+was signalled but not seen to exit, check the seat with rig capture: if it still runs, nothing is needed. If it exited,
+or the change failed after the successor started, the node still records the old runtime: relaunch with
+rig seat launch <seat> --fresh --stop --reason <why>. After a committed change, undo it with rig seat runtime-revert.
+If it fails with no guidance (a plain HTTP 500), check whether it committed first: rig seat status <seat> --json then
+shows the target runtime. Do NOT relaunch or revert a committed change to recover from the error.`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
 
   // Spec 0005 — undo the seat's most recent committed runtime change. The kernel's operator or advisor may run it,
@@ -1139,6 +1142,8 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
   }
 
   if (res.status >= 400) {
+    // A committed handover whose occupant declaration failed names its code, so it is never read as a failed handover.
+    if ((res.data as SeatStatusError).code === "handover_committed_swap_undeclared") console.error("handover_committed_swap_undeclared");
     printSeatError(res.data as SeatStatusError, `Seat handover failed (HTTP ${res.status})`);
     process.exitCode = res.status >= 500 ? 2 : 1;
     return;

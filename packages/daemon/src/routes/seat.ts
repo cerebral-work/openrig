@@ -287,6 +287,7 @@ function handoverResponse(c: Context, result: SeatHandoverResult) {
     return c.json(result, 400);
   }
   if (result.code === "handover_commit_failed" ||
+    result.code === "handover_committed_swap_undeclared" ||
     result.code === "successor_create_failed" ||
     result.code === "context_delivery_failed" ||
     result.code === "runtime_change_target_startup_failed") {
