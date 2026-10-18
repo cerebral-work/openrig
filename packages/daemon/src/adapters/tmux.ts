@@ -460,7 +460,8 @@ export class TmuxAdapter {
     private exec: ExecFn,
     private fileOps: TmuxFileOps = defaultTmuxFileOps(),
     private argvExec?: ArgvExecFn,
-    private shellReadiness: { listProcesses?: NativeProcessLister; sleep?: (ms: number) => Promise<void> } = {},
+    // CER-2889: production startup enables the fresh-shell handshake; a bare adapter keeps one paste and one Enter.
+    private shellReadiness: { handshake?: boolean; listProcesses?: NativeProcessLister; sleep?: (ms: number) => Promise<void> } = {},
   ) {}
 
   /**
@@ -590,7 +591,7 @@ export class TmuxAdapter {
     }
     const result = await this.createSessionUnchecked(name, cwd, env);
     if (result.ok) {
-      this.freshShells.add(name);
+      if (this.shellReadiness.handshake) this.freshShells.add(name);
       this.shellLaunches.delete(name);
     }
     if (result.ok && this.deliveryGuard && env?.OPENRIG_NODE_ID) {

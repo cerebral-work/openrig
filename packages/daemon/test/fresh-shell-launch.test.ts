@@ -49,6 +49,7 @@ function fixture(options: { neverReady?: boolean; transportFailure?: boolean; sh
     writeFile: async (path, text, opts) => { const { writeFile } = await import("node:fs/promises"); await writeFile(path, text, opts); },
     unlink: async path => { const { unlink } = await import("node:fs/promises"); await unlink(path); },
   }, exec, {
+    handshake: true,
     listProcesses: () => options.shellBusy ? [] : [shell],
     sleep: async ms => { clock += ms; },
   });

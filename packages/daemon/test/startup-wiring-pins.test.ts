@@ -117,6 +117,10 @@ describe("P16 — domain-internal safety injections (the recurred class, pinned 
 
   it.todo("51-08 (graduates at the slice fold): ContextMonitor carries usageSamples + providerWindowSampler — pin flips live when hv/51-08-telemetry lands; asserting now would pin a wiring main does not yet carry");
 
+  it("TmuxAdapter has the CER-2889 fresh-shell handshake enabled (cerebral-work fork)", () => {
+    expect(priv<{ handshake?: boolean }>(deps.tmuxAdapter, "shellReadiness").handshake).toBe(true);
+  });
+
   it("ClassifierLeaseManager.isAlive is attached post-construction (the lease-liveness seam)", () => {
     expect(priv(deps.classifierLeaseManager, "isAlive")).toBeTruthy();
   });
