@@ -75,6 +75,20 @@ export class NodeRuntimeChangeLedger {
     return id;
   }
 
+  /** The node's latest committed change and its declaration marker (migration 116), or null. */
+  latestCommitted(nodeId: string): { id: string; generationUuid: string | null; declaredAt: string | null; declaredBy: string | null } | null {
+    const row = this.db.prepare(`SELECT id, generation_uuid, declared_at, declared_by FROM node_runtime_changes
+      WHERE node_id = ? AND outcome = 'committed' ORDER BY created_at DESC, rowid DESC LIMIT 1`).get(nodeId) as
+      { id: string; generation_uuid: string | null; declared_at: string | null; declared_by: string | null } | undefined;
+    return row ? { id: row.id, generationUuid: row.generation_uuid, declaredAt: row.declared_at, declaredBy: row.declared_by } : null;
+  }
+
+  /** The committed change's occupant swap was declared to the activity oracle. Set once; a declared row is untouched. */
+  markDeclared(changeId: string, declaredBy: string): void {
+    this.db.prepare(`UPDATE node_runtime_changes SET declared_at = strftime('%Y-%m-%dT%H:%M:%fZ', 'now'), declared_by = ?
+      WHERE id = ? AND outcome = 'committed' AND declared_at IS NULL`).run(declaredBy, changeId);
+  }
+
   revertSlot(nodeId: string): { changeId: string; before: RevertBefore } | null {
     const row = this.db.prepare("SELECT change_id, before_json FROM node_runtime_revert_slots WHERE node_id = ?").get(nodeId) as
       { change_id: string; before_json: string } | undefined;

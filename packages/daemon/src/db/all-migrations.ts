@@ -115,6 +115,7 @@ import { workflowInstanceScopeSchema } from "./migrations/110_workflow_instance_
 import { queueTransitionsTsQitemSchema } from "./migrations/112_queue_transitions_ts_qitem.js";
 import { appliedLaunchDaemonOptOutSchema } from "./migrations/113_applied_launch_daemon_opt_out.js";
 import { nodeRuntimeChangesSchema } from "./migrations/115_node_runtime_changes.js";
+import { nodeRuntimeChangeDeclaredSchema } from "./migrations/116_node_runtime_change_declared.js";
 
 /** Ordered migrations; numbers may be reserved by independent changes. */
 
@@ -229,4 +230,5 @@ export const ALL_MIGRATIONS: Migration[] = [
   queueTransitionsTsQitemSchema,
   appliedLaunchDaemonOptOutSchema,
   nodeRuntimeChangesSchema,
+  nodeRuntimeChangeDeclaredSchema,
 ];

@@ -295,6 +295,21 @@ function printHumanSwitchClient(r: SeatSwitchClientResponse): void {
   console.log("View only: no routing, queue address, transcript, or seat binding was changed.");
 }
 
+/** Spec 0005: results that mean the change COMMITTED (or that a declaration of a committed change failed). Their code
+ *  is printed on its own line, so they are never read as a failed handover. */
+const COMMITTED_STATE_CODES = new Set(["handover_committed_swap_undeclared", "handover_committed_with_error", "runtime_declare_failed"]);
+
+function printCommittedStateCode(error: SeatStatusError): void {
+  if (error.code && COMMITTED_STATE_CODES.has(error.code)) console.error(error.code);
+}
+
+interface RuntimeDeclaration {
+  seatRef: string;
+  changeId: string;
+  sessionId: string;
+  declaredBy: string;
+}
+
 function printSeatError(error: SeatStatusError, fallback: string): void {
   console.error(error.message ?? error.error ?? fallback);
   if (error.guidance) {
@@ -434,8 +449,10 @@ If a runtime change fails before the respawn, the seat was not changed and no re
 was signalled but not seen to exit, check the seat with rig capture: if it still runs, nothing is needed. If it exited,
 or the change failed after the successor started, the node still records the old runtime: relaunch with
 rig seat launch <seat> --fresh --stop --reason <why>. After a committed change, undo it with rig seat runtime-revert.
-If it fails with no guidance (a plain HTTP 500), check whether it committed first: rig seat status <seat> --json then
-shows the target runtime. Do NOT relaunch or revert a committed change to recover from the error.`)
+If it reports handover_committed_swap_undeclared or handover_committed_with_error, the change is COMMITTED: do NOT
+relaunch or revert it to recover; finish a pending occupant declaration with rig seat runtime-declare <seat>. If it fails
+with no guidance (a plain HTTP 500), check whether it committed first: rig seat status <seat> --json then shows the
+target runtime.`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
 
   // Spec 0005 — undo the seat's most recent committed runtime change. The kernel's operator or advisor may run it,
@@ -472,12 +489,41 @@ shows the target runtime. Do NOT relaunch or revert a committed change to recove
         return;
       }
       if (res.status >= 400) {
+        printCommittedStateCode(res.data as SeatStatusError);
         printSeatError(res.data as SeatStatusError, `Runtime revert failed (HTTP ${res.status})`);
         process.exitCode = res.status >= 500 ? 2 : 1;
         return;
       }
       if ((res.data as { dryRun?: boolean }).dryRun) printHumanHandoverPlan(res.data as SeatHandoverPlan);
       else printHumanHandoverResult(res.data as SeatHandoverMutationResult);
+    });
+
+  // Spec 0005 — finish the occupant declaration of a committed runtime change whose declaration failed after the commit
+  // (handover_committed_swap_undeclared). The kernel's operator runs it; it never relaunches, reverts or touches the pane.
+  cmd
+    .command("runtime-declare")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .option("--json", "JSON output for agents")
+    .description("Finish the occupant declaration of a seat's committed runtime change (never relaunches or reverts)")
+    .action(async (seat: string, opts: { json?: boolean }) => {
+      const deps = getDeps();
+      const daemon = await getDaemonStatus(deps.lifecycleDeps);
+      if (!daemonStatusGuard(daemon)) return;
+      const client = deps.clientFactory(getDaemonUrl(daemon));
+      const res = await client.post<RuntimeDeclaration | SeatStatusError>(`/api/seat/runtime-declare/${encodeURIComponent(seat)}`, {});
+      if (opts.json) {
+        console.log(JSON.stringify(res.data, null, 2));
+        if (res.status >= 400) process.exitCode = res.status >= 500 ? 2 : 1;
+        return;
+      }
+      if (res.status >= 400) {
+        printCommittedStateCode(res.data as SeatStatusError);
+        printSeatError(res.data as SeatStatusError, `Runtime declaration failed (HTTP ${res.status})`);
+        process.exitCode = res.status >= 500 ? 2 : 1;
+        return;
+      }
+      const declared = res.data as RuntimeDeclaration;
+      console.log(`Declared the occupant of ${declared.seatRef} (runtime change ${declared.changeId}, session ${declared.sessionId}) by ${declared.declaredBy}.`);
     });
 
   // OPR.0.4.3.26 — seat-recovery VIEW retarget. Points an already-attached tmux
@@ -1142,8 +1188,7 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
   }
 
   if (res.status >= 400) {
-    // A committed handover whose occupant declaration failed names its code, so it is never read as a failed handover.
-    if ((res.data as SeatStatusError).code === "handover_committed_swap_undeclared") console.error("handover_committed_swap_undeclared");
+    printCommittedStateCode(res.data as SeatStatusError);
     printSeatError(res.data as SeatStatusError, `Seat handover failed (HTTP ${res.status})`);
     process.exitCode = res.status >= 500 ? 2 : 1;
     return;

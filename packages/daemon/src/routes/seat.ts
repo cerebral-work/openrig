@@ -247,6 +247,12 @@ seatRoutes.post("/runtime-revert/:seatRef", async (c) => {
   return handoverResponse(c, result);
 });
 
+// Spec 0005 — finish the occupant declaration of a committed runtime change whose declaration failed (the kernel's operator).
+seatRoutes.post("/runtime-declare/:seatRef", async (c) => {
+  const result = await seatHandoverService(c).declareRuntimeOccupant({ seatRef: c.req.param("seatRef")!, caller: handoverCaller(c) });
+  return result.ok ? c.json(result.declared) : handoverResponse(c, result);
+});
+
 function handoverResponse(c: Context, result: SeatHandoverResult) {
   if (result.ok) {
     return c.json("plan" in result ? result.plan : result.result);
@@ -262,7 +268,7 @@ function handoverResponse(c: Context, result: SeatHandoverResult) {
     || result.code === "runtime_change_spec_mismatch") {
     return c.json(result, 400);
   }
-  if (result.code === "runtime_revert_unavailable") {
+  if (result.code === "runtime_revert_unavailable" || result.code === "runtime_declare_not_pending") {
     return c.json(result, 409);
   }
   if (result.code === "seat_ambiguous") {
@@ -288,6 +294,8 @@ function handoverResponse(c: Context, result: SeatHandoverResult) {
   }
   if (result.code === "handover_commit_failed" ||
     result.code === "handover_committed_swap_undeclared" ||
+    result.code === "handover_committed_with_error" ||
+    result.code === "runtime_declare_failed" ||
     result.code === "successor_create_failed" ||
     result.code === "context_delivery_failed" ||
     result.code === "runtime_change_target_startup_failed") {

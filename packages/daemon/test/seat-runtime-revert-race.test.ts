@@ -17,6 +17,8 @@ import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { createDb } from "../src/db/connection.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { SeatActivityService } from "../src/domain/seat-activity-service.js";
+import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
 
 // Review r2 F2: a revert reads the revert slot inside the node's lifecycle lease, and its commit refuses unless the
 // slot still names the change it reverts. Two reverts never both commit, and a stale revert cannot erase a newer
@@ -30,7 +32,7 @@ afterEach(() => {
 const OPERATOR = { session: "operator-agent@kernel", provenance: "transport:v1" };
 const ADVISOR = { session: "advisor-lead@kernel", provenance: "transport:v1" };
 
-function fixture(opts: { guard?: boolean; authoredRecapResolver?: (seatRef: string) => never; activityOracle?: { declareOccupantSwap: () => void } } = {}) {
+function fixture(opts: { guard?: boolean; authoredRecapResolver?: (seatRef: string) => never; activityOracle?: { declareOccupantSwap: (seatNodeId: string, generation: string) => void } } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-rtc-race-")));
   tmpDirs.push(root);
   const rigRoot = nodePath.join(root, "rig");
@@ -222,7 +224,8 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(result.guidance).not.toContain("--fresh --stop");
     expect(result.guidance).toContain("The runtime change is COMMITTED: the seat runs claude-code");
     expect(result.guidance).toContain("Do NOT retry, relaunch or revert to recover.");
-    expect(result.guidance).toContain("No rig command re-declares the occupant; report this to the operator.");
+    expect(result.guidance).toContain("Finish the declaration with: rig seat runtime-declare dev-impl@rt-rig");
+    expect(result.guidance).not.toContain("report this");
     expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
     // The committed successor is untouched and is the seat's occupant on the target runtime.
     expect(f.db.prepare("SELECT status FROM discovered_sessions").all()).toEqual([{ status: "claimed" }]);
@@ -231,7 +234,7 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(live).toHaveLength(1);
   });
 
-  it("a throw after the commit landed propagates and leaves exactly one committed row, no failed row (review r2 L1)", async () => {
+  it("a throw after the commit landed returns handover_committed_with_error and leaves exactly one committed row (review r2 L1)", async () => {
     const f = fixture();
     const notify = f.eventBus.notifySubscribers.bind(f.eventBus);
     // seat.handover_completed is persisted inside the commit transaction and notified only after tx() returns.
@@ -239,9 +242,119 @@ describe("review r2 F2: runtime-revert races", () => {
       if (event.type === "seat.handover_completed") throw new Error("subscriber down after the commit");
       notify(event);
     });
-    await expect(f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
-      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).rejects.toThrow("subscriber down after the commit");
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; code?: string; message?: string; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(result.code).toBe("handover_committed_with_error");
+    expect(result.message).toContain("subscriber down after the commit");
+    expect(result.guidance).toContain("The runtime change is COMMITTED: the seat runs claude-code.");
+    expect(result.guidance).toContain("Do NOT retry, relaunch or revert to recover.");
+    expect(result.guidance).toContain("rig seat runtime-declare dev-impl@rt-rig");
+    expect(logged).toHaveBeenCalled(); // the error is still logged, as the route's error handler logged it before
+    logged.mockRestore();
     expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
     expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
+  });
+});
+
+describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error)", () => {
+  const SEAT = "dev-impl@rt-rig";
+  const liveSessionId = (f: ReturnType<typeof fixture>) =>
+    (f.db.prepare("SELECT id FROM sessions WHERE node_id = ? AND status NOT IN ('superseded', 'detached', 'exited')").all(f.node.id) as Array<{ id: string }>)
+      .map((r) => r.id);
+  const marker = (f: ReturnType<typeof fixture>) =>
+    f.db.prepare("SELECT outcome, declared_at, declared_by FROM node_runtime_changes WHERE node_id = ? ORDER BY created_at, rowid").all(f.node.id) as
+      Array<{ outcome: string; declared_at: string | null; declared_by: string | null }>;
+  const undeclared = async () => {
+    const oracle = new SeatActivityService({ tmux: { readPaneLastActivity: async () => null } as never, defaultWindowSeconds: 3 });
+    const f = fixture({ activityOracle: oracle });
+    oracle.declareRungInventory({ seatNodeId: f.node.id, sessionName: SEAT }, runtimeRungInventory(null)); // the seat is in the ladder
+    const swap = vi.spyOn(oracle, "declareOccupantSwap").mockImplementationOnce(() => { throw new Error("oracle down"); });
+    const result = await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; code?: string };
+    expect(result.code).toBe("handover_committed_swap_undeclared");
+    return { f, oracle, swap };
+  };
+
+  it("a committed change whose declaration succeeds is marked declared at commit, by its operator", async () => {
+    const f = fixture();
+    expect((await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).ok).toBe(true);
+    const rows = marker(f);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.outcome).toBe("committed");
+    expect(rows[0]!.declared_at).not.toBeNull();
+    expect(rows[0]!.declared_by).toBe("operator-agent@kernel");
+  });
+
+  it("an undeclared committed change is re-declared: the activity read shows the new occupant, the ledger records who and when", async () => {
+    const { f, oracle, swap } = await undeclared();
+    expect(marker(f)).toEqual([{ outcome: "committed", declared_at: null, declared_by: null }]);
+    const before = oracle.getSeatState(f.node.id)!;
+    expect(before.lastSwap).toBeNull();
+
+    const declared = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR });
+    expect(declared.ok).toBe(true);
+    const live = liveSessionId(f);
+    expect(live).toHaveLength(1);
+    expect(swap).toHaveBeenLastCalledWith(f.node.id, live[0]);
+    const after = oracle.getSeatState(f.node.id)!;
+    expect(after.lastSwap?.generation).toBe(live[0]);
+    expect(after.seq).toBeGreaterThan(before.seq);
+    const [row] = marker(f);
+    expect(row!.declared_at).not.toBeNull();
+    expect(row!.declared_by).toBe("operator-agent@kernel");
+    // identity: the committed successor is still the seat's occupant on the target runtime; nothing was relaunched
+    expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
+    expect(f.tmux.respawnPane).toHaveBeenCalledTimes(1);
+  });
+
+  it("a declared change is refused, without calling the oracle again", async () => {
+    const { f, swap } = await undeclared();
+    expect((await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR })).ok).toBe(true);
+    const calls = swap.mock.calls.length;
+    const again = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR }) as { ok: boolean; code?: string; message?: string };
+    expect(again.ok).toBe(false);
+    expect(again.code).toBe("runtime_declare_not_pending");
+    expect(again.message).toContain("already declared");
+    expect(swap.mock.calls.length).toBe(calls);
+  });
+
+  it("a seat with no committed runtime change, or one a later handover replaced, is refused", async () => {
+    const none = fixture();
+    const nothing = await none.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR }) as { ok: boolean; code?: string };
+    expect(nothing.code).toBe("runtime_declare_not_pending");
+
+    const { f, swap } = await undeclared();
+    expect((await f.service.handover({ seatRef: SEAT, reason: "later", source: "fresh", caller: OPERATOR })).ok).toBe(true);
+    const calls = swap.mock.calls.length;
+    const superseded = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR }) as { ok: boolean; code?: string; message?: string };
+    expect(superseded.code).toBe("runtime_declare_not_pending");
+    expect(superseded.message).toContain("later handover");
+    expect(swap.mock.calls.length).toBe(calls);
+    expect(marker(f)[0]!.declared_at).toBeNull();
+  });
+
+  it("only the kernel operator's transport identity may re-declare: no caller, the advisor and a relayed operator are refused", async () => {
+    const { f, swap } = await undeclared();
+    const calls = swap.mock.calls.length;
+    for (const caller of [null, ADVISOR, { session: "operator-agent@kernel", provenance: "relay:v1" }]) {
+      const refused = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller }) as { ok: boolean; code?: string };
+      expect(refused.code).toBe("runtime_change_unauthorized");
+    }
+    expect(swap.mock.calls.length).toBe(calls);
+    expect(marker(f)[0]!.declared_at).toBeNull();
+  });
+
+  it("a returned failure before the commit, followed by a throw, is never reported as committed", async () => {
+    const f = fixture({ guard: true });
+    const guard = (f.tmux as unknown as { deliveryGuard: SeatDeliveryGuard }).deliveryGuard;
+    const lifecycle = guard.lifecycle.bind(guard);
+    vi.spyOn(guard, "lifecycle").mockImplementation(async (ids, fn) => { await lifecycle(ids, fn); throw new Error("lease release failed"); });
+    f.tmux.listPanes.mockResolvedValue([]); // resolve_pane fails before the respawn: a returned failure, recorded
+    await expect(f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).rejects.toThrow("lease release failed");
+    expect(f.ledger()).toEqual([{ kind: "change", outcome: "failed" }]);
   });
 });

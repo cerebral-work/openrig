@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { SeatHandoverService } from "../src/domain/seat-handover-service.js";
 
 // Spec 0005: the routes take the caller from the transport identity (X-OpenRig-Session), never from the body, and map
 // the runtime-change refusals to HTTP statuses.
@@ -17,6 +18,7 @@ describe("spec 0005: runtime-change routes", () => {
     app = setup.app;
     const kernel = setup.rigRepo.createRig("kernel");
     setup.rigRepo.addNode(kernel.id, "operator.agent", { runtime: "codex" });
+    setup.rigRepo.addNode(kernel.id, "advisor.lead", { runtime: "codex" });
     const rig = setup.rigRepo.createRig("seat-rig");
     const node = setup.rigRepo.addNode(rig.id, "dev.impl", { runtime: "codex" });
     const session = setup.sessionRegistry.registerSession(node.id, "dev-impl@seat-rig");
@@ -74,5 +76,49 @@ describe("spec 0005: runtime-change routes", () => {
     expect(await allowed.json()).toMatchObject({ code: "runtime_revert_unavailable" });
     const refused = await post("/api/seat/runtime-revert/dev-impl%40seat-rig", body);
     expect(refused.status).toBe(403);
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); });
+
+  const nodeId = () => (db.prepare("SELECT n.id FROM nodes n JOIN rigs r ON r.id = n.rig_id WHERE r.name = 'seat-rig'").get() as { id: string }).id;
+  const seedCommitted = (generation: string | null) => db.prepare(`INSERT INTO node_runtime_changes
+    (id, node_id, kind, outcome, generation_uuid, to_runtime, approval, reason, operator) VALUES ('c-1', ?, 'change', 'committed', ?, 'claude-code', 'go', 'r', 'operator-agent@kernel')`)
+    .run(nodeId(), generation);
+
+  it("runtime-declare: 403 without the operator's identity, for the advisor and for a relayed operator; 409 with nothing pending", async () => {
+    const route = "/api/seat/runtime-declare/dev-impl%40seat-rig";
+    expect((await post(route, {})).status).toBe(403);
+    expect((await post(route, {}, "advisor-lead@kernel")).status).toBe(403);
+    const relayed = { "X-OpenRig-Relay": "remote-host", "X-OpenRig-Provenance": "transport:v1" };
+    expect((await post(route, {}, "operator-agent@kernel", relayed)).status).toBe(403);
+    const none = await post(route, {}, "operator-agent@kernel");
+    expect(none.status, await none.clone().text()).toBe(409);
+    expect(await none.json()).toMatchObject({ code: "runtime_declare_not_pending" });
+  });
+
+  it("runtime-declare: 200 declares the seat's undeclared committed change and records who", async () => {
+    const generation = setup.sessionRegistry.currentOccupantTenure(nodeId())?.generationUuid ?? null;
+    expect(generation).not.toBeNull();
+    seedCommitted(generation);
+    const res = await post("/api/seat/runtime-declare/dev-impl%40seat-rig", {}, "operator-agent@kernel");
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toMatchObject({ changeId: "c-1", declaredBy: "operator-agent@kernel" });
+    expect(db.prepare("SELECT declared_by FROM node_runtime_changes WHERE id = 'c-1'").get()).toEqual({ declared_by: "operator-agent@kernel" });
+    const again = await post("/api/seat/runtime-declare/dev-impl%40seat-rig", {}, "operator-agent@kernel");
+    expect(again.status).toBe(409);
+  });
+
+  it("the committed-state codes are JSON 500s carrying their code and guidance, never the plain-text error page", async () => {
+    const committed = { ok: false as const, code: "handover_committed_with_error" as const, message: "The runtime change committed, but a step after the commit failed: boom",
+      guidance: "The runtime change is COMMITTED: the seat runs claude-code. Do NOT retry, relaunch or revert to recover." };
+    vi.spyOn(SeatHandoverService.prototype, "handover").mockResolvedValue(committed);
+    const res = await post("/api/seat/handover/dev-impl%40seat-rig", { ...change, runtimeChange: { ...change.runtimeChange, approval: "go" } }, "operator-agent@kernel");
+    expect(res.status).toBe(500);
+    expect(await res.json()).toEqual(committed);
+    const failed = { ok: false as const, code: "runtime_declare_failed" as const, message: "oracle down", guidance: "The change stays COMMITTED." };
+    vi.spyOn(SeatHandoverService.prototype, "declareRuntimeOccupant").mockResolvedValue(failed);
+    const declare = await post("/api/seat/runtime-declare/dev-impl%40seat-rig", {}, "operator-agent@kernel");
+    expect(declare.status).toBe(500);
+    expect(await declare.json()).toEqual(failed);
   });
 });
