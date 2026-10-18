@@ -52,13 +52,14 @@ export function addRigEdge(
 }
 
 export type RemoveRigEdgeResult =
-  | { ok: true; status: "removed"; edge: Edge }
+  | { ok: true; status: "removed"; edges: Edge[] }
   | { ok: false; code: "rig_not_found" | "rig_archived" | "node_not_found" | "invalid_kind" | "edge_not_found"; error: string };
 
-/** CER-2981 (spec 0008): remove one edge between two nodes of a live rig, the reverse of `addRigEdge`, with the same checks
- *  in the same order. Only that edge row is deleted, and a `rig.edge_removed` event records it and the caller in the same
- *  transaction; no node, session, binding or pane changes. An absent edge is `edge_not_found`, never success. A removed
- *  `delegates_to` edge stops counting for queue-owner routing and `rig whoami` at once. */
+/** CER-2981 (spec 0008): remove an edge between two nodes of a live rig, the reverse of `addRigEdge`, with the same checks
+ *  in the same order. An edge's identity to the operator is (from, to, kind), so every row matching it is deleted (the
+ *  table allows duplicates), each with its own `rig.edge_removed` event naming the caller, in one transaction; no node,
+ *  session, binding or pane changes. No matching row is `edge_not_found`, never success. A removed `delegates_to` edge
+ *  stops counting for queue-owner routing and `rig whoami` at once. */
 export function removeRigEdge(
   rigRepo: RigRepository,
   eventBus: EventBus,
@@ -79,16 +80,15 @@ export function removeRigEdge(
     const missing = [source ? null : input.from, target ? null : input.to].filter(Boolean).join(" and ");
     return { ok: false, code: "node_not_found", error: `No node ${missing} in rig ${input.rigId}` };
   }
-  const edge = rig.edges.find((e) => e.sourceId === source.id && e.targetId === target.id && e.kind === input.kind);
-  if (!edge) {
-    return { ok: false, code: "edge_not_found", error: `No ${input.kind} edge ${input.from} -> ${input.to} in rig ${input.rigId}` };
-  }
-  const event = rigRepo.db.transaction(() => {
-    if (!rigRepo.removeEdge(edge.id)) return null;
-    return eventBus.persistWithinTransaction({ type: "rig.edge_removed", rigId: input.rigId, edgeId: edge.id,
-      from: input.from, to: input.to, kind: input.kind, by: input.by });
-  })();
-  if (!event) return { ok: false, code: "edge_not_found", error: `No ${input.kind} edge ${input.from} -> ${input.to} in rig ${input.rigId}` };
-  eventBus.notifySubscribers(event);
-  return { ok: true, status: "removed", edge };
+  const notFound = { ok: false, code: "edge_not_found", error: `No ${input.kind} edge ${input.from} -> ${input.to} in rig ${input.rigId}` } as const;
+  const matching = rig.edges.filter((e) => e.sourceId === source.id && e.targetId === target.id && e.kind === input.kind);
+  if (matching.length === 0) return notFound;
+  // A row another caller deleted between the read and this transaction is skipped, with no event for it.
+  const removed = rigRepo.db.transaction(() => matching.flatMap((edge) => rigRepo.removeEdge(edge.id)
+    ? [{ edge, event: eventBus.persistWithinTransaction({ type: "rig.edge_removed", rigId: input.rigId, edgeId: edge.id,
+      from: input.from, to: input.to, kind: input.kind, by: input.by }) }]
+    : []))();
+  if (removed.length === 0) return notFound;
+  for (const { event } of removed) eventBus.notifySubscribers(event);
+  return { ok: true, status: "removed", edges: removed.map(({ edge }) => edge) };
 }

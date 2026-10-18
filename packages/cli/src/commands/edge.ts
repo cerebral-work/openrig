@@ -8,6 +8,8 @@ interface EdgeAddResult {
   ok: boolean;
   status?: "created" | "exists" | "removed";
   edge?: { id: string; sourceId: string; targetId: string; kind: string };
+  /** rig edge remove: every row that matched (from, to, kind); the table allows duplicates. */
+  edges?: Array<{ id: string; sourceId: string; targetId: string; kind: string }>;
   code?: string;
   error?: string;
 }
@@ -80,7 +82,8 @@ export function edgeCommand(depsOverride?: StatusDeps): Command {
         process.exitCode = 1;
         return;
       }
-      console.log(`Removed ${opts.kind} edge ${from} -> ${to}`);
+      const rows = data.edges?.length ?? 1;
+      console.log(`Removed ${opts.kind} edge ${from} -> ${to}${rows > 1 ? ` (${rows} duplicate rows)` : ""}`);
     });
 
   return cmd;

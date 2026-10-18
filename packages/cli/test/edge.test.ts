@@ -118,13 +118,17 @@ describe("rig edge remove", () => {
       received.push({ method: req.method ?? "", url: req.url ?? "" });
       const query = new URL(req.url ?? "/", "http://x").searchParams;
       res.setHeader("Content-Type", "application/json");
-      if (query.get("to") === "dev.gone") {
+      if (query.get("to") === "dev.twin") {
+        res.writeHead(200);
+        const edge = (id: string) => ({ id, rigId: "rig-123", sourceId: "n-lead", targetId: "n-twin", kind: query.get("kind") });
+        res.end(JSON.stringify({ ok: true, status: "removed", edges: [edge("e1"), edge("e2")] }));
+      } else if (query.get("to") === "dev.gone") {
         res.writeHead(404);
         res.end(JSON.stringify({ ok: false, code: "edge_not_found", error: "No delegates_to edge orch.lead -> dev.gone in rig rig-123" }));
       } else {
         res.writeHead(200);
         res.end(JSON.stringify({ ok: true, status: "removed",
-          edge: { id: "e1", rigId: "rig-123", sourceId: "n-lead", targetId: "n-build", kind: query.get("kind") } }));
+          edges: [{ id: "e1", rigId: "rig-123", sourceId: "n-lead", targetId: "n-build", kind: query.get("kind") }] }));
       }
     });
     await new Promise<void>((r) => { server.listen(0, r); });
@@ -154,6 +158,13 @@ describe("rig edge remove", () => {
     const { out, exitCode } = await run(["rig-123", "orch.lead", "dev.build", "--kind", "delegates_to"]);
     expect(received.at(-1)).toEqual({ method: "DELETE", url: "/api/rigs/rig-123/edges?from=orch.lead&to=dev.build&kind=delegates_to" });
     expect(out).toContain("Removed delegates_to edge orch.lead -> dev.build");
+    expect(out).not.toContain("duplicate");
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("reports how many duplicate rows were removed when there were several", async () => {
+    const { out, exitCode } = await run(["rig-123", "orch.lead", "dev.twin", "--kind", "delegates_to"]);
+    expect(out).toContain("Removed delegates_to edge orch.lead -> dev.twin (2 duplicate rows)");
     expect(exitCode).toBeUndefined();
   });
 
@@ -166,7 +177,7 @@ describe("rig edge remove", () => {
 
   it("--json prints the raw response, and exits 1 on a refusal", async () => {
     const ok = await run(["rig-123", "orch.lead", "dev.build", "--kind", "can_observe", "--json"]);
-    expect(JSON.parse(ok.out)).toMatchObject({ ok: true, status: "removed", edge: { kind: "can_observe" } });
+    expect(JSON.parse(ok.out)).toMatchObject({ ok: true, status: "removed", edges: [{ kind: "can_observe" }] });
     const refused = await run(["rig-123", "orch.lead", "dev.gone", "--kind", "delegates_to", "--json"]);
     expect(JSON.parse(refused.out)).toMatchObject({ ok: false, code: "edge_not_found" });
     expect(refused.exitCode).toBe(1);

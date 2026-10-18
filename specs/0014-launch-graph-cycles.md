@@ -38,7 +38,7 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
    - Each seat in a cycle, or behind one, gets its own node result:
      - status `awaiting-decision`;
      - error `restore_graph_cycle: <edges>; no session was started; remove one of these edges with: rig edge remove <rigId> <from> <to> --kind <kind>, then restore.`
-     - The recovery is the same one a growth refusal gives (`removeCycleEdgeHint`), naming `rig edge remove` (CER-2981, spec 0008). Until that command existed it read "There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges."
+     - The recovery is the same one a growth refusal gives (`edgeRemovalCommand` in `launch-graph-cycles.ts`), naming `rig edge remove` (CER-2981, spec 0008). Until that command existed it read "There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges."
    - `<edges>` are the stored edges (`source kind target`, logical ids) of every cycle at or upstream of that seat, sorted. An unrelated cycle is not named.
    - `awaiting-decision` and not `attention_required`, per orch-lead's ruling (2026-10-18), because the restore vocabulary (`types.ts` `RestoreNodeResult`) reserves:
      - `attention_required` for a live session parked on a prompt;
