@@ -89,6 +89,23 @@ async function scenario(mode: "shell" | "argv") {
   }
 }
 
+/** The tmux reason in an adapter error. The cerebral-work fork's classified write errors (spec 0013 item 8, SEC-178) are one
+ *  line, "tmux <step> failed[ (env names: …)][: <known-safe reason>]", and never carry the command line; a raw exec
+ *  error (a probe's transport cause) is "Command failed: <command>" with tmux's stderr on the lines after it. */
+function tmuxReason(message: string): string {
+  const classified = /^tmux [a-z-]+ failed(?: \(env names: [^)]*\))?(?:: (.*))?$/.exec(message);
+  return classified ? classified[1] ?? "" : message.split("\n").slice(1).join("\n");
+}
+
+describe("tmuxReason (CER-3003)", () => {
+  it("reads the reason from a classified one-line error and from a raw exec error", () => {
+    expect(tmuxReason("tmux kill-session failed: can't find session: missing")).toBe("can't find session: missing");
+    expect(tmuxReason("tmux new-session failed (env names: A, B): duplicate session: x")).toBe("duplicate session: x");
+    expect(tmuxReason("tmux send-keys failed")).toBe("");
+    expect(tmuxReason("Command failed: tmux has-session -t =x\nno server running on /tmp/s")).toBe("no server running on /tmp/s");
+  });
+});
+
 describe.skipIf(!nativeAvailable)("tmux shell and argv transports against a real server", () => {
   let shell: Awaited<ReturnType<typeof scenario>>;
   let argv: Awaited<ReturnType<typeof scenario>>;
@@ -116,10 +133,10 @@ describe.skipIf(!nativeAvailable)("tmux shell and argv transports against a real
       noServerSessions: [],
     });
     expect(shell.result.captured).toEqual(["openrig-native"]);
-    // The first line names the command, which each transport renders its own way; the tmux stderr after it,
-    // which every error classifier reads, is the same apart from each run's private directory.
+    // Each transport renders the command its own way; the tmux reason, which every error classifier reads, is the same
+    // apart from each run's private directory.
     const stderr = ({ result: r, root }: typeof shell) => {
-      const tail = (message: string) => message.split("\n").slice(1).join("\n").replaceAll(root, "<root>").trim();
+      const tail = (message: string) => tmuxReason(message).replaceAll(root, "<root>").trim();
       return {
         missingKill: tail((r.missingKill as { message: string }).message),
         missingKeys: `${(r.missingKeys as { code: string }).code}: ${tail((r.missingKeys as { message: string }).message)}`,
