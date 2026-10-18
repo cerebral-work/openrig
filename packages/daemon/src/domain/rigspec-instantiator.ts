@@ -655,12 +655,11 @@ export class PodRigInstantiator {
       if (!nameGuard.ok) return nameGuard;
     }
 
-    // Spec 0014: growing an existing rig (expand, add_member, materialize into a target) is checked against the rig's
-    // whole launch-dependency graph, as `rig edge add` is, before anything is written. A cycle is refused, named.
-    if (opts?.targetRigId) {
-      const cycle = this.growthCycle(opts.targetRigId, rigSpec);
-      if (cycle) return { ok: false, code: "cycle_error", message: cycle };
-    }
+    // Spec 0014: the rig's whole launch-dependency graph, the target rig's seats and edges (expand, add_member,
+    // materialize into a target) or none (materialize-only creating a rig), plus the spec's, is checked as
+    // `rig edge add` checks it, before anything is written. A cycle is refused, named.
+    const cycle = this.launchCycleRefusal(opts?.targetRigId, rigSpec);
+    if (cycle) return { ok: false, code: "cycle_error", message: cycle };
 
     try {
       let materializedRigId = opts?.targetRigId ?? "";
@@ -1740,19 +1739,19 @@ export class PodRigInstantiator {
     };
   }
 
-  /** Spec 0014: the refusal for growing rig `rigId` by `rigSpec`, when the rig's seats and edges plus the spec's would
-   * form a launch-dependency cycle; null otherwise. Same check as `rig edge add`. An edge naming a seat that is neither
-   * is left to the existing missing-node refusal. */
-  private growthCycle(rigId: string, rigSpec: PodRigSpec): string | null {
-    const rig = this.deps.rigRepo.getRig(rigId);
-    if (!rig) return null;
-    const logicalById = new Map(rig.nodes.map((node) => [node.id, node.logicalId]));
+  /** Spec 0014: the refusal for writing `rigSpec` into rig `rigId` (or into a new rig when there is none), when the
+   * rig's seats and edges plus the spec's would form a launch-dependency cycle; null otherwise. Same check as
+   * `rig edge add`. An edge naming a seat that is neither is left to the existing missing-node refusal. */
+  private launchCycleRefusal(rigId: string | undefined, rigSpec: PodRigSpec): string | null {
+    const rig = rigId ? this.deps.rigRepo.getRig(rigId) : null;
+    if (rigId && !rig) return null;
+    const logicalById = new Map((rig?.nodes ?? []).map((node) => [node.id, node.logicalId]));
     const nodes = [...new Set([
-      ...rig.nodes.map((node) => node.logicalId),
+      ...(rig?.nodes ?? []).map((node) => node.logicalId),
       ...rigSpec.pods.flatMap((pod) => pod.members.map((member) => `${pod.id}.${member.id}`)),
     ])];
     const known = new Set(nodes);
-    const stored = rig.edges.map((edge) => ({ from: logicalById.get(edge.sourceId) ?? "", to: logicalById.get(edge.targetId) ?? "", kind: edge.kind }));
+    const stored = (rig?.edges ?? []).map((edge) => ({ from: logicalById.get(edge.sourceId) ?? "", to: logicalById.get(edge.targetId) ?? "", kind: edge.kind }));
     const edges = [
       ...stored,
       ...rigSpec.pods.flatMap((pod) => pod.edges.map((edge) => ({ from: `${pod.id}.${edge.from}`, to: `${pod.id}.${edge.to}`, kind: edge.kind }))),
