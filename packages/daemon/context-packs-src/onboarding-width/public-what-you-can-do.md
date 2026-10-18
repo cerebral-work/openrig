@@ -486,7 +486,8 @@ version, from checking the environment to a useful report to the OpenRig team.
   and `--approval`; run it with `--dry-run` first. `rig seat runtime-revert` undoes the most
   recent change, and the kernel advisor may run it too. If a change commits but its occupant
   declaration fails (`handover_committed_swap_undeclared`), the kernel operator finishes it with
-  `rig seat runtime-declare <seat>`, which never relaunches or reverts.
+  `rig seat runtime-declare <seat>`, which never relaunches or reverts; for a revert the kernel
+  advisor issued, the advisor may run it too.
 - **`rig seat clear-attention` / `set-resume-token`** — clear a stale attention flag, or repair a
   lost resume handle so restore works next time.
 - **`rig seat continue <seat>`** — a launch stopped on Claude's bypass-permissions consent dialog.

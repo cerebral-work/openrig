@@ -362,7 +362,7 @@ describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error
     expect(marker(f)[0]!.declared_at).toBeNull();
   });
 
-  it("only the kernel operator's transport identity may re-declare: no caller, the advisor and a relayed operator are refused", async () => {
+  it("no caller, a relayed operator, and the advisor for an operator-issued change are refused", async () => {
     const { f, swap } = await undeclared();
     const calls = swap.mock.calls.length;
     for (const caller of [null, ADVISOR, { session: "operator-agent@kernel", provenance: "relay:v1" }]) {
@@ -371,6 +371,68 @@ describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error
     }
     expect(swap.mock.calls.length).toBe(calls);
     expect(marker(f)[0]!.declared_at).toBeNull();
+  });
+
+  // The lead's ruling on #22: the advisor may declare only a pending revert it issued itself (ledger kind and operator).
+  const pendingRevert = async (by: typeof OPERATOR) => {
+    const oracle = new SeatActivityService({ tmux: { readPaneLastActivity: async () => null } as never, defaultWindowSeconds: 3 });
+    const f = fixture({ activityOracle: oracle });
+    oracle.declareRungInventory({ seatNodeId: f.node.id, sessionName: SEAT }, runtimeRungInventory(null));
+    expect((await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).ok).toBe(true);
+    const swap = vi.spyOn(oracle, "declareOccupantSwap").mockImplementationOnce(() => { throw new Error("oracle down"); });
+    const reverted = await f.service.revertRuntimeChange({ seatRef: SEAT, reason: "back", approval: "go", caller: by }) as
+      { ok: boolean; code?: string; guidance?: string };
+    expect(reverted.code).toBe("handover_committed_swap_undeclared");
+    return { f, swap, reverted };
+  };
+
+  it("the advisor declares a pending revert it issued itself; the guidance for that revert names the advisor seat", async () => {
+    const { f, swap, reverted } = await pendingRevert(ADVISOR);
+    expect(reverted.guidance).toContain(`Finish the declaration from the advisor seat that issued this revert (or the kernel operator) with: rig seat runtime-declare ${SEAT}`);
+    const declared = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: ADVISOR }) as { ok: boolean };
+    expect(declared.ok).toBe(true);
+    expect(swap).toHaveBeenLastCalledWith(f.node.id, liveSessionId(f)[0]);
+    const [, revertRow] = marker(f);
+    expect(revertRow!.declared_by).toBe("advisor-lead@kernel");
+  });
+
+  it("the advisor is refused a pending revert the operator issued; the operator's guidance is unchanged", async () => {
+    const { f, swap, reverted } = await pendingRevert(OPERATOR);
+    expect(reverted.guidance).toContain(`Finish the declaration with: rig seat runtime-declare ${SEAT}`);
+    expect(reverted.guidance).not.toContain("advisor");
+    const calls = swap.mock.calls.length;
+    const refused = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: ADVISOR }) as { ok: boolean; code?: string; message?: string };
+    expect(refused.code).toBe("runtime_change_unauthorized");
+    expect(refused.message).toContain("only a pending revert it issued itself");
+    expect(swap.mock.calls.length).toBe(calls);
+    expect(marker(f)[1]!.declared_at).toBeNull();
+    expect((await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR })).ok).toBe(true);
+  });
+
+  it("a throw after an advisor-issued revert committed names the advisor seat in the committed-state guidance", async () => {
+    const f = fixture();
+    expect((await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).ok).toBe(true);
+    const notify = f.eventBus.notifySubscribers.bind(f.eventBus);
+    vi.spyOn(f.eventBus, "notifySubscribers").mockImplementation((event) => {
+      if (event.type === "seat.handover_completed") throw new Error("subscriber down after the commit");
+      notify(event);
+    });
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const reverted = await f.service.revertRuntimeChange({ seatRef: SEAT, reason: "back", approval: "go", caller: ADVISOR }) as
+      { ok: boolean; code?: string; guidance?: string };
+    logged.mockRestore();
+    expect(reverted.code).toBe("handover_committed_with_error");
+    expect(reverted.guidance).toContain("The runtime revert is COMMITTED: the seat runs codex.");
+    expect(reverted.guidance).toContain(
+      `finish it from the advisor seat that issued this revert (or the kernel operator) with: rig seat runtime-declare ${SEAT}`);
+  });
+
+  it("the advisor with nothing pending gets runtime_declare_not_pending", async () => {
+    const f = fixture();
+    const none = await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: ADVISOR }) as { ok: boolean; code?: string };
+    expect(none.code).toBe("runtime_declare_not_pending");
   });
 
   it("a returned failure before the commit, followed by a throw, is never reported as committed", async () => {

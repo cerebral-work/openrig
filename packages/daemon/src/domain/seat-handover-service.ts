@@ -119,6 +119,8 @@ interface PreparedRuntimeChange {
   /** How far this attempt got, so a thrown failure is still recorded; recorded is set once a ledger row exists, and
    *  committed only once the commit transaction has returned. */
   progress: { step: string; replacementStarted: boolean; recorded: boolean; committed: boolean };
+  /** A revert issued by the kernel's advisor (D3's exception); its pending declaration is the advisor's to finish too. */
+  issuedByAdvisor: boolean;
 }
 
 export interface SeatHandoverInput {
@@ -523,6 +525,7 @@ export class SeatHandoverService {
     const change: PreparedRuntimeChange = {
       kind: "revert", nodeId: node.id, seatRef: input.seatRef, revertsChangeId: slot.changeId,
       progress: { step: "prepare", replacementStarted: false, recorded: false, committed: false },
+      issuedByAdvisor: typeof this.authorizeRuntimeChange(input.caller ?? null, { revert: false }) !== "string",
       from: runtimeSideOf(current), to: runtimeSideOf(before),
       toAuthoredEffort: before.effort, toEffortChoice: before.effortChoice, toCodexProfile: before.codexConfigProfile,
       toPermissionRow: before.permission, launchOverride, adapter,
@@ -1210,14 +1213,17 @@ export class SeatHandoverService {
 
   /**
    * Spec 0005 — finish the occupant declaration of a committed runtime change or revert whose declaration failed after
-   * the commit (handover_committed_swap_undeclared). Issued by the kernel's operator (D3). It declares the seat's current
+   * the commit (handover_committed_swap_undeclared). Issued by the kernel's operator (D3), or by the kernel's advisor for
+   * a pending revert it issued itself (the ledger row's kind and operator), since the advisor reverts when the operator
+   * seat is the broken one. It declares the seat's current
    * occupant to the activity oracle and stamps the ledger row with who and when; it never relaunches, reverts or touches
    * the pane. Refused unless the node's latest committed change is undeclared and its occupant is still current.
    */
   async declareRuntimeOccupant(input: { seatRef: string; caller?: HandoverCaller | null }):
     Promise<{ ok: true; declared: { seatRef: string; changeId: string; sessionId: string; declaredBy: string } } | Extract<SeatHandoverResult, { ok: false }>> {
-    const operator = this.authorizeRuntimeChange(input.caller ?? null, { revert: false });
+    const operator = this.authorizeRuntimeChange(input.caller ?? null, { revert: true });
     if (typeof operator !== "string") return operator as Extract<SeatHandoverResult, { ok: false }>;
+    const isOperator = typeof this.authorizeRuntimeChange(input.caller ?? null, { revert: false }) === "string";
     const statusResult = this.statusService.getStatus(input.seatRef);
     if (!statusResult.ok) return statusResult;
     const node = this.lookupNode(statusResult.status);
@@ -1243,6 +1249,11 @@ export class SeatHandoverService {
     const session = this.lookupLatestSession(node.id);
     if (!latest.generationUuid || latest.generationUuid !== this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid || !session) {
       return notPending(`A later handover replaced the occupant that the seat's latest runtime change started; there is nothing to declare for it.`);
+    }
+    if (!isOperator && (latest.kind !== "revert" || latest.operator !== operator)) {
+      return { ok: false, code: "runtime_change_unauthorized",
+        message: `The kernel's advisor may declare only a pending revert it issued itself; the seat's pending ${latest.kind} was issued by ${latest.operator}.`,
+        guidance: `The kernel operator finishes it: rig seat runtime-declare ${input.seatRef}` };
     }
     try {
       this.activityOracle?.declareOccupantSwap(node.id, session.id);
@@ -1412,7 +1423,7 @@ export class SeatHandoverService {
     }
     return {
       kind: "change", nodeId: node.id, seatRef: input.status.seat_ref, revertsChangeId: null,
-      progress: { step: "prepare", replacementStarted: false, recorded: false, committed: false },
+      progress: { step: "prepare", replacementStarted: false, recorded: false, committed: false }, issuedByAdvisor: false,
       from: runtimeSideOf(before),
       to: { runtime: toRuntime, model: toModel, cwd: targetCwd, effort: effortChoice ?? authoredEffort, permission: toSelection?.mode ?? null, env: targetEnv },
       toAuthoredEffort: authoredEffort, toEffortChoice: effortChoice, toCodexProfile: codexProfile,
@@ -1548,7 +1559,9 @@ export class SeatHandoverService {
         return { ok: false, code: "handover_committed_with_error",
           message: `The ${what} committed, but a step after the commit failed: ${err instanceof Error ? err.message : String(err)}`,
           guidance: `The ${what} is COMMITTED: the seat runs ${thrown.to.runtime ?? "its target runtime"}. Do NOT retry, relaunch or revert to `
-            + `recover. If its occupant declaration is pending, finish it with: rig seat runtime-declare ${thrown.seatRef} (it refuses when `
+            + `recover. If its occupant declaration is pending, finish it `
+            + `${thrown.issuedByAdvisor ? "from the advisor seat that issued this revert (or the kernel operator) " : ""}`
+            + `with: rig seat runtime-declare ${thrown.seatRef} (it refuses when `
             + "nothing is pending)." };
       }
       if (thrown) this.recordFailed(thrown, `${thrown.progress.replacementStarted ? "threw_after_respawn" : "threw_before_respawn"} at ${thrown.progress.step}`);
@@ -1801,7 +1814,8 @@ export class SeatHandoverService {
         guidance: `${landed} Do NOT retry, relaunch or revert to recover. Only the activity oracle's occupant declaration failed, so the seat's `
           + "activity state may still reflect its predecessor. "
           + (input.change
-            ? `Finish the declaration with: rig seat runtime-declare ${input.change.seatRef}`
+            ? `Finish the declaration ${input.change.issuedByAdvisor ? "from the advisor seat that issued this revert (or the kernel operator) " : ""}`
+              + `with: rig seat runtime-declare ${input.change.seatRef}`
             : "No rig command re-declares a plain handover's occupant; report this to the operator.") };
     }
     const postStatus = this.statusService.getStatus(`${input.status.logical_id}@${input.status.rig_name}`);

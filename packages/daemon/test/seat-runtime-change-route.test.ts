@@ -85,10 +85,10 @@ describe("spec 0005: runtime-change routes", () => {
     (id, node_id, kind, outcome, generation_uuid, to_runtime, approval, reason, operator) VALUES ('c-1', ?, 'change', 'committed', ?, 'claude-code', 'go', 'r', 'operator-agent@kernel')`)
     .run(nodeId(), generation);
 
-  it("runtime-declare: 403 without the operator's identity, for the advisor and for a relayed operator; 409 with nothing pending", async () => {
+  it("runtime-declare: 403 without a kernel identity and for a relayed operator; 409 with nothing pending, for the operator and the advisor", async () => {
     const route = "/api/seat/runtime-declare/dev-impl%40seat-rig";
     expect((await post(route, {})).status).toBe(403);
-    expect((await post(route, {}, "advisor-lead@kernel")).status).toBe(403);
+    expect((await post(route, {}, "advisor-lead@kernel")).status).toBe(409);
     const relayed = { "X-OpenRig-Relay": "remote-host", "X-OpenRig-Provenance": "transport:v1" };
     expect((await post(route, {}, "operator-agent@kernel", relayed)).status).toBe(403);
     const none = await post(route, {}, "operator-agent@kernel");
