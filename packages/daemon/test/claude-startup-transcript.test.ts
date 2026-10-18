@@ -97,26 +97,29 @@ describe("ClaudeCodeAdapter.confirmStartupText reads only this launch's own tran
   };
   const ownPath = "/cfg/projects/-work-seat/fixed-session-id.jsonl";
 
-  it("reads exactly <config>/projects/<encoded cwd>/<launch session id>.jsonl after a fresh launch", async () => {
+  it("reads exactly <config>/projects/<encoded cwd>/<session id>.jsonl for the id it is given", async () => {
     const fsOps = fsWith({ [ownPath]: jsonl({ type: "user", timestamp: at(100), message: { content: pasted(SENT) } }) });
-    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, sessionIdFactory: () => "fixed-session-id", claudeConfigDir: "/cfg" });
-    await adapter.launchHarness(binding, { name: "seat" });
-    expect(await adapter.confirmStartupText(binding, SENT, T0)).toMatchObject({ outcome: "verified" });
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, claudeConfigDir: "/cfg" });
+    expect(await adapter.confirmStartupText(binding, "fixed-session-id", SENT, T0)).toMatchObject({ outcome: "verified" });
     expect(fsOps.readFile.mock.calls.filter(([p]) => String(p).endsWith(".jsonl"))).toEqual([[ownPath]]);
   });
 
-  it("is unavailable, reading nothing, when this adapter has no launch for the node", async () => {
-    const fsOps = fsWith({ [ownPath]: jsonl({ type: "user", timestamp: at(100), message: { content: pasted(SENT) } }) });
-    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, claudeConfigDir: "/cfg" });
-    expect(await adapter.confirmStartupText(binding, SENT, T0)).toMatchObject({ outcome: "unavailable" });
-    expect(fsOps.readFile).not.toHaveBeenCalled();
+  it("never reads an earlier occupant's file for a later launch of the same node (generation 2 after generation 1)", async () => {
+    const earlierPath = "/cfg/projects/-work-seat/earlier-occupant.jsonl";
+    // The earlier occupant's file would verify; the later launch's own file is not there yet.
+    const fsOps = fsWith({ [earlierPath]: jsonl({ type: "user", timestamp: at(100), message: { content: pasted(SENT) } }) });
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, sessionIdFactory: () => "earlier-occupant", claudeConfigDir: "/cfg" });
+    await adapter.launchHarness(binding, { name: "seat" });
+    const later = { ...binding, id: "b2", launchGeneration: "generation-2" } as NodeBinding;
+    expect(await adapter.confirmStartupText(later, "later-resumed-id", SENT, T0)).toMatchObject({ outcome: "unavailable" });
+    expect(fsOps.exists.mock.calls.map(([p]) => String(p)).filter(p => p.endsWith(".jsonl"))).toEqual(["/cfg/projects/-work-seat/later-resumed-id.jsonl"]);
+    expect(fsOps.readFile.mock.calls.filter(([p]) => String(p).endsWith(".jsonl"))).toEqual([]);
   });
 
   it("is unavailable when the launch's own transcript file does not exist", async () => {
     const fsOps = fsWith({ "/cfg/projects/-work-seat/someone-else.jsonl": jsonl({ type: "user", timestamp: at(100), message: { content: pasted(SENT) } }) });
-    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, sessionIdFactory: () => "fixed-session-id", claudeConfigDir: "/cfg" });
-    await adapter.launchHarness(binding, { name: "seat" });
-    expect(await adapter.confirmStartupText(binding, SENT, T0)).toMatchObject({ outcome: "unavailable" });
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps, sleep: async () => {}, claudeConfigDir: "/cfg" });
+    expect(await adapter.confirmStartupText(binding, "fixed-session-id", SENT, T0)).toMatchObject({ outcome: "unavailable" });
     expect(fsOps.readFile.mock.calls.filter(([p]) => String(p).endsWith(".jsonl"))).toEqual([]);
   });
 });

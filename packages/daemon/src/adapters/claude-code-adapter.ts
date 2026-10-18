@@ -188,14 +188,13 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   }
 
   /**
-   * Spec 0012: confirm a startup send from this launch's own transcript. This narrowly reverses the rule at
+   * Spec 0012: confirm a startup send from the launch's own transcript. This narrowly reverses the rule at
    * launchHarness (nothing is read back from Claude's session files, because a same-name file can belong to an
-   * earlier occupant): only for this check, only the file named by the session id THIS launch passed (the generated
-   * --session-id, the resumed id or the fork id), never found by listing or globbing, and only records after the send.
+   * earlier occupant): only for this check, only the file named by `sessionId`, which the orchestrator takes from the
+   * launch being confirmed (the generated --session-id or the exact resumed id), never from this adapter's own record
+   * of a node's last launch, never found by listing or globbing, and only records after the send.
    */
-  async confirmStartupText(binding: NodeBinding, text: string, sentAtMs: number): Promise<StartupTranscriptConfirmation> {
-    const sessionId = this.autoLaunches.get(binding.nodeId)?.token;
-    if (!sessionId) return { outcome: "unavailable", reason: "no session id from this launch" };
+  async confirmStartupText(binding: NodeBinding, sessionId: string, text: string, sentAtMs: number): Promise<StartupTranscriptConfirmation> {
     let cwd = binding.cwd;
     try { cwd = fs.realpathSync.native(binding.cwd); } catch { /* the binding's own path */ }
     const transcript = nodePath.join(this.claudeConfigDir, "projects", encodeClaudeProjectDir(cwd), `${sessionId}.jsonl`);

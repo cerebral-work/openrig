@@ -163,6 +163,9 @@ export interface StartupInput {
   rebuildArtifacts?: ResolvedStartupFile[];
   /** Skip harness launch (legacy nodes that already resumed via old helpers). */
   skipHarnessLaunch?: boolean;
+  /** Spec 0012: with skipHarnessLaunch, the native session id that launch passed itself (the exact resumed id).
+   * Transcript confirmation reads only that id's file; without one it is unavailable. */
+  launchSessionId?: string;
   /** Allow runtime adapter retry_fresh fallback when native resume data is stale. */
   allowFreshFallback?: boolean;
   /** Exact resume preserves saved context; its empty Claude plan must not disable activity hooks. */
@@ -185,6 +188,8 @@ type StartupDeliveryInput = StartupInput & {
   lastSubmissionConfirmed?: boolean;
   /** Spec 0012: required sends whose submission stayed unverified, as "<source>: <reason>". */
   requiredUnverified: string[];
+  /** Spec 0012: the native session id the launch being confirmed passed itself; unset when it is not known. */
+  ownSessionId?: string;
 };
 
 export type StartupResult = { warnings?: string[] } & (
@@ -303,7 +308,8 @@ export class StartupOrchestrator {
     input = { ...input, binding: { ...input.binding, nonInterruptive: rigRepo.getRigNonInterruptive(input.rigId) } };
     const claudeManagedBlockFile = rigRepo.getRigClaudeManagedBlockFile(input.rigId);
     if (claudeManagedBlockFile) input = { ...input, binding: { ...input.binding, claudeManagedBlockFile } };
-    const deliveryInput: StartupDeliveryInput = { ...input, warnings, submissionWarnings: [], startupAttemptId: randomUUID(), sendOrder: 0, submissionDiagnostics: [], requiredUnverified: [] };
+    const deliveryInput: StartupDeliveryInput = { ...input, warnings, submissionWarnings: [], startupAttemptId: randomUUID(), sendOrder: 0, submissionDiagnostics: [], requiredUnverified: [],
+      ...(input.skipHarnessLaunch && input.launchSessionId ? { ownSessionId: input.launchSessionId } : {}) };
     const errors: string[] = [];
     let continuityOutcome: "resumed" | "fresh" | "forked" | "rebuilt" = input.resumeToken
       ? "resumed"
@@ -421,6 +427,10 @@ export class StartupOrchestrator {
           });
           if (launchResult.ok) {
             appliedLaunch = launchResult.appliedLaunch;
+            // Spec 0012: the id on this launch's own command line: the exact resumed id, else the generated id. A fork is
+            // left out: its new file's records relative to the parent's are not established, so it is never confirmed.
+            const ownSessionId = launchResumeToken || (input.forkSource ? undefined : launchResult.resumeToken);
+            if (ownSessionId) deliveryInput.ownSessionId = ownSessionId;
             if (input.adapter.runtime === "claude-code" && launchResumeToken?.trim()) {
               await this.recordClaudeResumeLaunch(input.sessionId, input.binding.tmuxPane ?? input.binding.tmuxSession, launchResumeToken.trim(), launchResult.launchedProcess);
             }
@@ -1080,11 +1090,13 @@ export class StartupOrchestrator {
     return { pane, state, looks };
   }
 
-  /** Spec 0012: the runtime adapter's transcript verdict for one send, when it offers one. A failure is unavailable. */
+  /** Spec 0012: the runtime adapter's transcript verdict for one send, when it offers one, read only for the session id
+   * this launch passed itself. No such id, or a failure, is unavailable. */
   private async confirmFromTranscript(input: StartupDeliveryInput, text: string, sentAtMs: number): Promise<StartupTranscriptConfirmation | undefined> {
     if (!input.adapter.confirmStartupText) return undefined;
+    if (!input.ownSessionId) return { outcome: "unavailable", reason: "no session id from this launch" };
     try {
-      return await input.adapter.confirmStartupText(input.binding, text, sentAtMs);
+      return await input.adapter.confirmStartupText(input.binding, input.ownSessionId, text, sentAtMs);
     } catch {
       return { outcome: "unavailable", reason: "transcript confirmation failed" };
     }

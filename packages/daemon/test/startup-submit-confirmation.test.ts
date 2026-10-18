@@ -726,8 +726,10 @@ describe("startup prompt submission", () => {
       let looks = 0;
       f.tmux.capturePaneContent.mockImplementation(async (target: string, lines?: number) => (++looks <= unrecognizedLooks ? UNRECOGNIZED : real(target, lines)));
     };
+    // The launch reports the id on its own command line, as every ClaudeCodeAdapter launch branch does.
     const withTranscript = (f: ReturnType<typeof fixture>, outcome: object) => {
-      const confirm = vi.fn(async (_binding: unknown, _text: string, _sentAtMs: number) => outcome);
+      vi.mocked(f.adapter.launchHarness).mockResolvedValue({ ok: true, resumeToken: "own-launch-id", resumeType: "claude_id" });
+      const confirm = vi.fn(async (_binding: unknown, _sessionId: string, _text: string, _sentAtMs: number) => outcome);
       (f.adapter as unknown as { confirmStartupText: typeof confirm }).confirmStartupText = confirm;
       return confirm;
     };
@@ -768,10 +770,42 @@ describe("startup prompt submission", () => {
       expect(result).toMatchObject({ ok: true, startupStatus: "ready" });
       expect(result).not.toHaveProperty("submission");
       expect(confirm).toHaveBeenCalledTimes(1);
-      expect(confirm.mock.calls[0]![1]).toBe(f.tmux.sendText.mock.calls[0]![1]);
-      expect(typeof confirm.mock.calls[0]![2]).toBe("number");
+      expect(confirm.mock.calls[0]![1]).toBe("own-launch-id");
+      expect(confirm.mock.calls[0]![2]).toBe(f.tmux.sendText.mock.calls[0]![1]);
+      expect(typeof confirm.mock.calls[0]![3]).toBe("number");
       expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
       expect(f.tmux.sendKeys).toHaveBeenCalledTimes(1);
+    });
+
+    it("confirms a skipped launch only for the id that launch passed, and never without one", async () => {
+      // The required file goes out through the real Claude delivery as its own checked send.
+      const restore = { isRestore: true, skipHarnessLaunch: true, resolvedStartupFiles: [file("role.md")], startupActions: [] };
+      const unnamed = fixture(0, "claude-code", false, true);
+      unnamed.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const notCalled = withTranscript(unnamed, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      expect(await unnamed.start(restore)).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      expect(unnamed.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(notCalled).not.toHaveBeenCalled();
+      expect(unnamed.adapter.launchHarness).not.toHaveBeenCalled();
+
+      const named = fixture(0, "claude-code", false, true);
+      named.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(named, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      expect(await named.start({ ...restore, launchSessionId: "resumed-T1" })).toMatchObject({ ok: true, startupStatus: "ready" });
+      expect(confirm).toHaveBeenCalledTimes(1);
+      expect(confirm.mock.calls[0]![1]).toBe("resumed-T1");
+    });
+
+    it("never confirms a fork launch from the transcript", async () => {
+      const f = fixture(0, "claude-code", false, true);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(f, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      vi.mocked(f.adapter.launchHarness).mockResolvedValue({ ok: true, resumeToken: "fork-id", resumeType: "claude_id" });
+      const result = await f.start({ forkSource: { kind: "native_id", value: "parent-id" }, resolvedStartupFiles: [file("role.md")], startupActions: [] });
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(f.adapter.launchHarness).mock.calls[0]![1]).toMatchObject({ forkSource: { value: "parent-id" } });
+      expect(result).toMatchObject({ ok: false, startupStatus: "attention_required" });
+      expect(confirm).not.toHaveBeenCalled();
     });
 
     it("names a single text-free enqueue startup_text_enqueued_unconfirmed, still attention_required", async () => {

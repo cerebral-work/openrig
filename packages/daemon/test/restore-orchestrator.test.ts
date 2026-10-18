@@ -35,6 +35,7 @@ import { buildRestorePlanPreview } from "../src/domain/restore-plan-preview.js";
 import { AppliedLaunchObservationStore } from "../src/domain/applied-launch-observation-store.js";
 import { observeClaudePermission, observeCodexSandbox, observePiResourceTrust, observeOmpApprovalMode, type AppliedLaunchObservation } from "../src/domain/permission-drift.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
+import { StartupOrchestrator } from "../src/domain/startup-orchestrator.js";
 
 function setupDb(): Database.Database {
   return createFullTestDb();
@@ -2402,6 +2403,42 @@ describe("RestoreOrchestrator", () => {
     // Note: legacy path uses old claude-resume helpers, then calls startNode with skipHarnessLaunch: true
     // So launchHarness should NOT be called
     // (The old helper resume fails with mock but returns baseStatus = failed)
+  });
+
+  it("legacy Claude restore hands startup the exact id it resumed, for transcript confirmation (spec 0012)", async () => {
+    const rig = rigRepo.createRig("r01");
+    const node = rigRepo.addNode(rig.id, "impl", { runtime: "claude-code" });
+    const session = sessionRegistry.registerSession(node.id, "r01-impl");
+    sessionRegistry.updateStatus(session.id, "running");
+    sessionRegistry.updateResumeToken(session.id, "claude_id", "legacy-resumed-T1");
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(session.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+
+    const resume = vi.fn(async () => ({ ok: true as const }));
+    const startNode = vi.spyOn(StartupOrchestrator.prototype, "startNode");
+    const mockAdapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness: vi.fn(async () => ({ ok: true as const })),
+    };
+
+    try {
+      const orch = createOrchestrator({ claude: { canResume: vi.fn(() => true), resume } as unknown as ClaudeResumeAdapter });
+      await orch.restore(snap.id, { adapters: { "claude-code": mockAdapter } });
+
+      expect(resume).toHaveBeenCalledTimes(1);
+      expect(startNode).toHaveBeenCalledTimes(1);
+      expect(startNode.mock.calls[0]![0]).toMatchObject({ skipHarnessLaunch: true, launchSessionId: "legacy-resumed-T1" });
+      expect(startNode.mock.calls[0]![0].resumeToken).toBeUndefined();
+      expect(mockAdapter.launchHarness).not.toHaveBeenCalled();
+    } finally {
+      startNode.mockRestore();
+    }
   });
 
   it("legacy Claude restore with missing token fails even when startup context is available", async () => {

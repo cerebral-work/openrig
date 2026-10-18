@@ -171,9 +171,10 @@ export interface RuntimeAdapter {
    * The adapter still owns file reads, ordering, provisioning and required/optional errors. */
   deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string, file?: ResolvedStartupFile) => Promise<void>): Promise<StartupDeliveryResult>;
 
-  /** Spec 0012: confirm a startup send from this launch's own transcript, only from records after `sentAtMs`.
+  /** Spec 0012: confirm a startup send from the transcript of `sessionId`, the native session id the launch being
+   * confirmed passed itself (the orchestrator supplies it), only from records after `sentAtMs`.
    * Read-only; the result carries hashes, types and times, never text. Absent = no transcript confirmation. */
-  confirmStartupText?(binding: NodeBinding, text: string, sentAtMs: number): Promise<import("./startup-transcript-evidence.js").StartupTranscriptConfirmation>;
+  confirmStartupText?(binding: NodeBinding, sessionId: string, text: string, sentAtMs: number): Promise<import("./startup-transcript-evidence.js").StartupTranscriptConfirmation>;
 
   /**
    * Launch the harness (claude/codex/terminal) inside the tmux session.
