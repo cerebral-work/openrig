@@ -66,7 +66,8 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
    - The resume probe judges its pane only after its launch has started:
      - Started means Claude's own process (`claude`, or `node` for an npm install, the names the claim service expects for `claude-code`) was seen in the foreground. The scrub's helpers (`awk`, `rm`) don't count.
      - A shell before that is a launch still starting, not a return to the shell.
-     - A probe whose launch never starts is inconclusive, and so is one whose pane shows `seat_env_refused`: Claude never ran, so the token was not tested.
+     - A probe whose launch never starts is inconclusive, and so is one the scrub refused: Claude never ran, so the token was not tested.
+     - A refusal is the scrub's own line, `openrig: seat_env_refused (step:` at the start of a pane line, while Claude isn't the foreground process. It is checked after the resumed assessment. So a live Claude whose visible history merely mentions the refusal is still judged on its own state.
      - A token the probe never tested is never reported not resumable. Such a report would make the next restore of that seat start fresh and lose its conversation.
    - Only names and the `KUBECONFIG` path appear in the script; no value is read into it.
    - **Covered:** every runtime adapter's launch and resume (Claude, Codex, Pi, agy, the managed Claude launch), the resume-metadata probe and the stub runtime.
@@ -114,7 +115,7 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 - REQ-0013-12: While `seat_env.mode` is `allowlist`, the daemon shall apply the allow-list to the names tmux's `update-environment` copies into a seat session.
 - REQ-0013-13: While `seat_env.mode` is `allowlist`, a launch through `sendLaunchCommand` shall replace the staging shell once the scrub has run.
 - REQ-0013-14: When the resume probe sees a shell in its pane's foreground before Claude's own process was seen there, the probe shall keep waiting rather than report the token not resumable.
-- REQ-0013-15: If the resume probe's pane shows `seat_env_refused`, then the probe shall report the token inconclusive.
+- REQ-0013-15: If the resume probe's pane shows the scrub's refusal line while Claude is not the foreground process, then the probe shall report the token inconclusive.
 
 ## Plan
 
@@ -151,7 +152,9 @@ It also checks, in allow-list mode with filter mode as the control:
 - a shell after the runtime was seen is not resumable;
 - a shell that never leaves the foreground is inconclusive;
 - the scrub's `awk` or `rm`, then a shell, is inconclusive, while `awk` then Claude is resumable;
-- a refusal visible in the pane is inconclusive, even after `node` was seen.
+- a refusal visible in the pane is inconclusive, even after `node` was seen;
+- a resumed Claude whose history mentions the refusal, even at a line start, is resumable;
+- the string elsewhere than at a line start is no refusal.
 
 `seat-env-allowlist.test.ts` runs the generated prologue in a real `/bin/sh`, and in bash, zsh and dash:
 - a readonly secret export stops the command with `seat_env_refused`, naming the step and the name;
