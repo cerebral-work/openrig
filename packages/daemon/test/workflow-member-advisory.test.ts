@@ -510,7 +510,7 @@ describe("FAC-3 C2: FR-5 member-exists instantiate advisory", () => {
       createdBySession: "orch@acme-build",
     });
     const joined = result.advisories.join(" || ");
-    expect(joined).toContain("rig_name_ambiguous");
+    expect(joined).toContain("rig_ambiguous");
     expect(joined).toContain(buildRigId);
     expect(joined).toContain(twin.id);
   });

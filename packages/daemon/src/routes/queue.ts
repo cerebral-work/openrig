@@ -892,10 +892,10 @@ export function queueRoutes(): Hono {
         : whoamiService?.resolve({ sessionName: callerSession, compact: true });
       role = deriveRole(c.get("db" as never) as Database.Database | undefined, identity?.identity.nodeId ?? null);
     } catch (err) {
-      // An ambiguous session is named as such, with its rigs; other unavailable identity is not an
+      // An ambiguous session is named with rig_ambiguous (rig add's code) and its rigs; other unavailable identity is not an
       // absent role declaration.
       if (err instanceof WhoamiAmbiguousError) {
-        role = { state: "unknown", reason: `ambiguous session: found in live rigs ${err.rigIds.join(", ")}`, files: [] };
+        role = { state: "unknown", reason: `rig_ambiguous: session found in live rigs ${err.rigIds.join(", ")}`, files: [] };
       }
     }
     // OPR.0.7.0.12: labelled work candidates for the refocus packet, only on request, so the

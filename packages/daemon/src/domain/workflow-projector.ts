@@ -1432,7 +1432,7 @@ function resolveRoleOnBoundRig(
     // Spec 0009: two live rigs share the bound name. Fail loud; never pick one.
     if (err instanceof RigNameAmbiguousError) {
       throw new WorkflowProjectorError(
-        "rig_name_ambiguous",
+        "rig_ambiguous",
         `cannot resolve role "${roleName}" for step "${stepId}": ${err.message}.`,
         { stepId, role: roleName, boundRig: roleCtx.boundRig, rigIds: err.rigIds },
       );

@@ -77,12 +77,12 @@ describe("queue whoami role binding", () => {
     expect(await role("orch-lead@revenant")).toMatchObject({ state: "present", files: [{ path: "lead.md" }] });
   });
 
-  it("two live rigs share a session: the role names an ambiguous session and both rigs (spec 0009)", async () => {
+  it("two live rigs share a session: the role names rig_ambiguous and both rigs (spec 0009)", async () => {
     const one = leadSeat("twin");
     const two = leadSeat("twin");
     const answer = await role("orch-lead@twin");
     expect(answer.state).toBe("unknown");
-    expect(answer.reason).toContain("ambiguous session");
+    expect(answer.reason).toContain("rig_ambiguous");
     expect(answer.reason).toContain(one.rigId);
     expect(answer.reason).toContain(two.rigId);
   });
@@ -93,7 +93,7 @@ describe("queue whoami role binding", () => {
     record(one.node, [file("one.md")]);
     expect(await roleWithNode("orch-lead@twin", one.node)).toMatchObject({ state: "present", files: [{ path: "one.md" }] });
     // A node whose session is someone else's does not stand in for the caller.
-    expect((await roleWithNode("orch-lead@twin", a)).reason).toContain("ambiguous session");
+    expect((await roleWithNode("orch-lead@twin", a)).reason).toContain("rig_ambiguous");
   });
 
   it("exposes only the caller's explicitly marked entries, independently of work and shared cwd", async () => {

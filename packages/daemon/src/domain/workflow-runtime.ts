@@ -505,7 +505,7 @@ export class WorkflowRuntime {
       const ids = unarchivedRigIds(this.db, name);
       if (ids.length > 1) {
         const err = new RigNameAmbiguousError(name, ids);
-        throw new WorkflowProjectorError("rig_name_ambiguous", `cannot instantiate: ${err.message}.`, {
+        throw new WorkflowProjectorError("rig_ambiguous", `cannot instantiate: ${err.message}.`, {
           specPath: input.specPath,
           rigName: name,
           rigIds: ids,
@@ -668,7 +668,7 @@ export class WorkflowRuntime {
               if (!ambiguousRigs.has(parsed.rig)) {
                 ambiguousRigs.add(parsed.rig);
                 advisories.push(
-                  `rig_name_ambiguous: preferred target "${target}" names rig "${parsed.rig}", which matches ${err.rigIds.length} unarchived rigs (${err.rigIds.join(", ")}). ` +
+                  `rig_ambiguous: preferred target "${target}" names rig "${parsed.rig}", which matches ${err.rigIds.length} unarchived rigs (${err.rigIds.join(", ")}). ` +
                     `Work routed there cannot be placed until the extra rigs are archived or renamed.`,
                 );
               }

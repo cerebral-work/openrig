@@ -488,16 +488,16 @@ describe("FAC-1 C3: the six owner-resolution call sites on a bound rig", () => {
     expect(projected.nextOwnerSession).toBe(driverSeat);
   });
 
-  it("two live rigs share the bound name: instantiate fails loud with rig_name_ambiguous naming both ids (spec 0009)", async () => {
+  it("two live rigs share the bound name: instantiate fails loud with rig_ambiguous naming both ids (spec 0009)", async () => {
     seedSeat(rigAId, "factory-a", "dev", "planner1", { role: "planner" });
     const twin = rigRepo.createRig("factory-a");
     seedSeat(twin.id, "factory-a", "dev", "planner2", { role: "planner" });
     await expect(
       runtime.instantiate({ specPath: writeSpec("role-only.yaml", ROLE_ONLY_SPEC), rootObjective: "t", createdBySession: "orch@factory-a" }),
-    ).rejects.toMatchObject({ code: "rig_name_ambiguous", details: { rigIds: expect.arrayContaining([rigAId, twin.id]) } });
+    ).rejects.toMatchObject({ code: "rig_ambiguous", details: { rigIds: expect.arrayContaining([rigAId, twin.id]) } });
   });
 
-  it("a same-name live rig appearing mid-run: projection fails loud with rig_name_ambiguous, never picks one (spec 0009)", async () => {
+  it("a same-name live rig appearing mid-run: projection fails loud with rig_ambiguous, never picks one (spec 0009)", async () => {
     seedSeat(rigAId, "factory-a", "dev", "planner1", { role: "planner" });
     seedSeat(rigAId, "factory-a", "dev", "driver1", { role: "driver" });
     const inst = await runtime.instantiate({ specPath: writeSpec("role-only.yaml", ROLE_ONLY_SPEC), rootObjective: "t", createdBySession: "orch@factory-a" });
@@ -510,7 +510,7 @@ describe("FAC-1 C3: the six owner-resolution call sites on a bound rig", () => {
         exit: "handoff",
         actorSession: "dev-planner1@factory-a",
       }),
-    ).rejects.toMatchObject({ code: "rig_name_ambiguous" });
+    ).rejects.toMatchObject({ code: "rig_ambiguous" });
   });
 
   it("loud-with-candidates: all role seats stopped → structured per-candidate disqualifiers; zero-declaring → the named zero-candidate message", async () => {
