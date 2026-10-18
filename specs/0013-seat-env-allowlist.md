@@ -93,7 +93,25 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
    - A failed tmux command's error starts with its whole command line, including every `-e NAME=VALUE` launch value, and can carry its output.
    - `classifyWriteError`, the filter-mode warning and every allow-list refusal keep only a code, the tmux step (`tmux new-session failed`), the names (never the values) of the command's `-e` launch variables and, for known phrases such as `duplicate session`, tmux's reason. #15's respawn redaction composes with it.
    - This applies to every transport (exec, argv and control mode share the format) and to both modes.
-9. Not changed:
+9. No secret value on a tmux argv (security finding, 2026-10-18):
+   - **Why argv matters:**
+     - A tmux server keeps the argv of the command that started it, so `ps` and `pgrep -af` show it for the server's whole life.
+     - A short-lived tmux client shows its argv while it runs.
+     - So a `-e NAME=VALUE` value is readable by anything on the host. The daemon passed the activity-hook token that way, and a `pgrep -af` copied it into an agent transcript.
+   - **The token leaves the launch env.** The daemon no longer puts `OPENRIG_ACTIVITY_HOOK_TOKEN` in a seat's launch environment.
+     - Seats read the token from `<OPENRIG_HOME>/activity-endpoint.json` (mode 0600), which the daemon writes at startup.
+     - Every reader already falls back to that file: the activity relay, the stub and Pi runners, `rig startup-proof`, and session transport's prerequisite check (which counts the file as the token).
+   - **Self-attach** no longer returns the token in its response env. `rig attach --self --json` printed that response.
+   - **The guard.**
+     - `createSession` and `respawnPane` refuse a launch env holding a secret-named variable, before any tmux command runs. Secret-named uses the `KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE` rule, case-insensitive.
+     - The refusal is `secret_on_argv_refused`, naming the variable, never its value. A session refused at creation is never created. This applies in both modes.
+     - One OpenRig name matches the rule but is not a secret: `OPENRIG_SEAT_ENV_KEYS`, whose value lists the seat's declared variable names. It is exempt by name.
+     - So a rig spec, or the provider-auth allow-list, that names a secret-named seat variable is refused at launch until the follow-up below.
+   - **Not in this change (follow-up):** a channel that delivers a secret-named seat value without argv. The same follow-up covers the managed Claude launch, which forwards session variables by name onto `/usr/bin/env -i`'s argv (`"NAME=${NAME-}"`, so the value is on `env`'s argv while it runs). With the token gone from the launch env, nothing secret-named is forwarded that way unless a provider-auth name is configured, and a fresh launch with one is refused at `new-session`.
+     - The verified candidate: `tmux source-file` of a 0600 file holding `set-environment` lines, removed after, then a pane restart.
+     - On tmux 3.4, the pane sees the value, and no tmux process's argv holds it (only the file path is on argv).
+   - **What this doesn't fix:** a server already started with the token keeps that argv until it exits. Rotating the token is the operator's decision.
+10. Not changed:
    - Filter mode (byte-identical; the argv legacy-equivalence test drives every new site).
    - The daemon's own environment.
    - The managed launch's narrower `env -i` set.
@@ -116,6 +134,10 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 - REQ-0013-13: While `seat_env.mode` is `allowlist`, a launch through `sendLaunchCommand` shall replace the staging shell once the scrub has run.
 - REQ-0013-14: When the resume probe sees a shell in its pane's foreground before Claude's own process was seen there, the probe shall keep waiting rather than report the token not resumable.
 - REQ-0013-15: If the resume probe's pane shows the scrub's refusal line while Claude is not the foreground process, then the probe shall report the token inconclusive.
+- REQ-0013-16: The daemon shall not put the activity-hook token in a seat's launch environment.
+- REQ-0013-17: If a launch environment passed to tmux holds a secret-named variable, then the tmux adapter shall refuse the launch before running any tmux command and name the variable without its value.
+- REQ-0013-18: The self-attach response shall not include the activity-hook token.
+- REQ-0013-19: When a seat's activity reader has no token in its environment, it shall read the token from the daemon's activity endpoint file.
 
 ## Plan
 
@@ -129,6 +151,14 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 3. The apply plan sets `seat_env.kubeconfig` to the scoped kubeconfig. While that file is absent, an allow-listed seat inherits no kubeconfig.
 
 ## Test
+
+**Item 9** (`seat-env-no-secret-argv.test.ts`):
+- **The sentinel test.** It starts a tmux server and a seat on a private socket the way the daemon does: the launch env comes from the daemon's own builder, with a sentinel token, and the adapter's command starts the server. It records every argv the adapter runs, then scans `/proc/*/cmdline` of every tmux process. The sentinel must appear in neither. Red first: before the change, the server's argv held it.
+- **The guard:** a secret-named variable in `createSession`'s or `respawnPane`'s env is refused with `secret_on_argv_refused`, naming the variable. No tmux command runs, and the message carries no value.
+- **Self-attach:** its response env holds no token.
+- **The file fallback:** a seat whose env lacks the token resolves it from the endpoint file.
+- **Break-once:** each rule, broken on purpose, turns its test red.
+
 
 ```bash
 cd packages/daemon && npx vitest run test/seat-env-allowlist.test.ts test/seat-env-allowlist-tmux.test.ts test/seat-env-allowlist-adapter.test.ts test/seat-env-settings.test.ts test/seat-env-secret-sentinel.test.ts test/refresh-probe-cleanup.test.ts test/s03-bound-launch.test.ts test/tmux-argv-legacy-equivalence.test.ts test/seat-launch-env-tmux.test.ts test/user-settings-store.test.ts
