@@ -805,6 +805,7 @@ describe("OPR.0.4.6.WF2 — spec language", () => {
         .issues.find((i) => i.code === "gate_target_unresolved");
       const external = forTarget("ctodie@external");
       expect(external?.message).toContain("human-<name>@kernel");
+      expect(external?.message).toContain("human@kernel or human@host");
       expect(external?.message).toContain("gateway (Slack) address");
       expect(external?.message).toContain('"human-ctodie@kernel"');
       const host = forTarget("ctodie@host");
@@ -812,11 +813,13 @@ describe("OPR.0.4.6.WF2 — spec language", () => {
       expect(host?.message).not.toContain("gateway");
     });
 
-    it("a per-person human seat (human-<name>@kernel) is a valid gate target (spec 0010 control)", () => {
-      const result = new WorkflowValidator().validate(
-        parseWorkflowSpec(GATED_HUMAN_SPEC.replace("target: human@kernel", "target: human-ctodie@kernel"), "x.yaml"),
-      );
-      expect(result.issues.filter((i) => i.code.startsWith("gate_"))).toEqual([]);
+    it("a per-person human seat (human-<name>@kernel) and plain human@host are valid gate targets (spec 0010 control)", () => {
+      for (const target of ["human-ctodie@kernel", "human@host"]) {
+        const result = new WorkflowValidator().validate(
+          parseWorkflowSpec(GATED_HUMAN_SPEC.replace("target: human@kernel", `target: ${target}`), "x.yaml"),
+        );
+        expect(result.issues.filter((i) => i.code.startsWith("gate_"))).toEqual([]);
+      }
     });
 
     it("a HUMAN gate missing summary/evidence_ref fails validation (fail at author time, not mid-run)", () => {

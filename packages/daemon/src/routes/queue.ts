@@ -108,8 +108,18 @@ export function queueRoutes(): Hono {
     const parsedSource = parseSessionName(sourceSession);
     if (parsedSource.kind !== "canonical") return { ok: true };
     const rigName = parsedSource.rig;
-    const rigs = rigRepo.findRigsByName(rigName);
+    // Spec 0009: unarchived rigs only (a lead swap archives a rig and reuses its name); never pick one of several.
+    const rigs = rigRepo.findUnarchivedRigsByName(rigName);
     if (rigs.length === 0) return { ok: true };
+    if (rigs.length > 1) {
+      const rigIds = rigs.map((r) => r.id);
+      return {
+        ok: false,
+        error: "rig_ambiguous",
+        message: `rig name "${rigName}" matches ${rigIds.length} unarchived rigs (${rigIds.join(", ")}); archive or rename the extra rigs, then retry`,
+        meta: { rigName, rigIds },
+      };
+    }
     const rigId = rigs[0]!.id;
     const ws = rigRepo.getRigWorkspace(rigId);
     if (!ws) return { ok: true };

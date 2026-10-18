@@ -10,6 +10,7 @@ import { missionModeQualifier, type OperatorContextReadContext, type OperatorCon
 import { validateModeName, validateRecord } from "./rig-mode-validator.js";
 import { inferCatalogProject, rigFromSession, selectCatalogProject, ProjectReadError } from "../workspace/project-catalog.js";
 import type { SettingsStore } from "../user-settings/settings-store.js";
+import { RigRepository } from "../rig-repository.js";
 
 /** Production wiring for the catalogPath callback: an explicitly configured
  *  workspace.catalog_path (env or config file). When it's only the derived
@@ -74,9 +75,11 @@ export class OperatingPostureService {
   context(input: OperatorContextReadContext): OperatingContext {
     const ctx: OperatingContext = { ...input, phase: { value: null, source: null }, sources: [] };
     const rigIdentity = (value: string) => {
-      const rigs = this.db.prepare("SELECT id FROM rigs WHERE id = ? OR name = ?").all(value, value) as Array<{ id: string }>;
+      // By id, any rig; by name, unarchived rigs only, since a lead swap archives a rig and reuses its name (spec 0009).
+      const byId = this.db.prepare("SELECT id FROM rigs WHERE id = ?").all(value) as Array<{ id: string }>;
+      const rigs = [...new Set([...byId.map((r) => r.id), ...new RigRepository(this.db).findUnarchivedRigsByName(value).map((r) => r.id)])];
       if (rigs.length !== 1) throw new Error("rig identity missing or ambiguous: " + value);
-      return rigs[0]!.id;
+      return rigs[0]!;
     };
     for (const value of Object.values(input)) if (value !== undefined && !value.trim()) throw new Error("empty scope identity");
     if (ctx.rigId) ctx.rigId = rigIdentity(ctx.rigId);

@@ -94,6 +94,14 @@ it("uses exact workflow packet phase and normalizes rig aliases; workflow existe
   expect(t.service.resolve({ qitemId: "alpha" })).toMatchObject({ posture: "unknown", source: "unknown", reason: expect.stringContaining("conflicting projectId") });
 });
 
+it("a rig name shared with archived rigs resolves to the live rig; two live rigs stay unknown (spec 0009)", async () => {
+  const t = await setup();
+  t.rigs.archiveRig(t.rigs.createRig("demo").id);
+  expect(t.service.resolve({ rigId: "demo" }).posture).toBe("human-led");
+  t.rigs.createRig("demo");
+  expect(t.service.resolve({ rigId: "demo" }).posture).toBe("unknown");
+});
+
 it("refuses missing, conflicting, ambiguous, unreadable and corrupt sources instead of using the default", async () => {
   const t = await setup();
   for (const ctx of [{}, { rigId: "missing" }, { rigId: " " }, { missionId: "release" }, { projectId: "missing" }, { projectId: "alpha", missionId: "missing" }, { qitemId: "unlinked" }, { qitemId: "missing" }, { qitemId: "alpha", projectId: "beta" }]) {

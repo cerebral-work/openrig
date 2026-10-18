@@ -556,6 +556,7 @@ describe("self-addressed handoff retried after a pre-upgrade self-forward", () =
       set("queueRepo", repo);
       set("rigRepo", {
         findRigsByName: (name: string) => (name === "rig" ? [{ id: "rig-id" }] : []),
+        findUnarchivedRigsByName: (name: string) => (name === "rig" ? [{ id: "rig-id" }] : []),
         getRigWorkspace: () => ({ repos: workspaceRepos.map((name) => ({ name })) }),
       });
       set("hostRegistryLoader", () => ({ ok: true, registry: SELF_REGISTRY }));

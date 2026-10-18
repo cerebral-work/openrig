@@ -28,7 +28,7 @@ export const HUMAN_SEAT_SESSION_PATTERN = /^human(?:-[A-Za-z0-9._-]+)?@(kernel|h
 
 /** Spec 0010: every accepted workflow gate-target form, for the gate_target_unresolved messages. */
 export const GATE_TARGET_FORMS =
-  "a human seat session (human@kernel, or human-<name>@kernel or human-<name>@host for one person) or a role declared in workflow.roles";
+  "a human seat session (human@kernel or human@host, or human-<name>@kernel or human-<name>@host for one person) or a role declared in workflow.roles";
 
 /** Spec 0010: a hint for a gate target that is neither form. A <name>@external address is a gateway
  *  (Slack) address of a registered human, not a gate target; <name>@anything suggests the per-person seat. */

@@ -26,19 +26,27 @@ Workflow code resolved a bound rig by name to the OLDEST rig of that name, archi
    - `rig queue whoami` sends the seat's `OPENRIG_NODE_ID` when the session is the seat's own. The queue route uses that node only when its current session is the caller's.
    - The route reports `rig_ambiguous`, naming the rigs, instead of `calling node unavailable`.
 8. One condition, one code: `rig_ambiguous` is the code `rig add` already returns when more than one unarchived rig has a name, so fix A and the whoami site use it too, with the candidate rig ids in the message.
-9. Related but out of scope: the unordered name lookup in `routes/activity.ts`. `rig add` already refuses a shared name with `rig_ambiguous`.
+9. Every other rig-by-name lookup in `packages/daemon/src` (review r1 sweep, `findRigsByName` and `FROM rigs WHERE name`):
+   - Fixed here, the same class (an archived rig chosen or counted as the rig):
+     - `routes/queue.ts` `validateTargetRepo` (create, handoff, handoff-and-complete) took the oldest same-name rig's workspace. It now reads the one unarchived rig's workspace; two or more give 400 `rig_ambiguous` with their ids.
+     - `rig-mode/operating-posture.ts` rig identity matched an archived same-name rig too, so a reused name was "ambiguous" and the posture fell to unknown. Matching by id is unchanged; matching by name counts unarchived rigs only.
+   - Already archive-aware: `bundle-install-context.ts`, `routes/up.ts` (prefers unarchived, falls back to archived by design).
+   - Every same-name rig by design (no pick): `running-name-guard.ts` (a running session anywhere blocks the name), `session-transport.ts` `resolveByRig` and the session search (collect from all same-name rigs).
+   - Follow-up, out of scope: `ask-service.ts` and `routes/down.ts` `isUniqueName` count archived rigs as rivals; `routes/startup.ts` treats an archived `kernel` as one to reuse; `startup.ts` rig-registered treats an archived-only name as registered; `routes/activity.ts` takes an unordered match. `rig add` already refuses a shared live name with `rig_ambiguous`.
 
 ## Requirements
 
 - REQ-0009-01: When workflow code resolves a bound rig by name, the daemon shall consider only unarchived rigs.
 - REQ-0009-02: When exactly one unarchived rig has the name, the member advisory shall check that rig's nodes.
 - REQ-0009-03: When exactly one unarchived rig has the name, role resolution shall draw its candidates from that rig.
-- REQ-0009-04: If two or more unarchived rigs share the name, then binding and role resolution shall fail with `rig_ambiguous` naming their ids.
+- REQ-0009-04: If two or more unarchived rigs share the name, then binding and projection shall fail with `rig_ambiguous` naming their ids.
 - REQ-0009-05: If two or more unarchived rigs share a rig name in a preferred target, then the instantiate member sweep shall report `rig_ambiguous` as an advisory.
 - REQ-0009-06: The rig-registered check shall ignore archived rigs.
 - REQ-0009-07: When whoami resolves a session name, the daemon shall consider only sessions of unarchived rigs.
 - REQ-0009-08: If a session name resolves to two or more live rigs, then `rig queue whoami` shall report `rig_ambiguous` naming those rigs.
 - REQ-0009-09: When `rig queue whoami` runs with the seat's own session, the CLI shall send the seat's node id.
+- REQ-0009-10: When a queue item names a target repo, the daemon shall validate it against the workspace of the one unarchived rig named by the source session.
+- REQ-0009-11: When operating posture resolves a rig by name, the daemon shall consider only unarchived rigs.
 
 ## Plan
 
@@ -49,6 +57,7 @@ Workflow code resolved a bound rig by name to the OLDEST rig of that name, archi
 
 ```bash
 cd packages/daemon && npx vitest run test/workflow-member-advisory.test.ts test/workflow-role-resolution.test.ts test/workflow-human-destination.test.ts test/role-orientation.test.ts
+cd packages/daemon && npx vitest run test/queue-target-repo-unarchived.test.ts test/queue-cross-host-target-repo.test.ts test/queue-cross-host-handoff.test.ts test/operating-posture.test.ts
 cd packages/cli && npx vitest run test/queue.test.ts
 ```
 
@@ -65,3 +74,7 @@ Second-site cases (`role-orientation.test.ts`):
 - the caller's node id disambiguates its own session only.
 
 The CLI sends `nodeId` with a defaulted session and not with an explicit `--session`.
+
+Sweep cases:
+- `target_repo`: an archived `rig-a` with `repo-old` and a live `rig-a` with `repo-new`: `repo-new` is accepted and `repo-old` refused. Before the fix the archived rig's workspace was read. Two live `rig-a` rigs give `rig_ambiguous`.
+- posture: an archived `demo` beside the live one resolves the live rig's posture (it was unknown); two live `demo` rigs stay unknown.
