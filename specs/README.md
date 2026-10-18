@@ -18,6 +18,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0009](0009-workflow-rig-name-resolution.md) | Workflow rig-name resolution: unarchived rigs only | complete | daemon, workflow | feat/factory-expansion-fixes |
 | [0010](0010-workflow-human-gate-targets.md) | Workflow gate targets: forms and hints | complete | daemon, workflow, docs | feat/factory-expansion-fixes |
 | [0012](0012-startup-submission-verification.md) | Startup submission verification: boundary re-look, transcript confirmation, required sends | in-progress | daemon, startup, claude adapter | revenant gap 1 |
+| [0013](0013-seat-env-allowlist.md) | Seat env allow-list mode (off by default) | complete | daemon, tmux, seat launch, config | SEC-178, extends 0006 |
 | [0014](0014-launch-graph-cycles.md) | Launch-dependency cycles: restore holds, growth refuses | in-progress | daemon, restore, topology growth | CER-2976 |
 | [0015](0015-pane-read-failure-unavailable.md) | A failed tmux pane read is unavailable, never pane_missing | in-progress | daemon, tmux, seat identity | cortex mesh flap, cw.4.2 |
 
