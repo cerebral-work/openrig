@@ -9,6 +9,11 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, it, expect } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { StubRuntimeAdapter } from "../src/adapters/stub-runtime-adapter.js";
+import { createFullTestDb } from "./helpers/test-app.js";
+import { RigRepository } from "../src/domain/rig-repository.js";
+import { SessionRegistry } from "../src/domain/session-registry.js";
+import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { SEAT_ENV_DEFAULT_BASE, SEAT_ENV_DENY_KUBECONFIG, type SeatEnvPolicy } from "../src/domain/seat-launch-env-filter.js";
 
 const run = promisify(execFile);
@@ -151,6 +156,90 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
         expect(fs.existsSync(names)).toBe(false);
       }
     } finally {
+      await tm(["kill-server"]).catch(() => {});
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  // cw.4.3 fix-forward (F-4b): a launch through sendLaunchCommand must be the pane's foreground process in allow-list
+  // mode too. The stub runtime's readiness check reads pane_current_command, and a runtime left as a child of the
+  // staging subshell reads as a shell: "the pane is back at a shell". Filter mode is the control.
+  it.each(["allowlist", "filter"] as const)("%s mode: a sendLaunchCommand launch is the pane's foreground command, and a stub seat reads ready", async (mode) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const socket = path.join(root, "tmux");
+    const rc = path.join(root, "rc");
+    fs.writeFileSync(rc, "export REFS_API_TOKEN=placeholder\nPS1='$ '\n");
+    const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", ...OPERATOR };
+    const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
+    const adapter = new TmuxAdapter(async (cmd) => {
+      if (!cmd.startsWith("tmux ")) throw new Error("unexpected fixture command");
+      return (await run("/bin/sh", ["-c", cmd.replace(/^tmux /, `tmux -S ${q(socket)} -f /dev/null `)], { env, timeout: 8000 })).stdout;
+    });
+    if (mode === "allowlist") adapter.setSeatEnvPolicy(() => POLICY, () => false);
+    try {
+      await tm(["new-session", "-d", "-s", "anchor"]);
+      await tm(["set-option", "-g", "default-command", `bash --rcfile ${q(rc)} -i`]);
+      expect((await adapter.createSession("dev@rig", root, { OPENRIG_NODE_ID: "n1" })).ok).toBe(true);
+      expect(await adapter.sendLaunchCommand("dev@rig", "sleep 30")).toEqual({ ok: true });
+      let current = "";
+      for (let i = 0; i < 200 && current !== "sleep"; i++) {
+        await new Promise((r) => setTimeout(r, 25));
+        current = (await tm(["display-message", "-p", "-t", "=dev@rig:", "#{pane_current_command}"])).trim();
+      }
+      expect(current).toBe("sleep");
+      // The stub adapter's own readiness check, with a runner sidecar that reports ready.
+      const stub = new StubRuntimeAdapter({ tmux: adapter, fsOps: {
+        exists: () => true, readFile: () => JSON.stringify({ ready: true }), writeFile: () => {}, mkdirp: () => {},
+      } });
+      expect(await stub.checkReady({ tmuxSession: "dev@rig", cwd: root } as never)).toEqual({ ready: true });
+      if (mode === "allowlist") {
+        // The runtime replaced the scrubbed shell, so the guarantee still holds for it (names only).
+        const panePid = (await tm(["display-message", "-p", "-t", "=dev@rig:", "#{pane_pid}"])).trim();
+        const child = execFileSync("ps", ["-o", "pid=", "--ppid", panePid], { encoding: "utf8" }).trim().split(/\s+/)[0];
+        const names = fs.readFileSync(`/proc/${child}/environ`, "utf8").split("\0").map((entry) => entry.slice(0, entry.indexOf("="))).filter(Boolean);
+        for (const gone of ["REFS_API_TOKEN", "OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY"]) expect(names, gone).not.toContain(gone);
+        expect(names).toContain("KUBECONFIG");
+      }
+    } finally {
+      await tm(["kill-server"]).catch(() => {});
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  // cw.4.3 fix-forward (F-4b): the resume-metadata probe goes through sendLaunchCommand and judges the pane by
+  // pane_current_command ("claude" is resumed, a shell is "returned to shell"). The stand-in `claude` on the pane's
+  // PATH runs as a process named claude. Filter mode is the control.
+  it.each(["allowlist", "filter"] as const)("%s mode: the resume probe sees its Claude as the pane's foreground command", async (mode) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const socket = path.join(root, "tmux");
+    const bin = path.join(root, "bin");
+    fs.mkdirSync(bin);
+    fs.writeFileSync(path.join(bin, "claude"), "#!/bin/bash\nexec -a claude sleep 30\n", { mode: 0o755 });
+    const rc = path.join(root, "rc");
+    fs.writeFileSync(rc, `export PATH=${q(bin)}:"$PATH"\nPS1='$ '\n`);
+    const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", ...OPERATOR };
+    const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
+    const adapter = new TmuxAdapter(async (cmd) => {
+      if (!cmd.startsWith("tmux ")) throw new Error("unexpected fixture command");
+      return (await run("/bin/sh", ["-c", cmd.replace(/^tmux /, `tmux -S ${q(socket)} -f /dev/null `)], { env, timeout: 8000 })).stdout;
+    });
+    if (mode === "allowlist") adapter.setSeatEnvPolicy(() => POLICY, () => false);
+    const db = createFullTestDb();
+    try {
+      await tm(["new-session", "-d", "-s", "anchor"]);
+      await tm(["set-option", "-g", "default-command", `bash --rcfile ${q(rc)} -i`]);
+      const rigRepo = new RigRepository(db);
+      const sessionRegistry = new SessionRegistry(db);
+      const rig = rigRepo.createRig("probe-rig");
+      const node = rigRepo.addNode(rig.id, "dev.check", { role: "checker", runtime: "claude-code" });
+      const session = sessionRegistry.registerSession(node.id, "dev-check@probe-rig");
+      sessionRegistry.updateStatus(session.id, "running");
+      await new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter: adapter, homeDir: root })
+        .refresh([{ sessionId: session.id, sessionName: "dev-check@probe-rig", runtime: "claude-code", resumeType: "claude_id", resumeToken: "tok-1", cwd: root }] as never);
+      const status = (db.prepare("SELECT resume_last_probe_status AS s FROM sessions WHERE id = ?").get(session.id) as { s: string | null }).s;
+      expect(status).toBe("resumable");
+    } finally {
+      db.close();
       await tm(["kill-server"]).catch(() => {});
       fs.rmSync(root, { recursive: true, force: true });
     }

@@ -55,7 +55,8 @@ describe("seat env allow-list refusals (spec 0013)", () => {
     const allow = adapter("none");
     expect(await allow.a.sendLaunchCommand("dev@rig", "claude --resume x")).toEqual({ ok: true });
     expect(allow.written).toHaveLength(1);
-    expect(allow.written[0]).toMatch(/__openrig_names[\s\S]*\nclaude --resume x\n$/);
+    // The runtime replaces the staging shell, so it is the pane's foreground process (cw.4.3, F-4b).
+    expect(allow.written[0]).toMatch(/__openrig_names[\s\S]*\nexec claude --resume x\n$/);
     const filter = adapter("none", null);
     expect(await filter.a.sendLaunchCommand("dev@rig", "claude --resume x")).toEqual({ ok: true });
     expect(filter.written).toEqual([]);
