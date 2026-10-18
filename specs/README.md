@@ -7,6 +7,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | Spec | Title | Status | Scope | Cross-References |
 |---|---|---|---|---|
 | [0001](0001-fork-distribution-model.md) | Fork Distribution Model (vendor-branch) | accepted | git, release, xtask | [FORK.md](../FORK.md) |
+| [0005](0005-cross-runtime-seat-migration.md) | Cross-runtime seat migration | planned | daemon, cli, handover, seat-lifecycle | [0001](0001-fork-distribution-model.md) |
 
 ## Requirements Syntax (EARS)
 
