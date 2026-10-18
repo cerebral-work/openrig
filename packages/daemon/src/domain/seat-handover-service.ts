@@ -116,8 +116,11 @@ interface PreparedRuntimeChange {
   before: RevertBefore;
   resumeToken: string | null;
   leftovers: string[];
-  /** How far this attempt got, so a thrown failure is still recorded; recorded is set once a ledger row exists. */
-  progress: { step: string; replacementStarted: boolean; recorded: boolean };
+  /** How far this attempt got, so a thrown failure is still recorded; recorded is set once a ledger row exists, and
+   *  committed only once the commit transaction has returned. */
+  progress: { step: string; replacementStarted: boolean; recorded: boolean; committed: boolean };
+  /** A revert issued by the kernel's advisor (D3's exception); its pending declaration is the advisor's to finish too. */
+  issuedByAdvisor: boolean;
 }
 
 export interface SeatHandoverInput {
@@ -136,7 +139,7 @@ export interface SeatHandoverInput {
 class RevertSlotMovedError extends Error {}
 
 /** What a failed runtime change leaves the operator to do: nothing, check whether the predecessor still runs, or relaunch. */
-type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch";
+type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch" | "relaunch-check-seat-env" | "fix-seat-env";
 
 function runtimeSideOf(state: RevertBefore): RuntimeSide {
   return {
@@ -217,7 +220,8 @@ export type SeatHandoverResult =
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found"; message: string; guidance: string }
   | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
-  | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "handover_committed_swap_undeclared" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
+  | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "handover_committed_swap_undeclared" | "handover_committed_with_error" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
+  | { ok: false; code: "runtime_declare_not_pending" | "runtime_declare_failed"; message: string; guidance: string }
   | { ok: false; code: "runtime_change_unauthorized" | "runtime_change_invalid" | "runtime_change_secret_env" | "runtime_change_env_not_allowed" | "runtime_change_spec_mismatch" | "runtime_change_target_startup_failed" | "runtime_revert_unavailable"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
 
@@ -520,7 +524,8 @@ export class SeatHandoverService {
     const current = this.captureRuntimeState(node.id, null);
     const change: PreparedRuntimeChange = {
       kind: "revert", nodeId: node.id, seatRef: input.seatRef, revertsChangeId: slot.changeId,
-      progress: { step: "prepare", replacementStarted: false, recorded: false },
+      progress: { step: "prepare", replacementStarted: false, recorded: false, committed: false },
+      issuedByAdvisor: typeof this.authorizeRuntimeChange(input.caller ?? null, { revert: false }) !== "string",
       from: runtimeSideOf(current), to: runtimeSideOf(before),
       toAuthoredEffort: before.effort, toEffortChoice: before.effortChoice, toCodexProfile: before.codexConfigProfile,
       toPermissionRow: before.permission, launchOverride, adapter,
@@ -753,7 +758,8 @@ export class SeatHandoverService {
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
         guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
       }, `create-successor:${launch.step}:${launch.code}`,
-        launch.code === "retiree_not_terminated" ? "check-seat" : launch.replacementStarted ? "relaunch" : "none");
+        launch.code === "retiree_not_terminated" ? "check-seat" : launch.code === "seat_env_refused" ? "fix-seat-env"
+          : launch.code === "successor_not_ready" ? "relaunch-check-seat-env" : launch.replacementStarted ? "relaunch" : "none");
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
@@ -1205,6 +1211,61 @@ export class SeatHandoverService {
     return { ok: true };
   }
 
+  /**
+   * Spec 0005 — finish the occupant declaration of a committed runtime change or revert whose declaration failed after
+   * the commit (handover_committed_swap_undeclared). Issued by the kernel's operator (D3), or by the kernel's advisor for
+   * a pending revert it issued itself (the ledger row's kind and operator), since the advisor reverts when the operator
+   * seat is the broken one. It declares the seat's current
+   * occupant to the activity oracle and stamps the ledger row with who and when; it never relaunches, reverts or touches
+   * the pane. Refused unless the node's latest committed change is undeclared and its occupant is still current.
+   */
+  async declareRuntimeOccupant(input: { seatRef: string; caller?: HandoverCaller | null }):
+    Promise<{ ok: true; declared: { seatRef: string; changeId: string; sessionId: string; declaredBy: string } } | Extract<SeatHandoverResult, { ok: false }>> {
+    const operator = this.authorizeRuntimeChange(input.caller ?? null, { revert: true });
+    if (typeof operator !== "string") return operator as Extract<SeatHandoverResult, { ok: false }>;
+    const isOperator = typeof this.authorizeRuntimeChange(input.caller ?? null, { revert: false }) === "string";
+    const statusResult = this.statusService.getStatus(input.seatRef);
+    if (!statusResult.ok) return statusResult;
+    const node = this.lookupNode(statusResult.status);
+    const notPending = (message: string) => ({ ok: false as const, code: "runtime_declare_not_pending" as const, message,
+      guidance: `Nothing to declare. Inspect the seat with: rig seat status ${input.seatRef}` });
+    // Like a revert (review r2 F2), the marker is read inside the node's lifecycle lease, never beside a handover.
+    const guard = this.tmuxAdapter.deliveryGuard;
+    if (guard && !guard.ownsLifecycle(node.id)) {
+      try {
+        return await guard.lifecycle([node.id], () => this.declareRuntimeOccupant(input));
+      } catch (err) {
+        if (err instanceof DeliveryGuardError && err.code === "guard_target_changed") {
+          return notPending(`Seat "${input.seatRef}" changed while this declaration waited for it.`);
+        }
+        throw err;
+      }
+    }
+    const latest = this.runtimeLedger.latestCommitted(node.id);
+    if (!latest) return notPending(`Seat "${input.seatRef}" has no committed runtime change.`);
+    if (latest.declaredAt) {
+      return notPending(`The seat's latest runtime change was already declared at ${latest.declaredAt} by ${latest.declaredBy ?? "unknown"}.`);
+    }
+    const session = this.lookupLatestSession(node.id);
+    if (!latest.generationUuid || latest.generationUuid !== this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid || !session) {
+      return notPending(`A later handover replaced the occupant that the seat's latest runtime change started; there is nothing to declare for it.`);
+    }
+    if (!isOperator && (latest.kind !== "revert" || latest.operator !== operator)) {
+      return { ok: false, code: "runtime_change_unauthorized",
+        message: `The kernel's advisor may declare only a pending revert it issued itself; the seat's pending ${latest.kind} was issued by ${latest.operator}.`,
+        guidance: `The kernel operator finishes it: rig seat runtime-declare ${input.seatRef}` };
+    }
+    try {
+      this.activityOracle?.declareOccupantSwap(node.id, session.id);
+    } catch (err) {
+      return { ok: false, code: "runtime_declare_failed",
+        message: `The activity oracle did not take the declaration: ${err instanceof Error ? err.message : String(err)}`,
+        guidance: `The change stays COMMITTED. Do NOT relaunch or revert; retry: rig seat runtime-declare ${input.seatRef}` };
+    }
+    this.runtimeLedger.markDeclared(latest.id, operator);
+    return { ok: true, declared: { seatRef: input.seatRef, changeId: latest.id, sessionId: session.id, declaredBy: operator } };
+  }
+
   /** D3: a runtime change is issued by the kernel's operator seat, by its transport identity (X-OpenRig-Session,
    *  provenance transport:v1). A revert also admits the kernel's advisor. The body's --operator is a label only. */
   private authorizeRuntimeChange(caller: HandoverCaller | null, opts: { revert: boolean }): string | SeatHandoverResult {
@@ -1362,7 +1423,7 @@ export class SeatHandoverService {
     }
     return {
       kind: "change", nodeId: node.id, seatRef: input.status.seat_ref, revertsChangeId: null,
-      progress: { step: "prepare", replacementStarted: false, recorded: false },
+      progress: { step: "prepare", replacementStarted: false, recorded: false, committed: false }, issuedByAdvisor: false,
       from: runtimeSideOf(before),
       to: { runtime: toRuntime, model: toModel, cwd: targetCwd, effort: effortChoice ?? authoredEffort, permission: toSelection?.mode ?? null, env: targetEnv },
       toAuthoredEffort: authoredEffort, toEffortChoice: effortChoice, toCodexProfile: codexProfile,
@@ -1452,8 +1513,19 @@ export class SeatHandoverService {
     if (change && !result.ok && "guidance" in result) {
       const previous = change.from.runtime ?? "its previous runtime";
       const relaunch = `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"`;
-      result = { ...result, guidance: recovery === "relaunch"
+      result = { ...result, guidance: recovery === "relaunch" || recovery === "relaunch-check-seat-env"
         ? `The node still records ${previous}. Relaunch the seat under it with: ${relaunch}`
+          // Review r2 (INFO): the seat env scrub (spec 0013) refuses inside the pane, where the daemon can't see it, so
+          // it surfaces as a readiness failure; the seat env mode is not known here, so the check is always named.
+          + (recovery === "relaunch-check-seat-env"
+            ? " If the pane shows seat_env_refused, fix the seat env policy first (rig config set seat_env.mode filter rolls it back), then relaunch."
+            : "")
+        : recovery === "fix-seat-env"
+          // Spec 0013 (#16): the respawn was refused because the seat env allow-list could not be applied, after the
+          // predecessor had ended; a relaunch is refused the same way until the policy applies again.
+          ? `The seat env allow-list could not be applied, so no successor started; the predecessor has ended, and the node `
+            + `still records ${previous}. Fix the seat env policy first (rig config set seat_env.mode filter rolls it back), `
+            + `then relaunch with: ${relaunch}`
         : recovery === "check-seat"
           ? `The predecessor may have been signalled (TERM, then KILL) at ${step} and was not seen to exit; its pane is set to `
             + `stay open, and the node still records ${previous}. Check the seat with rig capture ${change.seatRef}: if the `
@@ -1477,7 +1549,8 @@ export class SeatHandoverService {
   }
 
   /** Spec 0005: a runtime change that throws, rather than returning a failure, still leaves a failed ledger row naming
-   *  its step and whether the respawn ran, never the error. The throw itself propagates unchanged. */
+   *  its step and whether the respawn ran, never the error, and the throw propagates. A throw after the commit landed is
+   *  logged and returned as handover_committed_with_error instead, so it never reads as a failed handover. */
   private async recordingThrows(change: PreparedRuntimeChange | null,
     run: (attempt: { change: PreparedRuntimeChange | null }) => Promise<SeatHandoverResult>): Promise<SeatHandoverResult> {
     const attempt = { change };
@@ -1485,6 +1558,17 @@ export class SeatHandoverService {
       return await run(attempt);
     } catch (err) {
       const thrown = attempt.change;
+      if (thrown?.progress.committed) {
+        console.error(err); // as the route's error handler logged it
+        const what = thrown.kind === "revert" ? "runtime revert" : "runtime change";
+        return { ok: false, code: "handover_committed_with_error",
+          message: `The ${what} committed, but a step after the commit failed: ${err instanceof Error ? err.message : String(err)}`,
+          guidance: `The ${what} is COMMITTED: the seat runs ${thrown.to.runtime ?? "its target runtime"}. Do NOT retry, relaunch or revert to `
+            + `recover. If its occupant declaration is pending, finish it `
+            + `${thrown.issuedByAdvisor ? "from the advisor seat that issued this revert (or the kernel operator) " : ""}`
+            + `with: rig seat runtime-declare ${thrown.seatRef} (it refuses when `
+            + "nothing is pending)." };
+      }
       if (thrown) this.recordFailed(thrown, `${thrown.progress.replacementStarted ? "threw_after_respawn" : "threw_before_respawn"} at ${thrown.progress.step}`);
       throw err;
     }
@@ -1697,7 +1781,7 @@ export class SeatHandoverService {
       runtimeRecord: { changeId: string; event: PersistedEvent } | null };
     try {
       committed = tx();
-      if (input.change) input.change.progress.recorded = true;
+      if (input.change) input.change.progress.recorded = input.change.progress.committed = true;
     } catch (err) {
       if (err instanceof RevertSlotMovedError) {
         return { ok: false, code: "runtime_revert_unavailable", message: "The change this revert was built from is no longer the seat's latest; nothing was reverted.",
@@ -1722,6 +1806,7 @@ export class SeatHandoverService {
     } catch (err) {
       swapUndeclared = err instanceof Error ? err.message : String(err);
     }
+    if (swapUndeclared === null && committed.runtimeRecord) this.runtimeLedger.markDeclared(committed.runtimeRecord.changeId, input.change!.operator);
 
     this.eventBus.notifySubscribers(committed.event);
     if (committed.runtimeRecord) this.eventBus.notifySubscribers(committed.runtimeRecord.event);
@@ -1732,7 +1817,11 @@ export class SeatHandoverService {
       return { ok: false, code: "handover_committed_swap_undeclared",
         message: `The handover committed and "${input.discovered.tmuxSession}" is the seat's occupant, but the activity oracle did not take the swap: ${swapUndeclared}`,
         guidance: `${landed} Do NOT retry, relaunch or revert to recover. Only the activity oracle's occupant declaration failed, so the seat's `
-          + "activity state may still reflect its predecessor. No rig command re-declares the occupant; report this to the operator." };
+          + "activity state may still reflect its predecessor. "
+          + (input.change
+            ? `Finish the declaration ${input.change.issuedByAdvisor ? "from the advisor seat that issued this revert (or the kernel operator) " : ""}`
+              + `with: rig seat runtime-declare ${input.change.seatRef}`
+            : "No rig command re-declares a plain handover's occupant; report this to the operator.") };
     }
     const postStatus = this.statusService.getStatus(`${input.status.logical_id}@${input.status.rig_name}`);
     const currentStatus = postStatus.ok

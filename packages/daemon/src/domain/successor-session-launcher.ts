@@ -366,7 +366,8 @@ export class SuccessorSessionLauncher {
       return { ok: false, code: "successor_launch_failed", message: `Successor harness launch threw: ${err instanceof Error ? err.message : String(err)}` };
     }
     if (!launch.ok) {
-      return { ok: false, code: "successor_launch_failed", message: `Successor harness launch failed: ${launch.error}` };
+      return { ok: false, code: launch.code === "seat_env_refused" ? "seat_env_refused" : "successor_launch_failed",
+        message: `Successor harness launch failed: ${launch.error}` };
     }
 
     // Capture the launch-scraped resume token (never logged). Persisted by the

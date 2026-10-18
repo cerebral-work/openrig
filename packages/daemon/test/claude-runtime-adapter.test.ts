@@ -1226,3 +1226,12 @@ describe("Claude Code runtime adapter", () => {
   // grep confirms provisionActivityHooks/upsertCommandHook/etc. removed
   // from adapter source.
 });
+
+describe("launchHarness — a refused launch send keeps its code (CER-2983)", () => {
+  it("returns the tmux code with the error, so the handover can name a seat env refusal", async () => {
+    const tmux = mockTmux();
+    (tmux.sendText as unknown as { mockResolvedValue: (v: unknown) => void }).mockResolvedValue({ ok: false as const, code: "seat_env_refused", message: "s: the seat env allow-list could not be applied, so nothing was sent." });
+    const result = await new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} }).launchHarness(makeBinding(), { name: "seat" });
+    expect(result).toMatchObject({ ok: false, code: "seat_env_refused" });
+  });
+});

@@ -633,6 +633,47 @@ describe("rig seat status", () => {
     expect(errors.join("\n")).toContain("original seat/binding is untouched");
   });
 
+  it("a runtime change that committed before an error prints handover_committed_with_error and its guidance, and exits non-zero", async () => {
+    const guidance = "The runtime change is COMMITTED: the seat runs claude-code. Do NOT retry, relaunch or revert to recover. "
+      + "If its occupant declaration is pending, finish it with: rig seat runtime-declare dev-impl@seat-rig (it refuses when nothing is pending).";
+    for (const verb of [["seat", "handover", "dev-impl@seat-rig", "--source", "fresh", "--reason", "opus-swap"],
+      ["seat", "runtime-revert", "dev-impl@seat-rig", "--approval", "go", "--reason", "back"]]) {
+      const deps = makeDeps({ status: 500, data: { ok: false, code: "handover_committed_with_error",
+        message: "The runtime change committed, but a step after the commit failed: boom", guidance } }, []);
+      const { errors, exitCode } = await captureLogs(async () => { await makeCommand(deps).parseAsync(["node", "rig", ...verb]); });
+      expect(exitCode).toBe(2);
+      expect(errors).toContain("handover_committed_with_error");
+      expect(errors).toContain(guidance);
+    }
+  });
+
+  it("rig seat runtime-declare posts to the declare route and prints who declared which change", async () => {
+    const paths: string[] = [];
+    const bodies: unknown[] = [];
+    const deps = makeDeps({ status: 200, data: { seatRef: "dev-impl@seat-rig", changeId: "c-1", sessionId: "s-9", declaredBy: "operator-agent@kernel" } }, paths, bodies);
+    const { logs, exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "runtime-declare", "dev-impl@seat-rig"]);
+    });
+    expect(paths).toEqual(["/api/seat/runtime-declare/dev-impl%40seat-rig"]);
+    expect(bodies).toEqual([{}]);
+    expect(exitCode).toBeUndefined();
+    expect(logs.join("\n")).toContain("Declared the occupant of dev-impl@seat-rig (runtime change c-1, session s-9) by operator-agent@kernel.");
+  });
+
+  it("rig seat runtime-declare reports a refusal (exit 1) and a failed declaration with its code (exit 2)", async () => {
+    const refused = makeDeps({ status: 409, data: { ok: false, code: "runtime_declare_not_pending",
+      message: "Seat \"dev-impl@seat-rig\" has no committed runtime change.", guidance: "Nothing to declare. Inspect the seat with: rig seat status dev-impl@seat-rig" } }, []);
+    const first = await captureLogs(async () => { await makeCommand(refused).parseAsync(["node", "rig", "seat", "runtime-declare", "dev-impl@seat-rig"]); });
+    expect(first.exitCode).toBe(1);
+    expect(first.errors.join("\n")).toContain("has no committed runtime change");
+    const failed = makeDeps({ status: 500, data: { ok: false, code: "runtime_declare_failed", message: "The activity oracle did not take the declaration: down",
+      guidance: "The change stays COMMITTED. Do NOT relaunch or revert; retry: rig seat runtime-declare dev-impl@seat-rig" } }, []);
+    const second = await captureLogs(async () => { await makeCommand(failed).parseAsync(["node", "rig", "seat", "runtime-declare", "dev-impl@seat-rig"]); });
+    expect(second.exitCode).toBe(2);
+    expect(second.errors).toContain("runtime_declare_failed");
+    expect(second.errors).toContain("The change stays COMMITTED. Do NOT relaunch or revert; retry: rig seat runtime-declare dev-impl@seat-rig");
+  });
+
   it("a committed handover whose occupant declaration failed prints its code and the committed-state guidance, and exits non-zero", async () => {
     const guidance = "The runtime change is COMMITTED: the seat runs claude-code in \"dev-impl@seat-rig\". Do NOT retry, relaunch or revert to recover. "
       + "Only the activity oracle's occupant declaration failed, so the seat's activity state may still reflect its predecessor. "
