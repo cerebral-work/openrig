@@ -699,7 +699,7 @@ export class SeatHandoverService {
       const started = await this.startTargetMember(change, node.id, latestSession.session_name);
       if (!started.ok) {
         return this.failChange(change, { ok: false, code: "runtime_change_target_startup_failed", message: started.message,
-          guidance: "Nothing about the seat changed and the predecessor still runs. Fix the target member's startup, then retry." });
+          guidance: "Nothing about the seat changed and the predecessor still runs. Fix the target member's startup, then retry." }, "target-startup");
       }
     }
     // The successor must carry its own generation from its first byte. This reservation writes no
@@ -734,7 +734,7 @@ export class SeatHandoverService {
         // retiree wholly untouched; a failure after the in-place respawn leaves the seat re-wakeable from
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
         guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
-      });
+      }, `create-successor:${launch.step}`);
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
@@ -749,7 +749,7 @@ export class SeatHandoverService {
       if (failedFiles.length > 0) {
         await this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId);
         return this.failChange(change, { ok: false, code: "context_delivery_failed", message: `Handover failed at step "deliver-startup-files": ${failedFiles.join("; ")}`,
-          guidance: "The node is unchanged; the seat relaunches under its own runtime with: rig seat launch <seat> --fresh" });
+          guidance: "The node is unchanged; the seat relaunches under its own runtime with: rig seat launch <seat> --fresh" }, "deliver-startup-files");
       }
     }
 
@@ -792,7 +792,7 @@ export class SeatHandoverService {
           code: "context_delivery_failed",
           message: `Handover failed at step "deliver-restore-packet": ${delivered.message}`,
           guidance: "The successor candidate was unwound and the seat's binding is unchanged; the seat is re-wakeable from its provider session file. Retry after tmux delivery is healthy.",
-        });
+        }, "deliver-restore-packet");
       }
       contextDelivered = true;
     }
@@ -860,7 +860,7 @@ export class SeatHandoverService {
           code: "context_delivery_failed",
           message: `Handover failed at step "deliver-rebuild-priming": ${delivered.message}`,
           guidance: "The successor candidate was unwound and the seat's binding is unchanged; the seat is re-wakeable from its provider session file. Retry after tmux delivery is healthy.",
-        });
+        }, "deliver-rebuild-priming");
       }
       contextDelivered = true;
     }
@@ -919,7 +919,7 @@ export class SeatHandoverService {
   }): Promise<SeatHandoverResult> {
     const fail = async (result: SeatHandoverResult): Promise<SeatHandoverResult> => {
       if (input.cleanup) await input.cleanup();
-      return this.failChange(input.change, result);
+      return this.failChange(input.change, result, "verify-and-commit");
     };
 
     const discovered = this.discoveryRepo.getDiscoveredSession(input.discoveredRef);
@@ -1409,10 +1409,11 @@ export class SeatHandoverService {
     return { ok: true };
   }
 
-  /** A failed runtime change or revert is recorded; the node is untouched. */
-  private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult): SeatHandoverResult {
+  /** A failed runtime change or revert is recorded with its code and step only. The message is never stored: a failed
+   *  respawn's message can carry the env it was given (review r2 F3). The node is untouched. */
+  private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult, step: string): SeatHandoverResult {
     if (change && !result.ok) {
-      const failure = "message" in result ? `${result.code}: ${result.message}` : String((result as { code: string }).code);
+      const failure = `${result.code} at ${step}`;
       this.runtimeLedger.record({
         nodeId: change.nodeId, kind: change.kind, revertsChangeId: change.revertsChangeId, outcome: "failed", failure,
         from: change.from, to: change.to, specPath: change.specPath, specSha256: change.specSha256,

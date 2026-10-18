@@ -229,6 +229,18 @@ function classifyWriteError(err: unknown): TmuxResult {
   return { ok: false, code: "unknown", message: err.message };
 }
 
+/** A failed respawn's error names its argv, which carries every env value as `-e NAME=VALUE` (raw, or shell-quoted on
+ *  the legacy path). The values are redacted and the names kept, so no caller, ledger or log receives a value. */
+function redactEnvValues(result: TmuxResult, env?: Record<string, string>): TmuxResult {
+  if (result.ok || !env) return result;
+  let message = result.message;
+  for (const value of Object.values(env)) {
+    if (!value) continue;
+    for (const form of new Set([value, value.replace(/'/g, "'\"'\"'")])) message = message.split(form).join("<redacted>");
+  }
+  return { ...result, message };
+}
+
 /** The launch warning when the parent-session identity cleanup could not finish (#771). */
 function parentSessionEnvWarning(target: string, err: unknown): string {
   const reason = err instanceof Error ? err.message : String(err);
@@ -1012,7 +1024,7 @@ export class TmuxAdapter {
       await this.run(argv, legacyRespawn.join(" "));
       return warnings ? { ok: true, warnings } : { ok: true };
     } catch (err) {
-      return classifyWriteError(err);
+      return redactEnvValues(classifyWriteError(err), opts?.env);
     }
   }
 
