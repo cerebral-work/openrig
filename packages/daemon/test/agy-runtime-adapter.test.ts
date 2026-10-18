@@ -119,8 +119,20 @@ describe("AgyRuntimeAdapter", () => {
       expect(tmux.sendText).toHaveBeenCalledTimes(1);
       expect(tmux.sendKeys).toHaveBeenCalledTimes(1);
     });
-    it("pane back at shell -> retry_fresh", async () => {
-      expect(await resume(mockTmux("$ ", "bash"))).toMatchObject({ ok: false, code: "retry_fresh" });
+    // A shell label alone isn't a return to the shell: agy starts from a launch script, which holds the pane the same
+    // way while agy loads. Only a proven idle shell ends the resume (cw.4.1, as Claude and Codex do).
+    const startedAt = "Fri Oct 16 15:00:00 2026";
+    const shell = { pid: 10, ppid: 1, pgid: 10, tpgid: 10, command: "-bash", executableName: "bash", startedAt };
+    const launchScript = { pid: 11, ppid: 10, pgid: 11, tpgid: 11, command: "/bin/sh /tmp/openrig-tmux-send.txt", executableName: "sh", startedAt };
+    const resumeWithTree = (rows: Array<typeof shell>) =>
+      new AgyResumeAdapter(mockTmux("$ ", "bash", { getPanePid: vi.fn(async () => 10) } as Partial<TmuxAdapter>),
+        { homeDir: home, sleep: async () => {}, pollMs: 1, maxWaitMs: 2, listProcesses: () => rows }).resume("s@r", "agy_id", UUID, "/work/proj");
+    it("pane back at a proven idle shell -> retry_fresh", async () => {
+      expect(await resumeWithTree([shell])).toMatchObject({ ok: false, code: "retry_fresh" });
+    });
+    it("shell label while the launch script still holds the pane -> attention_required, launch retained", async () => {
+      expect(await resumeWithTree([{ ...shell, tpgid: 11 }, launchScript])).toMatchObject({ ok: false, code: "attention_required",
+        message: expect.stringContaining("launch retained") });
     });
     it("canResume requires agy_id with a UUID", () => {
       const r = new AgyResumeAdapter(mockTmux(""));
