@@ -107,7 +107,8 @@ describe("A3 Claude shell sampling", () => {
     const f = fixture();
     vi.mocked(f.tmux.getPaneCommand).mockResolvedValueOnce("claude");
     await f.rec.reconcileAll();
-    expect(f.verdict()?.verdict).toBe("mismatch");
+    // Spec 0016: an unsampled seat has no native reading, so unavailable (not verified, not down-ranked).
+    expect(f.verdict()?.verdict).toBe("tmux_unavailable");
     expect(f.listProcesses).not.toHaveBeenCalled();
     await f.rec.reconcileAll();
     expect(f.verdict()?.verdict).toBe("verified");
@@ -128,7 +129,8 @@ describe("A3 Claude shell sampling", () => {
     if (mode === "null") vi.mocked(f.tmux.getPaneCommand).mockResolvedValueOnce(null);
     else vi.mocked(f.tmux.getPaneCommand).mockRejectedValueOnce(new Error("unavailable"));
     await f.rec.reconcileAll();
-    expect(f.verdict()?.verdict).toBe("mismatch");
+    // Spec 0016: a failed selection read leaves the seat unsampled, which is no reading: unavailable, not mismatch.
+    expect(f.verdict()?.verdict).toBe("tmux_unavailable");
     expect(f.listProcesses).not.toHaveBeenCalled();
     await f.rec.reconcileAll();
     expect(f.verdict()?.verdict).toBe("verified");
@@ -157,13 +159,15 @@ describe("A3 Claude shell sampling", () => {
     expect(f.tmux.getPaneCommand).toHaveBeenCalledTimes(2);
   });
 
-  it.each(["token", "fingerprint", "final-pid"])("does not accept changed wrapper identity: %s", async mode => {
+  // Spec 0016: another conversation is contrary (mismatch); two samples of different processes, or a pane pid that
+  // moved during the sweep, are no reading (unavailable). None verifies.
+  it.each([["token", "mismatch"], ["fingerprint", "tmux_unavailable"], ["final-pid", "tmux_unavailable"]])("does not accept changed wrapper identity: %s", async (mode, expected) => {
     const f = fixture();
     if (mode === "token") f.listProcesses.mockImplementation(async () => { const rows = f.rows(); rows[1]!.command = "claude --resume different"; return rows; });
     if (mode === "fingerprint") f.listProcesses.mockResolvedValueOnce(f.rows()).mockImplementation(async () => { const rows = f.rows(); rows[1]!.startedAt = "changed"; return rows; });
     if (mode === "final-pid") vi.mocked(f.tmux.getPanePid).mockResolvedValueOnce(10).mockResolvedValueOnce(10).mockResolvedValueOnce(12);
     await f.rec.reconcileAll();
-    expect(f.verdict()?.verdict).toBe("mismatch");
+    expect(f.verdict()?.verdict).toBe(expected);
   });
 
   // #1077 — launched as `--resume saved-token`, continued as `rotated-token`; the SessionStart hook

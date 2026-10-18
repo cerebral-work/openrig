@@ -1,4 +1,4 @@
-import { observeClaudePaneProcess, observeClaudePaneRuntime, observeCodexPaneProcess, listNativeProcesses, type NativeProcessLister, type NativeProcessObservation } from "./native-process-lineage.js";
+import { combineNativeSamples, observeNativePaneTyped, listNativeProcesses, type NativeObservationResult, type NativeProcessLister } from "./native-process-lineage.js";
 import { isShellForeground } from "./shell-classifier.js";
 import { claudeResumeRotation } from "./session-registry.js";
 import { randomUUID } from "node:crypto";
@@ -229,18 +229,19 @@ export class SeatIdentityReconciler {
           return observed ? observed.pid : this.tmux.getPanePid(target);
         },
       });
-      return Promise.all(nativeSeats.map((seat) => (seat.runtime === "codex" ? observeCodexPaneProcess
-        : seat.resume_token !== null && seat.resume_token !== undefined ? observeClaudePaneProcess : observeClaudePaneRuntime)({
+      // Spec 0016: each sample is proof, contrary or unavailable; a Claude seat with a token is proved against it,
+      // a tokenless one for runtime occupancy only.
+      return Promise.all(nativeSeats.map((seat) => observeNativePaneTyped({
         target: seat.tmux_pane!, tmux, expectedToken: seat.resume_token, rotation: claudeResumeRotation(seat),
         listProcesses: () => snapshot ??= this.listProcesses(),
-      })));
+      }, seat.runtime === "codex" ? "codex" : "claude-code",
+        seat.runtime === "codex" || (seat.resume_token !== null && seat.resume_token !== undefined))));
     };
     const first = await sample(panes);
     if (generation !== this.generation) return;
     const second = nativeSeats.length > 0 ? await sample(await readPanes()) : [];
     if (generation !== this.generation) return;
-    const nativeProofs = new Map(nativeSeats.map((seat, index) => [seat.node_id,
-      first[index] && first[index]?.fingerprint === second[index]?.fingerprint ? second[index]! : null]));
+    const nativeProofs = new Map(nativeSeats.map((seat, index) => [seat.node_id, combineNativeSamples(first[index]!, second[index]!)]));
     if (nativeSeats.length > 0) {
       // Native proof crossed awaits: final verdicts must not reuse the initial
       // command/PID (including a direct seat that became a shell meanwhile).
@@ -277,7 +278,7 @@ export class SeatIdentityReconciler {
     seat: RunningSeatRow,
     liveSessions: Set<string>,
     observedAt: string,
-    native: NativeProcessObservation | null,
+    native: NativeObservationResult | null,
     panes: Map<string, PaneObservation> | null = null,
   ): Promise<SeatIdentityVerdict> {
     const base = {
@@ -336,12 +337,19 @@ export class SeatIdentityReconciler {
     }
     if (seat.runtime === "codex" || (seat.runtime === "claude-code" && (seat.resume_token != null || native !== null)
       && classifyPaneRuntimeMatch(command, seat.runtime) === "mismatch" && isShellForeground(command?.trim().toLowerCase() ?? ""))) {
-      let verified = native?.panePid === pid;
+      // Spec 0016: an unsampled or unavailable observation is no reading, so the runtime's unavailable verdict (never
+      // down-ranked for Claude; upstream's mismatch for Codex). A contrary one is positive evidence: mismatch.
+      if (native?.kind === "contrary") {
+        return { ...base, verdict: "mismatch", evidenceSource: "pane_process", reason: "process_identity_mismatch",
+          evidence: { registeredPane: seat.tmux_pane, observedPid: pid, observedCommand: command, matchedLayer: 1 } };
+      }
+      if (native?.kind !== "proof" || native.observation.panePid !== pid) return this.tmuxUnavailableVerdict(seat, observedAt);
+      let verified = true;
       if (verified && seat.runtime === "claude-code" && seat.resume_token == null) {
         // Runtime-only proof must still refer to the sole bound pane after the
         // two shared process snapshots. It does not clear startup/restore state.
         // Spec 0015: a recheck read that failed says nothing about the pane, so it is unavailable, not ambiguous.
-        let currentPanes: Awaited<ReturnType<NonNullable<typeof this.tmux.listPanes>>> | undefined;
+        let currentPanes: Awaited<ReturnType<NonNullable<SeatIdentityReconcilerDeps["tmux"]["listPanes"]>>> | undefined;
         try { currentPanes = await this.tmux.listPanes?.(seat.session_name); }
         catch { return this.tmuxUnavailableVerdict(seat, observedAt); }
         const current = await readPanePid(this.tmux, seat.tmux_pane);
@@ -351,8 +359,8 @@ export class SeatIdentityReconciler {
       return {
         ...base, verdict: verified ? "verified" : "mismatch",
         evidenceSource: "pane_process", reason: verified ? null : "process_identity_ambiguous",
-        evidence: { registeredPane: seat.tmux_pane, observedPid: native?.process.pid ?? pid,
-          observedCommand: native?.process.command ?? command, matchedLayer: verified ? 1 : null },
+        evidence: { registeredPane: seat.tmux_pane, observedPid: native.observation.process.pid,
+          observedCommand: native.observation.process.command, matchedLayer: verified ? 1 : null },
       };
     }
     const match = classifyPaneRuntimeMatch(command, seat.runtime);

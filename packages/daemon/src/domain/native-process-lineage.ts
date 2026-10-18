@@ -2,7 +2,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { isShellForeground } from "./shell-classifier.js";
 import { runAsyncSite } from "./sync-site-wrap.js";
-import { readNativeExecutablePaths } from "./native-process-executable.js";
+import { readNativeExecutableErrors, readNativeExecutablePaths, type NativeExecutableReadError } from "./native-process-executable.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -15,6 +15,8 @@ export interface NativeProcessRow {
   executableName?: string;
   /** OS executable path, not argv[0], for otherwise unresolved Claude rows. */
   executablePath?: string;
+  /** Spec 0016: why that path could not be read (Linux), when it could not. */
+  executablePathError?: NativeExecutableReadError;
   startedAt?: string;
 }
 
@@ -415,6 +417,11 @@ export async function listNativeProcesses(): Promise<NativeProcessRow[]> {
     if (candidates.length > 0) {
       const paths = await readNativeExecutablePaths(candidates.map(row => row.pid));
       for (const row of candidates) row.executablePath = paths.get(row.pid);
+      const unread = candidates.filter(row => row.executablePath === undefined);
+      if (unread.length > 0) {
+        const errors = await readNativeExecutableErrors(unread.map(row => row.pid));
+        for (const row of unread) row.executablePathError = errors.get(row.pid);
+      }
     }
     return rows;
   } catch { return []; }
@@ -595,6 +602,111 @@ export async function verifyClaudePaneRuntime(input: Parameters<typeof observeCl
   if (!first) return null;
   const second = await observeClaudePaneRuntime(input);
   return second?.fingerprint === first.fingerprint ? second : null;
+}
+
+/** Spec 0016: a native observation of a seat's pane. `proof` is today's observation; `contrary` is positive evidence
+ *  that something other than the seat's runtime is there; `unavailable` is not a reading at all (a failed or empty
+ *  `ps`, a failed pid read, a process that exited mid-read, two samples that disagree, or no expected token). */
+export type NativeObservationResult =
+  | { kind: "proof"; observation: NativeProcessObservation }
+  | { kind: "contrary"; reason: string }
+  | { kind: "unavailable"; reason: string };
+
+function codexProcessRow(row: NativeProcessRow): boolean {
+  return row.executableName === "codex" && executableName(tokens(row.command)[0] ?? "") === "codex";
+}
+
+/** Spec 0016 item 1: classify one process listing against one pane pid. `identity` asks for the conversation proof
+ *  (`observeNativePaneProcess`); without it, runtime occupancy only (`observeClaudePaneRuntime`). */
+export function classifyNativePane(rows: NativeProcessRow[], panePid: number, runtime: NativeRuntime, opts: {
+  identity: boolean;
+  expectedToken?: string | null;
+  requireResume?: boolean;
+  selectedExecutable?: string;
+  rotation?: ClaudeResumeRotation | null;
+}): NativeObservationResult {
+  const unavailable = (reason: string): NativeObservationResult => ({ kind: "unavailable", reason });
+  const contrary = (reason: string): NativeObservationResult => ({ kind: "contrary", reason });
+  // A successful `ps -A` always lists at least itself: no rows is a failed read.
+  if (rows.length === 0) return unavailable("the process list is empty or could not be read");
+  const byPid = new Map(rows.map((row) => [row.pid, row]));
+  if (byPid.size !== rows.length) return unavailable("the process list repeats a pid");
+  const root = byPid.get(panePid);
+  if (!root) return unavailable("the pane pid is not in the process list");
+  if (!root.startedAt || !root.tpgid || root.tpgid <= 0) return unavailable("the pane process has no readable foreground group");
+  const children = new Map<number, NativeProcessRow[]>();
+  for (const row of rows) if (row.pid !== row.ppid) children.set(row.ppid, [...(children.get(row.ppid) ?? []), row]);
+  const under: NativeProcessRow[] = [];
+  const queue = [root];
+  const seen = new Set<number>();
+  while (queue.length > 0) {
+    const row = queue.shift()!;
+    if (seen.has(row.pid)) continue;
+    seen.add(row.pid);
+    under.push(row);
+    queue.push(...(children.get(row.pid) ?? []));
+  }
+  const inForeground = (row: NativeProcessRow) => row.pgid === root.tpgid && row.tpgid === root.tpgid;
+  const isRuntime = (row: NativeProcessRow) => runtime === "claude-code" ? claudeProcess(row, opts.selectedExecutable) : codexProcessRow(row);
+  const isOtherRuntime = (row: NativeProcessRow) => runtime === "claude-code" ? codexProcessRow(row) : claudeProcess(row);
+  // Positive evidence first (spec 0016 precedence: contrary over unavailable).
+  if (under.some((row) => inForeground(row) && isOtherRuntime(row))) return contrary("a different agent runtime holds the pane's foreground");
+  const candidates = nativeProcessCandidates(rows, panePid, runtime, opts.selectedExecutable);
+  if (opts.identity && runtime === "claude-code" && opts.expectedToken && candidates.some(({ process }) => {
+    const launched = claudeSessionToken(tokens(process.command).slice(1));
+    return launched !== null && launched !== opts.expectedToken && !(launched === opts.rotation?.token && rotationProcess(process, opts.rotation));
+  })) return contrary("a Claude process in the pane's foreground names a different conversation");
+  // A Claude-like row whose executable witness the Claude match needs: refused is positive, exited is no reading.
+  const witnessless = under.filter((row) => runtime === "claude-code" && needsClaudeExecutablePath(row) && !row.executablePath);
+  if (witnessless.some((row) => row.executablePathError === "refused")) return contrary("a Claude-like process's executable could not be read (refused)");
+  if (witnessless.length > 0) return unavailable("a Claude-like process exited before its executable could be read");
+  if (candidates.length === 0) {
+    // "No runtime" needs every process under the pane fully read; a candidate chain breaks on a missing start time.
+    if (under.some((row) => !row.startedAt)) return unavailable("a process under the pane was not fully read");
+    return under.some(isRuntime)
+      ? contrary("the seat's runtime is alive under the pane but not in its foreground group")
+      : contrary("no runtime process runs under the pane");
+  }
+  if (!opts.identity) return candidates.length === 1 ? { kind: "proof", observation: candidates[0]! } : contrary("more than one runtime candidate holds the pane's foreground");
+  if (runtime === "claude-code" && !opts.expectedToken) return unavailable("no expected conversation token to prove against");
+  const observation = selectNativeProcess(rows, panePid, opts.expectedToken, opts.requireResume, runtime, opts.selectedExecutable,
+    runtime === "claude-code" ? opts.rotation : undefined);
+  if (observation) return { kind: "proof", observation };
+  return runtime === "claude-code" && candidates.length > 1
+    ? contrary("more than one runtime candidate holds the pane's foreground")
+    : contrary("the pane's runtime does not prove the seat's conversation");
+}
+
+/** Spec 0016: one typed observation of a pane. A failed pid read or `ps` is unavailable, never a contrary reading. */
+export async function observeNativePaneTyped(input: Parameters<typeof observeNativePaneProcess>[0], runtime: NativeRuntime,
+  identity: boolean): Promise<NativeObservationResult> {
+  let pid: number | null;
+  try { pid = await input.tmux.getPanePid(input.target); } catch { return { kind: "unavailable", reason: "the pane pid could not be read" }; }
+  if (!pid) return { kind: "unavailable", reason: "the pane pid could not be read" };
+  let rows: NativeProcessRow[];
+  try { rows = await (input.listProcesses ?? listNativeProcesses)(); } catch { return { kind: "unavailable", reason: "the process list could not be read" }; }
+  return classifyNativePane(rows, pid, runtime, { identity, expectedToken: input.expectedToken, requireResume: input.requireResume,
+    selectedExecutable: input.selectedExecutable, rotation: input.rotation });
+}
+
+/** Spec 0016 item 1, the two-sample table: proof needs two proofs of the same fingerprint; positive evidence of another
+ *  process wins over a failed read; anything else is no reading. */
+export function combineNativeSamples(first: NativeObservationResult, second: NativeObservationResult): NativeObservationResult {
+  if (first.kind === "proof" && second.kind === "proof") {
+    return first.observation.fingerprint === second.observation.fingerprint ? second : { kind: "unavailable", reason: "the two samples saw different processes" };
+  }
+  if (first.kind === "proof" || second.kind === "proof") return { kind: "unavailable", reason: "the two samples disagree" };
+  if (first.kind === "contrary") return first;
+  if (second.kind === "contrary") return second;
+  return first;
+}
+
+/** Spec 0016: two typed samples, combined. */
+export async function verifyNativePaneTyped(input: Parameters<typeof observeNativePaneProcess>[0], runtime: NativeRuntime,
+  identity: boolean): Promise<NativeObservationResult> {
+  const first = await observeNativePaneTyped(input, runtime, identity);
+  const second = await observeNativePaneTyped(input, runtime, identity);
+  return combineNativeSamples(first, second);
 }
 
 /** The `ps` start time (lstart, local time) of the one stable Claude foreground
