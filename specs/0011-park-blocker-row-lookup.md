@@ -55,7 +55,10 @@ A parked queue row names its blocker in `blocked_on`. The daemon decided what a 
    - Workflow closures and gate parks (`workflow-projector.ts`) and mission-control closures keep their authored gate names. They are accepted with a warning, because nothing resolves such a name.
    - A missing `qitem-` id and a dead `qitem-` row are refused on every path, as before.
 4. **Existing parks are not rewritten.** A park that names no blocker keeps one with a warning instead of a refusal; so does a park naming the blocker the row already carries. With no blocker named, the park restores the row's own blocker or the gate a claim retained. None of the CLI form rules above refuses it.
-   - **Exception:** a gate restored from a claim (the row no longer carries it) still needs a wake, unless it is a live row. The claim ended that park and its wake, so without one the restored park would have nothing to lift it (review W1). A still-parked re-park keeps its existing wake, and an FR-6 human park is unaffected.
+   - **Exception:** a kept park needs a wake whenever the row's current wake isn't live, unless its blocker is a live row. Two cases:
+     - a gate restored from a claim (the row no longer carries it): the claim ended that park and its wake (review W1);
+     - a still-blocked row whose plain park timer already fired (`park_timer_fired_once`), re-parked on its blocker, with or without naming it.
+     Either way the kept blocker would lift nothing. A still-parked re-park whose wake is live keeps it, and an FR-6 human park is unaffected.
 5. **The same row lookup everywhere the prefix gated behaviour:**
    - the park's blocker wake;
    - the waiting projection's blocker owner and state;
@@ -84,7 +87,7 @@ A parked queue row names its blocker in `blocked_on`. The daemon decided what a 
 - REQ-0011-12: If a park from the update route names a two-part seat address whose rig is not on this daemon, then the daemon shall refuse it.
 - REQ-0011-13: If a park from the update route names a typed gate or a seat address and carries no wake, then the daemon shall refuse it.
 - REQ-0011-14: When `rig watchdog list` names the rows a park timer serves, it shall name only rows whose current park uses that timer.
-- REQ-0011-15: If a park from the update route restores a gate a claim retained and carries no wake, then the daemon shall refuse it unless the gate is a live row.
+- REQ-0011-15: If a park from the update route keeps its blocker while the row's current wake is not live and carries no wake, then the daemon shall refuse it unless the blocker is a live row.
 
 ## Plan
 
@@ -121,6 +124,7 @@ cd packages/cli && npx vitest run test/queue.test.ts test/queue-update-metadata-
 - an FR-6 human park is refused without its fields, and accepted with them, needing no wake;
 - `rig watchdog list` doesn't name a resumed row as served;
 - a claimed row re-blocked with no blocker named keeps its retained gate (`queue-claim-blocker`). A typed gate needs a wake for that: without one it is refused, with one it is restored. A restored live row needs none;
+- a still-blocked row whose park timer fired is refused when re-parked on its blocker without a wake (named or not), and re-armed with one; with a live timer, the same re-park needs no wake;
 - end to end through the real CLI, loopback HTTP and the real route and repository (`queue-update-metadata-reject-cli`): `rig queue block` and `rig queue update --blocked-on` refuse bare free text and an unknown prefix with the accepted forms, refuse a done custom row, and accept a live one.
 
 Each fix, broken on purpose once, turns its test red. The existing suites that park on authored names or human addresses stay green.
