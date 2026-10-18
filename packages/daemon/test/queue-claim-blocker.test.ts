@@ -42,6 +42,36 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
     table, db.prepare(`SELECT * FROM ${table} ORDER BY rowid`).all(),
   ]));
 
+  // Spec 0011, review W1: a gate a claim retained, restored by a bare `--state blocked`, is a new park as far as lifting
+  // goes. The form is waived (it was accepted when first parked), but a gate nothing lifts still needs a wake.
+  const reblock = (id: string, extra: object = {}) => app.request(`/api/queue/${id}/update`, {
+    method: "POST", headers: { "content-type": "application/json", "X-OpenRig-Session": "worker@rig" },
+    body: JSON.stringify({ state: "blocked", ...extra }),
+  });
+
+  it("W1: a claim-restored typed gate needs a wake on a bare re-block; with one it is restored", async () => {
+    const row = await create();
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "external:owned-gate", wakeAfterSeconds: 90 });
+    expect((await claim(row.qitemId)).status).toBe(200);
+    const refused = await reblock(row.qitemId);
+    expect(refused.status).toBe(500);
+    expect(await refused.json()).toMatchObject({ error: "blocker_wake_required", rejectedBlocker: "external:owned-gate" });
+    expect(repo.getById(row.qitemId)).toMatchObject({ state: "in-progress", blockedOn: null });
+    const restored = await reblock(row.qitemId, { wakeAfterSeconds: 120 });
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ state: "blocked", blockedOn: "external:owned-gate" });
+  });
+
+  it("W1: a claim-restored live row needs no wake on a bare re-block", async () => {
+    const blocker = await create("gate@rig");
+    const row = await create();
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: blocker.qitemId });
+    expect((await claim(row.qitemId)).status).toBe(200);
+    const restored = await reblock(row.qitemId);
+    expect(restored.status).toBe(200);
+    expect(await restored.json()).toMatchObject({ state: "blocked", blockedOn: blocker.qitemId });
+  });
+
   it("clears a qitem blocker and returns liveness to the claimant while preserving the sibling park", async () => {
     const blocker = await create("gate@rig");
     const row = await create();
@@ -158,7 +188,8 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
     expect(repo.recordClosureOverdue(row.qitemId, { now: "9999-01-01T00:00:00.000Z" })).toBeNull();
     const response = await app.request(`/api/queue/${row.qitemId}/update`, {
       method: "POST", headers: { "content-type": "application/json", "X-OpenRig-Session": "worker@rig" },
-      body: JSON.stringify({ state: "blocked" }),
+      // Spec 0011 W1: a claim-restored typed gate carries a wake.
+      body: JSON.stringify({ state: "blocked", ...(cleared ? {} : { wakeAfterSeconds: 3600 }) }),
     });
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ blockedOn: cleared ? null : "external:old-gate" });
@@ -194,7 +225,8 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
     const destination = repo.getById(row.qitemId)!.destinationSession;
     const response = await app.request(`/api/queue/${row.qitemId}/update`, {
       method: "POST", headers: { "content-type": "application/json", "X-OpenRig-Session": destination },
-      body: JSON.stringify({ state: "blocked", ...(!cleared && gateKind === "human" ? { summary: "still awaiting review", evidenceRef: "owned-new-evidence" } : {}) }),
+      // Spec 0011 W1: a claim-restored typed gate carries a wake.
+      body: JSON.stringify({ state: "blocked", ...(cleared ? {} : gateKind === "human" ? { summary: "still awaiting review", evidenceRef: "owned-new-evidence" } : { wakeAfterSeconds: 3600 }) }),
     });
     expect(response.status).toBe(200);
     expect((await response.json()).blockedOn).toBe(cleared ? null : gate);
@@ -234,7 +266,7 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
       closureReason: null, closureTarget: cleared ? null : gate });
     expect(receipt.transitionNote).toBe(`wake-escalation members added: recovery-for:${member.qitemId}`);
     const response = await post("update", { state: "blocked",
-      ...(!cleared && gateKind === "human" ? { summary: "still waiting", evidenceRef: "owned-new-evidence" } : {}) });
+      ...(cleared ? {} : gateKind === "human" ? { summary: "still waiting", evidenceRef: "owned-new-evidence" } : { wakeAfterSeconds: 3600 }) });
     expect(response.status).toBe(200);
     expect((await response.json()).blockedOn).toBe(cleared ? null : gate);
   });
