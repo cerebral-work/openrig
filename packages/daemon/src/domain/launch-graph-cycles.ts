@@ -1,7 +1,10 @@
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
 
-/** Spec 0014: how to recover from a stored cycle today, said the same way by restore and by a growth refusal. */
-export const NO_EDGE_REMOVAL = "There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges.";
+/** Spec 0014 and CER-2981: the command that removes one edge of a stored cycle, named the same way by restore and by a
+ *  growth refusal. */
+export function edgeRemovalCommand(rigId: string): string {
+  return `rig edge remove ${rigId} <from> <to> --kind <kind>`;
+}
 
 /** An edge as stored: `from <kind> to`. */
 export interface LaunchGraphEdge {

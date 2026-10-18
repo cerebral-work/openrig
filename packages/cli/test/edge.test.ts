@@ -106,3 +106,70 @@ describe("rig edge add", () => {
     expect(JSON.parse(out)).toMatchObject({ ok: true, status: "created", edge: { kind: "can_observe" } });
   });
 });
+
+// CER-2981: `rig edge remove <rig-id> <from> <to> --kind <kind>` sends DELETE /api/rigs/:rigId/edges?from=&to=&kind=.
+describe("rig edge remove", () => {
+  let server: http.Server;
+  let port: number;
+  const received: Array<{ method: string; url: string }> = [];
+
+  beforeAll(async () => {
+    server = http.createServer((req, res) => {
+      received.push({ method: req.method ?? "", url: req.url ?? "" });
+      const query = new URL(req.url ?? "/", "http://x").searchParams;
+      res.setHeader("Content-Type", "application/json");
+      if (query.get("to") === "dev.gone") {
+        res.writeHead(404);
+        res.end(JSON.stringify({ ok: false, code: "edge_not_found", error: "No delegates_to edge orch.lead -> dev.gone in rig rig-123" }));
+      } else {
+        res.writeHead(200);
+        res.end(JSON.stringify({ ok: true, status: "removed",
+          edge: { id: "e1", rigId: "rig-123", sourceId: "n-lead", targetId: "n-build", kind: query.get("kind") } }));
+      }
+    });
+    await new Promise<void>((r) => { server.listen(0, r); });
+    port = (server.address() as { port: number }).port;
+  });
+
+  afterAll(() => { server.close(); });
+
+  function run(args: string[]) {
+    const deps: StatusDeps = {
+      lifecycleDeps: {
+        ...mockLifecycleDeps(),
+        exists: vi.fn((p: string) => p === STATE_FILE),
+        readFile: vi.fn((p: string) => p === STATE_FILE
+          ? JSON.stringify({ pid: 123, port, db: "test.sqlite", startedAt: "2026-10-18T00:00:00Z" } as DaemonState)
+          : null),
+      },
+      clientFactory: (url) => new DaemonClient(url),
+    };
+    const prog = new Command();
+    prog.exitOverride();
+    prog.addCommand(edgeCommand(deps));
+    return capture(() => prog.parseAsync(["node", "rig", "edge", "remove", ...args]).then(() => {}));
+  }
+
+  it("sends DELETE with from, to and kind for the rig and reports the removed edge", async () => {
+    const { out, exitCode } = await run(["rig-123", "orch.lead", "dev.build", "--kind", "delegates_to"]);
+    expect(received.at(-1)).toEqual({ method: "DELETE", url: "/api/rigs/rig-123/edges?from=orch.lead&to=dev.build&kind=delegates_to" });
+    expect(out).toContain("Removed delegates_to edge orch.lead -> dev.build");
+    expect(exitCode).toBeUndefined();
+  });
+
+  it("an absent edge prints the daemon's error and exits 1, never reporting success", async () => {
+    const { out, exitCode } = await run(["rig-123", "orch.lead", "dev.gone", "--kind", "delegates_to"]);
+    expect(out).toContain("No delegates_to edge orch.lead -> dev.gone");
+    expect(out).not.toContain("Removed");
+    expect(exitCode).toBe(1);
+  });
+
+  it("--json prints the raw response, and exits 1 on a refusal", async () => {
+    const ok = await run(["rig-123", "orch.lead", "dev.build", "--kind", "can_observe", "--json"]);
+    expect(JSON.parse(ok.out)).toMatchObject({ ok: true, status: "removed", edge: { kind: "can_observe" } });
+    const refused = await run(["rig-123", "orch.lead", "dev.gone", "--kind", "delegates_to", "--json"]);
+    expect(JSON.parse(refused.out)).toMatchObject({ ok: false, code: "edge_not_found" });
+    expect(refused.exitCode).toBe(1);
+  });
+});
+

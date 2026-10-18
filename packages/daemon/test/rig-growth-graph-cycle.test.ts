@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import type { ExpansionRequest } from "../src/domain/types.js";
+import { removeRigEdge } from "../src/domain/rig-edge-add.js";
 
 describe("growing an existing rig never closes a launch-dependency cycle (spec 0014)", () => {
   let db: Database.Database;
@@ -97,8 +98,12 @@ describe("growing an existing rig never closes a launch-dependency cycle (spec 0
     expect(result).toMatchObject({ ok: false, code: "cycle_error" });
     if (result.ok) return;
     expect(result.error).toContain("This rig already holds a launch-order cycle: orch.lead delegates_to orch.peer, orch.peer delegates_to orch.lead");
-    expect(result.error).toMatch(/Nothing was written\. There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges\.$/);
+    expect(result.error).toContain(`Nothing was written. Remove one of these edges with: rig edge remove ${rig.id} <from> <to> --kind <kind>, then retry.`);
     expect(shape(rig.id)).toEqual(before);
+    // CER-2981: removing one cycle edge lets the rig grow again.
+    expect(removeRigEdge(setup.rigRepo, setup.eventBus, { rigId: rig.id, from: "orch.peer", to: "orch.lead", kind: "delegates_to", by: null }))
+      .toMatchObject({ ok: true, status: "removed" });
+    expect((await setup.rigExpansionService.expand({ rigId: rig.id, pod: pod("ops", ["mon"]) })).ok).toBe(true);
   });
 });
 
