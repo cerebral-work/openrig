@@ -28,6 +28,7 @@ cw.4 is based on untagged upstream `main` at `f41740137f3d3ab807f5f24e559b984563
 ## Estate changes
 
 - **The default bind is loopback only until the fork has auth** (CER-2924). With no `OPENRIG_BIND_HOST`, the daemon binds `127.0.0.1`; upstream also binds the tailscale IP, and upstream's default is unchanged. Tailnet exposure is opt-in: `OPENRIG_BIND_HOST=<address>` binds exactly that address. Following upstream's explicit behaviour, loopback is then not also bound, and a bind that is neither loopback nor tailnet needs `OPENRIG_AUTH_BEARER_TOKEN`.
+- **LeanSpec and lsc** (CER-2914): fork specs live in `specs/` (index in `specs/README.md`), agents follow the spec-first rule in [AGENTS.md](AGENTS.md), and `.github/workflows/lsc.yml` runs `lsc check specs/` on every pull request, in warn mode for now.
 
 ## Releases
 
