@@ -24,12 +24,12 @@ const AWKWARD = `${TOKEN} it's $HOME \`x\` \\n "q"`;
 describe("the resolver (REQ-0017-16)", () => {
   const resolve = buildDaemonSecretResolver(
     { ANTHROPIC_API_KEY: "a", OPENAI_BASE_URL: "http://x", EMPTY_TOKEN: "" },
-    { omp: { OMP_EXTRA_API_KEY: "o", TOKENIZERS_PARALLELISM: "false" }, codex: { CODEX_TOKEN: "c" } },
+    { omp: { OMP_EXTRA_API_KEY: "o", OMP_EXTRA_BASE_URL: "http://omp" }, codex: { CODEX_TOKEN: "c" } },
   );
-  it("gives the secret-named values of the provider-auth env and the runtime's own env, nothing else", () => {
-    expect(resolve("omp")).toEqual({ ANTHROPIC_API_KEY: "a", OMP_EXTRA_API_KEY: "o" });
-    expect(resolve("claude-code")).toEqual({ ANTHROPIC_API_KEY: "a" });
-    expect(resolve(null)).toEqual({ ANTHROPIC_API_KEY: "a" });
+  it("gives every value of the provider-auth env and the runtime's own env, routing names included (D1); no empty value", () => {
+    expect(resolve("omp")).toEqual({ ANTHROPIC_API_KEY: "a", OPENAI_BASE_URL: "http://x", OMP_EXTRA_API_KEY: "o", OMP_EXTRA_BASE_URL: "http://omp" });
+    expect(resolve("claude-code")).toEqual({ ANTHROPIC_API_KEY: "a", OPENAI_BASE_URL: "http://x" });
+    expect(resolve(null)).toEqual({ ANTHROPIC_API_KEY: "a", OPENAI_BASE_URL: "http://x" });
   });
   it("strips exactly the resolver's names: a secret-named seat-env name stays for 0013 item 9's guard to refuse", () => {
     const env = { ANTHROPIC_API_KEY: "a", GITHUB_TOKEN: "from-seat-env", DEBUG: "1" };

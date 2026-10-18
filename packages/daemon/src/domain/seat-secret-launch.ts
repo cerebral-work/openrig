@@ -4,18 +4,19 @@
 // deletes before it reads a value. Nothing here logs, returns or throws a value; failures name the step only.
 import { lstat, mkdir, readdir, unlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
-import { isSecretSeatEnvName } from "./seat-launch-env-filter.js";
 
-/** A runtime's secret launch values: exactly the secret-named names of the daemon's own launch sources. */
+/** A runtime's launch values from the daemon's own sources: every name they carry, keys and routing names alike, so a
+ *  key and its endpoint travel together through the script (review r2's D1). */
 export type DaemonSecretResolver = (runtime: string | null | undefined) => Readonly<Record<string, string>>;
 
-/** REQ-0017-16: one resolver, built at startup, over the provider-auth allow-list's values and the per-runtime env. */
+/** REQ-0017-16: one resolver, built at startup, over the provider-auth allow-list's values and the per-runtime env.
+ *  Both hold only names the operator allow-listed from the known provider set. */
 export function buildDaemonSecretResolver(
   providerAuthEnv: Readonly<Record<string, string | undefined>>,
   runtimeSessionEnv: Readonly<Record<string, Readonly<Record<string, string | undefined>>>>,
 ): DaemonSecretResolver {
   const pick = (env: Readonly<Record<string, string | undefined>> | undefined) =>
-    Object.entries(env ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "" && isSecretSeatEnvName(entry[0]));
+    Object.entries(env ?? {}).filter((entry): entry is [string, string] => typeof entry[1] === "string" && entry[1] !== "");
   return (runtime) => Object.freeze(Object.fromEntries([
     ...pick(providerAuthEnv),
     ...(runtime && Object.hasOwn(runtimeSessionEnv, runtime) ? pick(runtimeSessionEnv[runtime]) : []),

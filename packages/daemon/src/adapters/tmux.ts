@@ -1,9 +1,10 @@
 import { DeliveryGuardError, type SeatDeliveryGuard } from "../domain/seat-delivery-guard.js";
 import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join as pathJoin } from "node:path";
+import { basename, join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
+import { ensureSecretLaunchDir, SECRET_SCRIPT_TRACE_GUARD, secretExportLines, type DaemonSecretResolver } from "../domain/seat-secret-launch.js";
 import { isSecretSeatEnvName, seatEnvAllowlistApplies, seatEnvScrubScript, seatKubeconfig, seatLaunchExcludedEnvKeys,
   type SeatEnvPolicy } from "../domain/seat-launch-env-filter.js";
 import { SEAT_ENV_KEYS_VAR } from "../domain/seat-env.js";
@@ -20,6 +21,9 @@ interface TmuxShellCommandOptions {
   execInScript?: boolean;
   /** Preserve rc aliases/functions in POSIX or fish panes; other shells use /bin/sh. */
   sourceInPane?: boolean;
+  /** Spec 0017 item 1: this command launches a seat of this runtime, so it carries the runtime's daemon secrets
+   *  (REQ-0017-16, -17). Unset for probes, resume-metadata commands and context delivery: they carry none. */
+  runtimeLaunch?: string;
 }
 
 /**
@@ -532,6 +536,23 @@ export class TmuxAdapter {
   private seatEnvPolicy?: () => SeatEnvPolicy | undefined | "unreadable";
   private seatEnvFileExists: (file: string) => boolean = existsSync;
 
+  // Spec 0017 items 1-3: the daemon's launch secrets and the 0700 directory their staged scripts are written in.
+  private secretLaunch?: { resolve: DaemonSecretResolver; dir: string };
+
+  /** Spec 0017: wire the startup resolver and the secret launch directory. Without it no launch carries a secret. */
+  setSecretLaunch(resolve: DaemonSecretResolver, dir: string): void {
+    this.secretLaunch = { resolve, dir };
+  }
+
+  /** Spec 0017 item 3 (REQ-0017-07): after a launch's readiness outcome, delete its secret-bearing script if the pane
+   *  never consumed it. Other staged scripts keep today's rule (left for diagnosis). */
+  async discardSecretLaunch(target: string): Promise<void> {
+    const path = this.shellLaunches.get(target);
+    if (!path || !this.secretLaunch || !path.startsWith(`${this.secretLaunch.dir}/`)) return;
+    try { await this.fileOps.unlink(path); } catch { /* already consumed */ }
+    this.shellLaunches.delete(target);
+  }
+
   /** Read for each launch, so a seat_env change applies to the next launch. */
   setSeatEnvPolicy(resolve: () => SeatEnvPolicy | undefined | "unreadable", fileExists: (file: string) => boolean = existsSync): void {
     this.seatEnvPolicy = resolve;
@@ -586,14 +607,17 @@ export class TmuxAdapter {
    *  `command` is a single executable: in allow-list mode it replaces the staging shell (exec) once the scrub
    *  has run, so it is the pane's foreground process, as when typed. The stub runtime's readiness check and the
    *  resume probe read pane_current_command, and a child of the staging subshell reads as a shell. */
-  async sendLaunchCommand(target: string, command: string): Promise<TmuxResult> {
+  async sendLaunchCommand(target: string, command: string, options: { runtimeLaunch?: string } = {}): Promise<TmuxResult> {
     let allowlist: SeatEnvPolicy | undefined;
     try {
       allowlist = await this.seatEnvAllowlistFor(target);
     } catch {
       return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied (step: resolve the seat env policy), so nothing was sent.` };
     }
-    if (allowlist) return this.sendShellCommand(target, command, undefined, { sourceInPane: true, execInScript: true });
+    // Spec 0017 item 1: a launch carrying daemon secrets is always staged, never typed.
+    if (allowlist || this.secretsFor(options.runtimeLaunch)) {
+      return this.sendShellCommand(target, command, undefined, { sourceInPane: true, execInScript: true, runtimeLaunch: options.runtimeLaunch });
+    }
     const sent = await this.sendText(target, command);
     if (!sent.ok) return sent;
     return this.sendKeys(target, ["Enter"]);
@@ -970,12 +994,19 @@ export class TmuxAdapter {
     } catch {
       return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied, so nothing was sent.` };
     }
+    // Spec 0017 item 1: a marked runtime launch carries that runtime's daemon secrets in its staged script.
+    const secrets = this.secretsFor(options.runtimeLaunch);
+    if (secrets) {
+      const dir = await ensureSecretLaunchDir(this.secretLaunch!.dir);
+      if (!dir.ok) return { ok: false, code: dir.code, message: dir.message };
+    }
     // POSIX shells retain subshell isolation; unknown/unreadable panes use sh.
     const paneShell = options.sourceInPane ? (await this.getPaneCommand(target) ?? "").replace(/^-/, "") : "";
     const sourceInPane = ["bash", "zsh", "sh", "dash", "ksh"].includes(paneShell);
-    let path = !allowlist && options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName();
+    let path = !allowlist && !secrets && options.stageIfLong && commandBytes <= 512 ? undefined
+      : secrets ? pathJoin(this.secretLaunch!.dir, basename(this.fileOps.tmpName())) : this.fileOps.tmpName();
     let invocation = path ? sourceInPane ? `( . ${shellQuote(path)} )` : `/bin/sh ${shellQuote(path)}` : command;
-    if (path && paneShell === "fish" && !allowlist) {
+    if (path && paneShell === "fish" && !allowlist && !secrets) {
       const quotedPath = shellQuote(path);
       invocation = `/bin/sh ${quotedPath}`;
       // Fish single quotes reinterpret POSIX backslashes. Keep those payloads
@@ -990,7 +1021,7 @@ export class TmuxAdapter {
     }
     if (Buffer.byteLength(invocation, "utf8") > 512) {
       // Pi commands below the canonical tty limit still fit when staging cannot.
-      if (options.stageIfLong && commandBytes < 1024 && !allowlist) {
+      if (options.stageIfLong && commandBytes < 1024 && !allowlist && !secrets) {
         path = undefined;
         invocation = command;
       } else {
@@ -1000,7 +1031,7 @@ export class TmuxAdapter {
     let created = false;
     try {
       if (path) {
-        await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${prologue}${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
+        await this.fileOps.writeFile(path, `${secrets ? `${SECRET_SCRIPT_TRACE_GUARD}\n` : ""}/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${prologue}${secrets ? secretExportLines(secrets) : ""}${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
         created = true;
       }
       const text = beforeInput ? await this.guardedInput(target, (pane, check) => this.sendTextUnchecked(pane, invocation, () => { check(); beforeInput(); }))
@@ -1024,6 +1055,13 @@ export class TmuxAdapter {
         try { await this.fileOps.unlink(path); } catch { /* best-effort cleanup */ }
       }
     }
+  }
+
+  /** Spec 0017: the daemon secrets a marked runtime launch carries, or null for an unmarked command or none to carry. */
+  private secretsFor(runtimeLaunch: string | undefined): Readonly<Record<string, string>> | null {
+    if (!runtimeLaunch || !this.secretLaunch) return null;
+    const secrets = this.secretLaunch.resolve(runtimeLaunch);
+    return Object.keys(secrets).length > 0 ? secrets : null;
   }
 
   /** Only a positive file observation means this attempt has not executed. No
