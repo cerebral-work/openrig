@@ -182,6 +182,7 @@ import { OPENRIG_HOME } from "./openrig-compat.js";
 import { homeIsolationAdvisory } from "./domain/home-isolation.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
+import { buildLaunchSessionEnv } from "./domain/launch-session-env.js";
 import {
   getCompatibleOpenRigPath,
   getDefaultOpenRigPath,
@@ -607,19 +608,18 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // by the seat-handover full-cycle composer when it creates a successor
   // session (OPR.0.4.3.04), so a handed-over successor self-identifies +
   // reports activity exactly like a launched seat.
-  const launchSessionEnv: Record<string, string | undefined> = {
-    PATH: process.env.PATH,
-    OPENRIG_HOME,
-    OPENRIG_PORT: openRigPort,
-    OPENRIG_HOST: openRigHost,
-    OPENRIG_URL: resolvedActivityHookUrl,
-    OPENRIG_ACTIVITY_HOOK_TOKEN: resolvedActivityHookToken,
-    ...providerAuthEnv,
-    HOME: daemonHome,
-    USER: process.env.USER,
-    LOGNAME: process.env.LOGNAME,
-    CODEX_HOME: codexHome,
-  };
+  const launchSessionEnv = buildLaunchSessionEnv({
+    path: process.env.PATH,
+    openRigHome: OPENRIG_HOME,
+    port: openRigPort,
+    host: openRigHost,
+    activityEndpoint: { baseUrl: resolvedActivityHookUrl, token: resolvedActivityHookToken },
+    providerAuthEnv,
+    home: daemonHome,
+    user: process.env.USER,
+    logname: process.env.LOGNAME,
+    codexHome,
+  });
   // OPR.0.4.6.02 S1 — ONE shared tmux option-defaults applier, injected into
   // BOTH NodeLauncher and (via AppDeps → the seat-handover route) the fresh
   // successor launcher, so every fresh seat gets the same mouse/status/
@@ -1206,7 +1206,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     claudeContextProvisioner: claudeAdapter,
     // OPR.0.4.3.28 B3 — echo the resolved activity url+token into the self-attach
     // response env so the caller's shell can produce activity signal.
-    activityEnv: { url: resolvedActivityHookUrl, token: resolvedActivityHookToken },
+    activityEnv: { url: resolvedActivityHookUrl, home: OPENRIG_HOME },
   });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter,

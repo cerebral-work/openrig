@@ -11,6 +11,7 @@ import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { seatLifecycleService } from "../src/routes/seat.js";
 import type { NodeBinding } from "../src/domain/runtime-adapter.js";
+import { buildLaunchSessionEnv } from "../src/domain/launch-session-env.js";
 
 // No provider, tmux or startup. Config-selection cases execute only a private
 // fake Claude through the generated shell command; other child calls are mocked.
@@ -77,15 +78,16 @@ describe("S03 production managed capability selection", () => {
     const f = fixture();
     // Execute the actual initializer, without starting a daemon or reading its env.
     const source = readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
-    const start = source.indexOf("const launchSessionEnv:");
+    // Startup builds it with buildLaunchSessionEnv (spec 0013 item 9); this evaluates startup's own argument object.
+    const start = source.indexOf("const launchSessionEnv = buildLaunchSessionEnv(");
     expect(start).toBeGreaterThan(-1);
-    const expression = source.slice(source.indexOf("{", start), source.indexOf("\n  };", start) + 4);
-    const sessionEnv = runInNewContext(`(${expression})`, {
+    const expression = source.slice(source.indexOf("{", start), source.indexOf("\n  });", start) + 4);
+    const sessionEnv = buildLaunchSessionEnv(runInNewContext(`(${expression})`, {
       process: { env: { PATH: f.env.PATH, ...names, UNRELATED_VALUE: "not-forwarded" } },
       OPENRIG_HOME: f.env.OPENRIG_HOME, openRigPort: "1", openRigHost: "127.0.0.1",
       resolvedActivityHookUrl: "http://127.0.0.1:1", resolvedActivityHookToken: "synthetic-only",
       providerAuthEnv: {}, daemonHome: f.env.HOME, codexHome: path.join(f.root, "codex"),
-    });
+    }));
     for (const key of Object.keys(f.env)) delete f.env[key];
     Object.assign(f.env, sessionEnv);
     writeFileSync(f.executable, `#!${process.execPath}\nif (process.argv.includes('--help')) console.log(${JSON.stringify(help)}); else console.log(JSON.stringify(Object.fromEntries(['USER','LOGNAME','UNRELATED_VALUE'].filter(k => process.env[k] !== undefined).map(k => [k,process.env[k]]))));\n`);

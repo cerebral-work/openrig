@@ -756,7 +756,10 @@ export class SeatHandoverService {
         // The registry binding is unchanged (commit never ran). A resolve_pane failure leaves the live
         // retiree wholly untouched; a failure after the in-place respawn leaves the seat re-wakeable from
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
-        guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
+        guidance: launch.code === "secret_on_argv_refused"
+          // Spec 0013 item 9: refused before the cutover; the predecessor still runs and nothing needs recovering.
+          ? "The seat was not changed: its predecessor still runs. Remove the named variable from the seat env or the provider-auth allow-list, then retry the handover; do not relaunch."
+          : "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
       }, `create-successor:${launch.step}:${launch.code}`,
         launch.code === "retiree_not_terminated" ? "check-seat" : launch.code === "seat_env_refused" ? "fix-seat-env"
           : launch.code === "successor_not_ready" ? "relaunch-check-seat-env" : launch.replacementStarted ? "relaunch" : "none");

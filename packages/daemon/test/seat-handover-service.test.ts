@@ -897,6 +897,27 @@ describe("SeatHandoverService", () => {
     expect(JSON.parse(skipEvent.payload)).toMatchObject({ outcome: "skipped", reason: "probe_timeout", redacted: true });
   });
 
+  // Spec 0013 item 9, review r2 F1 on #35: a secret-named successor env is refused before the cutover. The retiree is
+  // never signalled, nothing is respawned, and the guidance never recommends a relaunch (which the guard refuses too).
+  it("refuses a secret-named successor env before the cutover: the retiree is untouched, and the guidance says not to relaunch", async () => {
+    const { rig, node } = seedSeat();
+    rigRepo.setRigEnv(rig.id, { TOKENIZERS_PARALLELISM: "false" });
+    const before = durableRows();
+
+    const result = await service.handover({ seatRef: "dev-impl@seat-rig", reason: "context-wall", source: "fresh" });
+
+    expect(result).toMatchObject({ ok: false, code: "successor_create_failed" });
+    expect((result as { message: string }).message).toContain("TOKENIZERS_PARALLELISM");
+    const guidance = (result as { guidance?: string }).guidance ?? "";
+    expect(guidance).toContain("predecessor still runs");
+    expect(guidance).not.toContain("--fresh");
+    expect(signalPaneProcess).not.toHaveBeenCalled();
+    expect(respawnPane).not.toHaveBeenCalled();
+    expect(launchHarness).not.toHaveBeenCalled();
+    expect(sessionRegistry.getBindingForNode(node.id)?.tmuxSession).toBe("dev-impl@seat-rig");
+    expect(durableRows()).toBe(before);
+  });
+
   it("fails loudly and leaves the binding when the in-place respawn fails", async () => {
     const { node } = seedSeat();
     respawnPane.mockResolvedValue({ ok: false, code: "no_server", message: "no server running" });

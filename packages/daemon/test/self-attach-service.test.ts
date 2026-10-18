@@ -55,6 +55,42 @@ describe("SelfAttachService", () => {
     db.close();
   });
 
+  // Spec 0013 item 9: `rig attach --self --json` prints this response, so the activity-hook token must not be in it.
+  // The caller's shell reads the token from <OPENRIG_HOME>/activity-endpoint.json, as every launched seat does.
+  it("never returns the activity-hook token in the attach env", async () => {
+    const token = "sentinel-attach-token-0b6f";
+    const service = new SelfAttachService({
+      db, rigRepo, podRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
+      claudeContextProvisioner: { ensureContextCollector: ensureContextCollectorSpy },
+      // Wired with a token anyway (an older caller): it must still never be echoed.
+      activityEnv: { url: "http://127.0.0.1:17534", token } as { url: string },
+    });
+    const rig = rigRepo.createRig("rigged-buildout");
+    rigRepo.addNode(rig.id, "orch1.lead", { runtime: "claude-code", cwd: "/tmp" });
+    const result = await service.attachToNode({ rigId: rig.id, logicalId: "orch1.lead", displayName: "orch1-lead@rigged-buildout", cwd: "/tmp" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.env.OPENRIG_URL).toBe("http://127.0.0.1:17534");
+    expect(Object.keys(result.env)).not.toContain("OPENRIG_ACTIVITY_HOOK_TOKEN");
+    expect(JSON.stringify(result)).not.toContain(token);
+  });
+
+  // Review r2 I4 on #35: the relay reads the token from $OPENRIG_HOME/activity-endpoint.json (~/.openrig when unset),
+  // so the attach env names the daemon's OPENRIG_HOME: a caller under a non-default home would read the wrong file.
+  it("returns the daemon's OPENRIG_HOME in the attach env, so the relay reads this daemon's endpoint file", async () => {
+    const service = new SelfAttachService({
+      db, rigRepo, podRepo, sessionRegistry, eventBus, tmuxAdapter, transcriptStore,
+      claudeContextProvisioner: { ensureContextCollector: ensureContextCollectorSpy },
+      activityEnv: { url: "http://127.0.0.1:17534", home: "/srv/openrig-instance-b" },
+    });
+    const rig = rigRepo.createRig("rigged-buildout");
+    rigRepo.addNode(rig.id, "orch1.lead", { runtime: "claude-code", cwd: "/tmp" });
+    const result = await service.attachToNode({ rigId: rig.id, logicalId: "orch1.lead", displayName: "orch1-lead@rigged-buildout", cwd: "/tmp" });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.env.OPENRIG_HOME).toBe("/srv/openrig-instance-b");
+  });
+
   it("attachToNode binds the current raw agent as external_cli", async () => {
     const rig = rigRepo.createRig("rigged-buildout");
     const node = rigRepo.addNode(rig.id, "orch1.lead", {

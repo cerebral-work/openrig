@@ -49,6 +49,8 @@ function adapter(failing: string, allowlist: boolean): TmuxAdapter {
 describe("a failed seat launch leaves no launch value behind (SEC-178)", () => {
   afterEach(() => vi.restoreAllMocks());
 
+  // A secret-named variable is now refused before any tmux command runs (spec 0013 item 9), so these failure-path
+  // checks use a plain variable carrying the sentinel value: a failed command must still never echo a launch value.
   it.each([
     ["filter mode, new-session fails", "new-session", false],
     ["allow-list mode, removing names fails", "set-environment", true],
@@ -60,7 +62,7 @@ describe("a failed seat launch leaves no launch value behind (SEC-178)", () => {
     const rig = rigRepo.createRig("r1");
     rigRepo.addNode(rig.id, "dev.build", { role: "worker", runtime: "claude-code" });
     const launcher = new NodeLauncher({ db, rigRepo, sessionRegistry: new SessionRegistry(db), eventBus, tmuxAdapter: adapter(failing, allowlist) });
-    const result = await launcher.launchNode(rig.id, "dev.build", { env: { EXAMPLE_PROVIDER_API_KEY: SECRET, CLAUDE_CONFIG_DIR: ALLOWED } });
+    const result = await launcher.launchNode(rig.id, "dev.build", { env: { EXAMPLE_PROVIDER_REGION: SECRET, CLAUDE_CONFIG_DIR: ALLOWED } });
     expect(result.ok).toBe(false);
     const everything = [JSON.stringify(result), everyRow(db), logs.join("\n")].join("\n");
     expect(everything).not.toContain(SECRET);
@@ -71,8 +73,8 @@ describe("a failed seat launch leaves no launch value behind (SEC-178)", () => {
 
   it("a handover respawn whose -e values are on the command line fails without them", async () => {
     const logs = captureLogs();
-    const result = await adapter("respawn-pane", false).respawnPane("%1", "claude --resume x", { env: { EXAMPLE_PROVIDER_API_KEY: SECRET, CLAUDE_CONFIG_DIR: ALLOWED } });
-    expect(result).toEqual({ ok: false, code: "unknown", message: "tmux respawn-pane failed (env names: EXAMPLE_PROVIDER_API_KEY, CLAUDE_CONFIG_DIR)" });
+    const result = await adapter("respawn-pane", false).respawnPane("%1", "claude --resume x", { env: { EXAMPLE_PROVIDER_REGION: SECRET, CLAUDE_CONFIG_DIR: ALLOWED } });
+    expect(result).toEqual({ ok: false, code: "unknown", message: "tmux respawn-pane failed (env names: EXAMPLE_PROVIDER_REGION, CLAUDE_CONFIG_DIR)" });
     expect(logs.join("\n")).not.toContain(SECRET);
   });
 });
