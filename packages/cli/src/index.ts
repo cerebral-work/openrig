@@ -58,6 +58,7 @@ import { telemetryCommand } from "./commands/telemetry.js";
 import { healthCommand, type HealthDeps } from "./commands/health.js";
 import { doctorCommand } from "./commands/doctor.js";
 import { expandCommand } from "./commands/expand.js";
+import { edgeCommand } from "./commands/edge.js";
 import { addMemberCommand } from "./commands/add.js";
 import { createCommand } from "./commands/create.js";
 import { growCommand } from "./commands/grow.js";
@@ -142,6 +143,7 @@ export interface ProgramDeps {
   workspaceDeps?: WorkspaceDeps;
   whoamiDeps?: StatusDeps;
   expandDeps?: StatusDeps;
+  edgeDeps?: StatusDeps;
   addDeps?: StatusDeps;
   createDeps?: StatusDeps;
   growDeps?: StatusDeps;
@@ -235,6 +237,7 @@ export function createProgram(depsOverride?: ProgramDeps): Command {
   program.addCommand(healthCommand(depsOverride?.healthDeps));
   program.addCommand(doctorCommand());
   program.addCommand(expandCommand(depsOverride?.expandDeps));
+  program.addCommand(edgeCommand(depsOverride?.edgeDeps));
   program.addCommand(addMemberCommand(depsOverride?.addDeps));
   program.addCommand(createCommand(depsOverride?.createDeps));
   program.addCommand(growCommand(depsOverride?.growDeps));

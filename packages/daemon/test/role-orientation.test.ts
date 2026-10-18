@@ -55,6 +55,47 @@ describe("queue whoami role binding", () => {
     expect(response.status).toBe(200);
     return (await response.json()).role;
   }
+  // ---------- session names shared across rigs (spec 0009; revenant's gap 2) ----------
+  function leadSeat(rigName: string, opts: { archived?: boolean } = {}) {
+    const rig = f.rigRepo.createRig(rigName);
+    const node = f.rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: root }).id;
+    f.sessionRegistry.registerSession(node, `orch-lead@${rigName}`);
+    if (opts.archived) f.rigRepo.archiveRig(rig.id);
+    return { rigId: rig.id, node };
+  }
+  async function roleWithNode(session: string, nodeId: string) {
+    const response = await f.app.request(`/api/queue/whoami?session=${encodeURIComponent(session)}&nodeId=${encodeURIComponent(nodeId)}`, { headers: { "X-OpenRig-Session": session } });
+    expect(response.status).toBe(200);
+    return (await response.json()).role;
+  }
+
+  it("revenant's shape: two archived rigs and one live rig share a session; queue whoami resolves the live node (spec 0009)", async () => {
+    leadSeat("revenant", { archived: true });
+    leadSeat("revenant", { archived: true });
+    const live = leadSeat("revenant");
+    record(live.node, [file("lead.md")]);
+    expect(await role("orch-lead@revenant")).toMatchObject({ state: "present", files: [{ path: "lead.md" }] });
+  });
+
+  it("two live rigs share a session: the role names rig_ambiguous and both rigs (spec 0009)", async () => {
+    const one = leadSeat("twin");
+    const two = leadSeat("twin");
+    const answer = await role("orch-lead@twin");
+    expect(answer.state).toBe("unknown");
+    expect(answer.reason).toContain("rig_ambiguous");
+    expect(answer.reason).toContain(one.rigId);
+    expect(answer.reason).toContain(two.rigId);
+  });
+
+  it("the caller's node id disambiguates its own session, and only its own (spec 0009)", async () => {
+    const one = leadSeat("twin");
+    leadSeat("twin");
+    record(one.node, [file("one.md")]);
+    expect(await roleWithNode("orch-lead@twin", one.node)).toMatchObject({ state: "present", files: [{ path: "one.md" }] });
+    // A node whose session is someone else's does not stand in for the caller.
+    expect((await roleWithNode("orch-lead@twin", a)).reason).toContain("rig_ambiguous");
+  });
+
   it("exposes only the caller's explicitly marked entries, independently of work and shared cwd", async () => {
     const own = file("a.md"), other = file("b.md");
     record(a, [own, file("setup.md", false)]);

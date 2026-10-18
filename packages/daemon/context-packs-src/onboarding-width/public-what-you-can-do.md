@@ -254,7 +254,9 @@ relay is a reason to inspect the available routing, not to surrender judgment to
 - **`rig workflow validate`** — will this spec instantiate at all, before a run finds out for you. A
   step with no allowed exit that can finish it or route onward is reported as `step_cannot_finish`.
   An allowed mapped exit is valid; in a dependency graph, `handoff` can finish a sink without a next
-  step.
+  step. A step's `gate.target` is a human seat session (the `human` seat, or `human-<name>` for one
+  person) or a role declared in `workflow.roles`; a registered human's gateway address is not a gate
+  target, and the validator's error names the exact forms.
 - **`rig workflow compile <mission>`** / **`instantiate-lifecycle`** — derive one executable graph
   from `project.yaml` → `mission.yaml` → `slice.yaml`, inspect it without writing, then start an
   eligible graph with an opaque replay key. Typed acceptance candidate, verdict, and evidence
@@ -379,6 +381,10 @@ not have to tear one down to change it, and you rarely have to start from nothin
 - **`rig add`** / **`rig expand`** — graft one more member, or a whole new pod, onto a rig that is
   already running. `rig add` takes the rig's name or ID; a name two active rigs share is refused
   with `rig_ambiguous` and the candidates. `rig grow --new-pod` and `rig expand` are one ingress; choose by input shape.
+  `rig expand` also takes cross-pod edges for the new pod (the fragment's `crossPodEdges:` list).
+- **`rig edge add <rig-id> <from> <to> --kind <kind>`** — add an edge between two seats that already
+  exist (for example `delegates_to` from `orch.lead` to `dev.build`). It writes one edge and relaunches
+  nothing; a repeat reports the existing edge.
 - **`rig remove`** / **`rig shrink`** — take a seat, or an entire pod, out of a running topology.
   If it holds active work, pass `--fallback <live-seat>` to reroute before mutation; without a
   valid fallback the command refuses rather than strand the rows.

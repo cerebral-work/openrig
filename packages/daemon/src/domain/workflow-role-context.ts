@@ -30,6 +30,40 @@ import {
   getNodeInventory,
 } from "./node-inventory.js";
 import { selectRoleSeat, type RoleSeatCandidateFacts } from "./workflow-role-resolver.js";
+import { RigRepository } from "./rig-repository.js";
+
+/** Two or more UNARCHIVED rigs carry the bound name. Resolution never picks one of them (spec 0009). */
+export class RigNameAmbiguousError extends Error {
+  constructor(readonly rigName: string, readonly rigIds: string[]) {
+    super(`rig name "${rigName}" matches ${rigIds.length} unarchived rigs (${rigIds.join(", ")}); archive or rename the extra rigs, then retry`);
+    this.name = "RigNameAmbiguousError";
+  }
+}
+
+/**
+ * Spec 0009: resolve a rig NAME to the one UNARCHIVED rig that carries it, through the archive-aware
+ * lookup seat refs already use (#174). Archived rigs are never chosen: a lead swap archives a rig and
+ * creates a new one under the same name, and the oldest row is often the archived one. null = no
+ * unarchived rig; more than one throws RigNameAmbiguousError.
+ */
+export function resolveUnarchivedRigId(db: Database.Database, rigName: string): string | null {
+  const ids = unarchivedRigIds(db, rigName);
+  if (ids.length > 1) throw new RigNameAmbiguousError(rigName, ids);
+  return ids[0] ?? null;
+}
+
+/** The ids of every unarchived rig named `rigName`, oldest first (spec 0009). */
+export function unarchivedRigIds(db: Database.Database, rigName: string): string[] {
+  return new RigRepository(db).findUnarchivedRigsByName(rigName).map((r) => r.id);
+}
+
+/** The distinct names of unarchived rigs, for messages that list what is registered (spec 0009). */
+export function unarchivedRigNames(db: Database.Database): string[] {
+  const hasArchive = (db.prepare("PRAGMA table_info(rigs)").all() as Array<{ name?: string }>)
+    .some((c) => c.name === "archived_at");
+  return (db.prepare(`SELECT DISTINCT name FROM rigs${hasArchive ? " WHERE archived_at IS NULL" : ""} ORDER BY name`)
+    .all() as Array<{ name: string }>).map((r) => r.name);
+}
 
 export interface RoleResolutionContext {
   /** The instance's bound rig NAME (never null — an unbound instance
@@ -57,11 +91,9 @@ export function roleResolutionContext(
   return {
     boundRig,
     candidatesForRig: () => {
-      const rig = db
-        .prepare(`SELECT id FROM rigs WHERE name = ? ORDER BY created_at LIMIT 1`)
-        .get(boundRig) as { id: string } | undefined;
-      if (!rig) return null;
-      const entries = attachTerminalActivityAndWork(getNodeInventory(db, rig.id), { db });
+      const rigId = resolveUnarchivedRigId(db, boundRig);
+      if (!rigId) return null;
+      const entries = attachTerminalActivityAndWork(getNodeInventory(db, rigId), { db });
       return entries.map((e) => ({
         logicalId: e.logicalId,
         role: e.role,
@@ -88,7 +120,15 @@ export function tryResolveRoleByCapability(
   harness?: string,
 ): string | null {
   if (!ctx) return null;
-  const candidates = ctx.candidatesForRig();
+  let candidates: RoleSeatCandidateFacts[] | null;
+  try {
+    candidates = ctx.candidatesForRig();
+  } catch (err) {
+    // Exception routing: an ambiguous rig name is no capability match, so the caller falls through
+    // to its human fallback instead of picking one of the rigs (spec 0009).
+    if (err instanceof RigNameAmbiguousError) return null;
+    throw err;
+  }
   if (!candidates) return null;
   return selectRoleSeat({ role, harness, candidates }).seat;
 }
@@ -106,13 +146,11 @@ export function rigDeclaresRole(
   boundRig: string,
   role: string,
 ): boolean {
+  const rigId = resolveUnarchivedRigId(db, boundRig);
+  if (!rigId) return false;
   const row = db
-    .prepare(
-      `SELECT COUNT(*) as c FROM nodes n
-         JOIN rigs r ON r.id = n.rig_id
-        WHERE r.name = ? AND n.role = ?`,
-    )
-    .get(boundRig, role) as { c: number };
+    .prepare(`SELECT COUNT(*) as c FROM nodes WHERE rig_id = ? AND role = ?`)
+    .get(rigId, role) as { c: number };
   return row.c > 0;
 }
 
@@ -129,7 +167,8 @@ export function rigDeclaresRole(
  * (the FAC-1 Q5 one-string rule — a raw occupant-era session name never
  * participates). Sync SQL only; an unknown rig name returns false (the
  * caller's registered-rig skip runs first, so that case never reaches
- * an advisory here). MAY THROW on a partial-schema DB (the inventory
+ * an advisory here). Throws RigNameAmbiguousError when two unarchived rigs share the
+ * name (spec 0009). MAY THROW on a partial-schema DB (the inventory
  * projection reads tables like `snapshots`) — the FR-5 sweep treats a
  * throw as cannot-vouch and skips (advisory-never-throw; VM-caught run-1).
  */
@@ -138,11 +177,9 @@ export function rigMemberExists(
   rigName: string,
   sessionRef: string,
 ): boolean {
-  const rig = db
-    .prepare(`SELECT id FROM rigs WHERE name = ? ORDER BY created_at LIMIT 1`)
-    .get(rigName) as { id: string } | undefined;
-  if (!rig) return false;
-  return getNodeInventory(db, rig.id).some(
+  const rigId = resolveUnarchivedRigId(db, rigName);
+  if (!rigId) return false;
+  return getNodeInventory(db, rigId).some(
     (e) => deriveCanonicalFromEntry(e) === sessionRef,
   );
 }

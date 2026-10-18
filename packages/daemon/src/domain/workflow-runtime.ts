@@ -54,10 +54,13 @@ import type { WatchdogJobsRepository } from "./watchdog-jobs-repository.js";
 import { disarmAllWorkflowKeepalives, disarmWorkflowKeepalive, ensureWorkflowKeepaliveArmed } from "./workflow-keepalive-arming.js";
 import { evaluateStepDeadline, type WorkflowDeadlineVerdict } from "./workflow-deadline.js";
 import {
+  RigNameAmbiguousError,
   rigDeclaresRole,
   rigMemberExists,
   roleResolutionContext,
   tryResolveRoleByCapability,
+  unarchivedRigIds,
+  unarchivedRigNames,
 } from "./workflow-role-context.js";
 import { isHumanSeatSession } from "./human-route-enforcer.js";
 import { parseSessionName } from "./session-name.js";
@@ -494,12 +497,21 @@ export class WorkflowRuntime {
     //
     // name→id re-resolves fresh at each later resolution site, so a rig
     // vanishing mid-run fails loud there (WF-5 catches it).
-    const registeredRigNames = (): string[] =>
-      (this.db.prepare(`SELECT DISTINCT name FROM rigs ORDER BY name`).all() as Array<{ name: string }>).map(
-        (r) => r.name,
-      );
-    const rigIsRegistered = (name: string): boolean =>
-      this.db.prepare(`SELECT id FROM rigs WHERE name = ? LIMIT 1`).get(name) !== undefined;
+    // Spec 0009: only UNARCHIVED rigs count. A lead swap archives a rig and reuses its name.
+    const registeredRigNames = (): string[] => unarchivedRigNames(this.db);
+    const rigIsRegistered = (name: string): boolean => unarchivedRigIds(this.db, name).length > 0;
+    // Binding never picks between two live rigs of one name.
+    const assertUnambiguousRig = (name: string): void => {
+      const ids = unarchivedRigIds(this.db, name);
+      if (ids.length > 1) {
+        const err = new RigNameAmbiguousError(name, ids);
+        throw new WorkflowProjectorError("rig_ambiguous", `cannot instantiate: ${err.message}.`, {
+          specPath: input.specPath,
+          rigName: name,
+          rigIds: ids,
+        });
+      }
+    };
 
     const advisories: string[] = [];
     let boundRig: string | null;
@@ -515,6 +527,7 @@ export class WorkflowRuntime {
           { specPath: input.specPath, targetRig: input.targetRig, registeredRigs: registered },
         );
       }
+      assertUnambiguousRig(input.targetRig);
       boundRig = input.targetRig;
     } else if (specRow.spec.target?.rig != null) {
       // ADVISORY path: the spec author's DEFAULT hint. Unknown → degrade
@@ -530,6 +543,7 @@ export class WorkflowRuntime {
             `Registered rigs: ${registered.length > 0 ? registered.join(", ") : "(none)"}.`,
         );
       } else {
+        assertUnambiguousRig(specDefaultRig);
         boundRig = specDefaultRig;
       }
     } else {
@@ -638,6 +652,7 @@ export class WorkflowRuntime {
         { rig: string; declaredBy: Array<{ stepId: string; role: string }> }
       >();
       const seenPairs = new Set<string>();
+      const ambiguousRigs = new Set<string>();
       const probeRoleTargets = (roleName: string, stepId: string): void => {
         for (const target of specRow.spec.roles?.[roleName]?.preferred_targets ?? []) {
           if (isHumanSeatSession(target)) continue;
@@ -647,7 +662,18 @@ export class WorkflowRuntime {
           let memberExists: boolean;
           try {
             memberExists = rigMemberExists(this.db, parsed.rig, target);
-          } catch {
+          } catch (err) {
+            if (err instanceof RigNameAmbiguousError) {
+              // Spec 0009: name the ambiguity once per rig instead of skipping it silently.
+              if (!ambiguousRigs.has(parsed.rig)) {
+                ambiguousRigs.add(parsed.rig);
+                advisories.push(
+                  `rig_ambiguous: preferred target "${target}" names rig "${parsed.rig}", which matches ${err.rigIds.length} unarchived rigs (${err.rigIds.join(", ")}). ` +
+                    `Work routed there cannot be placed until the extra rigs are archived or renamed.`,
+                );
+              }
+              continue;
+            }
             // ADVISORY-NEVER-THROW (VM-caught, run-1): the probe rides the
             // full inventory projection, which can error on a
             // partial-schema DB (e.g. a test fixture without the snapshots

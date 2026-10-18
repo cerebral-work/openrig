@@ -1314,6 +1314,10 @@ workspace home that is deferred/not-imminent belongs in its mission/slice.`)
         session,
         recentLimit: opts.recentLimit,
       });
+      // Spec 0009: with the seat's own session, its node id disambiguates a session name shared
+      // across rigs (the daemon uses it only when that node's current session matches).
+      const nodeId = opts.session ? undefined : readOpenRigEnv("OPENRIG_NODE_ID", "RIGGED_NODE_ID");
+      if (nodeId) params.set("nodeId", nodeId);
       if (opts.workCandidates) params.set("candidates", "1");
       await withClient(deps, async (client) => {
         const res = await client.get<unknown>(`/api/queue/whoami?${params.toString()}`);

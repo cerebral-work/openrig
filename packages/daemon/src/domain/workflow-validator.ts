@@ -19,7 +19,7 @@
 
 import type { WorkflowSpec, WorkflowStepSpec } from "./workflow-types.js";
 import { resolveNextStep } from "./workflow-projector.js";
-import { isHumanSeatSession } from "./human-route-enforcer.js";
+import { GATE_TARGET_FORMS, gateTargetHint, isHumanSeatSession } from "./human-route-enforcer.js";
 import { isRigRelativeTarget } from "./workflow-rig-placeholder.js";
 
 export interface ValidationIssue {
@@ -383,7 +383,7 @@ export class WorkflowValidator {
       } else if (!declaredRoles.has(gate.target)) {
         issues.push({
           code: "gate_target_unresolved",
-          message: `step "${step.id}" gates on "${gate.target}" which is neither a human seat session (human@kernel form) nor a role declared in workflow.roles. Declare the handler role or use a human seat session.`,
+          message: `step "${step.id}" gates on "${gate.target}", which is not a gate target. A gate target is ${GATE_TARGET_FORMS}.${gateTargetHint(gate.target)}`,
           field: `${fieldBase}.target`,
           severity: "error",
         });

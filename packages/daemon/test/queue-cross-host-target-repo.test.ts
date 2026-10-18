@@ -35,6 +35,7 @@ process.env["MH3B"] = "remote-token";
 // The fake PL-007 authority: source rig "rig-a" declares exactly one repo.
 const FAKE_RIG_REPO = {
   findRigsByName: (name: string) => (name === "rig-a" ? [{ id: "rig-a-id" }] : []),
+  findUnarchivedRigsByName: (name: string) => (name === "rig-a" ? [{ id: "rig-a-id" }] : []),
   getRigWorkspace: (rigId: string) =>
     rigId === "rig-a-id" ? { repos: [{ name: "repo-ok" }] } : null,
 };

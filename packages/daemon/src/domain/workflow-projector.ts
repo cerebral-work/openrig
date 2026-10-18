@@ -36,9 +36,10 @@ import type {
   WorkflowStepSpec,
 } from "./workflow-types.js";
 import { exceedsMaxHops, MAX_HOPS_BASELINE_V1 } from "./workflow-deadline.js";
-import { isHumanSeatSession } from "./human-route-enforcer.js";
+import { GATE_TARGET_FORMS, gateTargetHint, isHumanSeatSession } from "./human-route-enforcer.js";
 import { selectRoleSeat } from "./workflow-role-resolver.js";
 import {
+  RigNameAmbiguousError,
   roleResolutionContext,
   tryResolveRoleByCapability,
   type RoleResolutionContext,
@@ -1424,7 +1425,20 @@ function resolveRoleOnBoundRig(
   roleCtx: RoleResolutionContext,
   stepId: string,
 ): string {
-  const candidates = roleCtx.candidatesForRig();
+  let candidates: ReturnType<RoleResolutionContext["candidatesForRig"]>;
+  try {
+    candidates = roleCtx.candidatesForRig();
+  } catch (err) {
+    // Spec 0009: two live rigs share the bound name. Fail loud; never pick one.
+    if (err instanceof RigNameAmbiguousError) {
+      throw new WorkflowProjectorError(
+        "rig_ambiguous",
+        `cannot resolve role "${roleName}" for step "${stepId}": ${err.message}.`,
+        { stepId, role: roleName, boundRig: roleCtx.boundRig, rigIds: err.rigIds },
+      );
+    }
+    throw err;
+  }
   if (candidates === null) {
     throw new WorkflowProjectorError(
       "bound_rig_not_found",
@@ -1714,7 +1728,7 @@ export function compileGate(
   if (!role) {
     throw new WorkflowProjectorError(
       "gate_target_unresolved",
-      `step "${gatedStep.id}" gates on "${gate.target}" which is neither a human seat session nor a role declared in workflow.roles. Declare the role or use a human seat session (human@kernel form).`,
+      `step "${gatedStep.id}" gates on "${gate.target}", which is not a gate target. A gate target is ${GATE_TARGET_FORMS}.${gateTargetHint(gate.target)}`,
       { stepId: gatedStep.id, target: gate.target },
     );
   }

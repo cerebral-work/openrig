@@ -21,7 +21,7 @@ import { getSelfHostId, resolvesToLocalHost } from "../domain/hosts/fanout-contr
 import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
 import { deriveCurrentWork, deriveRole, deriveWorkCandidates, type RoleOrientation } from "../domain/current-work.js";
-import type { WhoamiService } from "../domain/whoami-service.js";
+import { WhoamiAmbiguousError, type WhoamiService } from "../domain/whoami-service.js";
 import type Database from "better-sqlite3";
 import type { HumanQuestion } from "../domain/human-questions.js";
 import { queryLimit } from "./query-limit.js";
@@ -108,8 +108,18 @@ export function queueRoutes(): Hono {
     const parsedSource = parseSessionName(sourceSession);
     if (parsedSource.kind !== "canonical") return { ok: true };
     const rigName = parsedSource.rig;
-    const rigs = rigRepo.findRigsByName(rigName);
+    // Spec 0009: unarchived rigs only (a lead swap archives a rig and reuses its name); never pick one of several.
+    const rigs = rigRepo.findUnarchivedRigsByName(rigName);
     if (rigs.length === 0) return { ok: true };
+    if (rigs.length > 1) {
+      const rigIds = rigs.map((r) => r.id);
+      return {
+        ok: false,
+        error: "rig_ambiguous",
+        message: `rig name "${rigName}" matches ${rigIds.length} unarchived rigs (${rigIds.join(", ")}); archive or rename the extra rigs, then retry`,
+        meta: { rigName, rigIds },
+      };
+    }
     const rigId = rigs[0]!.id;
     const ws = rigRepo.getRigWorkspace(rigId);
     if (!ws) return { ok: true };
@@ -880,10 +890,24 @@ export function queueRoutes(): Hono {
     const derived = deriveCurrentWork(inProgress, missionsRoot);
     let role: RoleOrientation = { state: "unknown", reason: "calling node unavailable", files: [] };
     try {
-      const identity = (c.get("whoamiService" as never) as WhoamiService | undefined)
-        ?.resolve({ sessionName: transportSenderSession(c) ?? session, compact: true });
+      const whoamiService = c.get("whoamiService" as never) as WhoamiService | undefined;
+      const callerSession = transportSenderSession(c) ?? session;
+      // Spec 0009: the caller's own node id disambiguates a session name shared across rigs. It
+      // counts only when that node's current session is the caller's, so it never stands in for
+      // another seat; otherwise the session resolves as before.
+      const nodeIdParam = c.req.query("nodeId");
+      const byNode = nodeIdParam ? whoamiService?.resolve({ nodeId: nodeIdParam, compact: true }) : null;
+      const identity = byNode && byNode.identity.sessionName === callerSession
+        ? byNode
+        : whoamiService?.resolve({ sessionName: callerSession, compact: true });
       role = deriveRole(c.get("db" as never) as Database.Database | undefined, identity?.identity.nodeId ?? null);
-    } catch { /* Ambiguous/unavailable identity is not an absent role declaration. */ }
+    } catch (err) {
+      // An ambiguous session is named with rig_ambiguous (rig add's code) and its rigs; other unavailable identity is not an
+      // absent role declaration.
+      if (err instanceof WhoamiAmbiguousError) {
+        role = { state: "unknown", reason: `rig_ambiguous: session found in live rigs ${err.rigIds.join(", ")}`, files: [] };
+      }
+    }
     // OPR.0.7.0.12: labelled work candidates for the refocus packet, only on request, so the
     // default answer is unchanged. In-progress rows are the candidate evidence, so they come
     // from the same unbounded read as the derivation; held and next work are bounded display lists.
