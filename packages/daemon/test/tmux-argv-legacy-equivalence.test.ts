@@ -99,6 +99,7 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.probeSession(SESSION);
   await a.hasSession(SESSION);
   await a.createSession(SESSION, "/w x", { PATH: "/a b:$HOME", Q: "it's" });
+  await a.createProbeSession("probe x", "/w x");
   await a.sendText(SESSION, "hello");
   await a.sendText(SESSION, "1", undefined, { bracketed: false });
   await a.sendShellCommand(SESSION, "echo 'hi there'", undefined, { sourceInPane: true });

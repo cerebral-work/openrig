@@ -1236,6 +1236,50 @@ describe("TmuxAdapter", () => {
       ]);
     });
 
+    // A tmux server recreated from a herdr pane carries every HERDR_* name, including the herdr
+    // server's control socket. A fresh seat, a resumed pane and the native resume probe drop all of
+    // them, and keep OpenRig metadata, tmux ancestry and credentials.
+    const HERDR_SERVER = "HERDR_SESSION=estate\nHERDR_SOCKET_PATH=/s.sock\nHERDR_BIN_PATH=/b\nOPENRIG_HOME=/r\nTMUX_PANE=%1\nANTHROPIC_API_KEY=k\n";
+
+    it("createSession (fresh launch) marks every HERDR_* name removed and keeps OPENRIG_*, TMUX_* and credentials", async () => {
+      const exec = execWithGlobal(HERDR_SERVER);
+      expect(await new TmuxAdapter(exec).createSession("dev-impl@rig", "/w", { OPENRIG_NODE_ID: "n" })).toEqual({ ok: true });
+      expect(exec.mock.calls.map((c) => c[0]).slice(2)).toEqual([
+        "tmux set-environment -t =dev-impl@rig -r HERDR_SESSION",
+        "tmux set-environment -t =dev-impl@rig -r HERDR_SOCKET_PATH",
+        "tmux set-environment -t =dev-impl@rig -r HERDR_BIN_PATH",
+        "tmux respawn-pane -k -t %9 -c /w",
+      ]);
+    });
+
+    it("respawnPane (resume into the same pane) marks every HERDR_* name removed", async () => {
+      const exec = execWithGlobal(HERDR_SERVER);
+      await new TmuxAdapter(exec).respawnPane("%3", "claude --resume t", { env: { OPENRIG_NODE_ID: "n" } });
+      expect(exec.mock.calls.map((c) => c[0]).slice(1, 4)).toEqual([
+        "tmux set-environment -t %3 -r HERDR_SESSION",
+        "tmux set-environment -t %3 -r HERDR_SOCKET_PATH",
+        "tmux set-environment -t %3 -r HERDR_BIN_PATH",
+      ]);
+    });
+
+    it("createProbeSession (the native resume probe) marks every HERDR_* name removed and restarts its pane", async () => {
+      const exec = vi.fn<ExecFn>(async (cmd: string) => {
+        if (cmd === "tmux show-environment -g") return HERDR_SERVER;
+        if (cmd.startsWith("tmux new-session")) return "$7 1700000000\n";
+        return "";
+      });
+      const tmux = new TmuxAdapter(exec);
+      vi.spyOn(tmux, "listPanes").mockResolvedValue([{ id: "%7" } as never]);
+      expect(await tmux.createProbeSession("rigged-refresh-x", "/w")).toEqual({ ok: true });
+      expect(exec.mock.calls.map((c) => c[0]).slice(1)).toEqual([
+        "tmux show-environment -g",
+        "tmux set-environment -t =rigged-refresh-x -r HERDR_SESSION",
+        "tmux set-environment -t =rigged-refresh-x -r HERDR_SOCKET_PATH",
+        "tmux set-environment -t =rigged-refresh-x -r HERDR_BIN_PATH",
+        "tmux respawn-pane -k -t %7 -c /w",
+      ]);
+    });
+
     it("createSession keeps CLAUDE_EFFORT when no parent Claude Code session is present", async () => {
       const exec = execWithGlobal("CLAUDE_EFFORT=high\nHERDR_ENV=1\n");
       await new TmuxAdapter(exec).createSession("s", undefined);
