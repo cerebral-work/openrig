@@ -350,32 +350,92 @@ pub fn check_specs(root: &Path, break_check: bool) -> Result<()> {
 /// `ent-parity` runner group's workflow restriction (CER-2908).
 pub const FORBIDDEN_TRIGGERS: &[&str] = &["pull_request_target", "workflow_run"];
 
+/// Fails on what the gate cannot read with certainty, anywhere in the file: a custom tag on a key or a value
+/// (serde_yaml resolves core tags such as `!!str`), and a merge key `<<`, which GitHub rejects and which,
+/// resolved, could let an explicit `on` shadow a merged one.
+fn refuse_unreadable(value: &serde_yaml::Value) -> Result<()> {
+    use serde_yaml::Value;
+    match value {
+        Value::Tagged(tagged) => bail!(
+            "it uses the custom YAML tag `{}`, which the gate cannot read. Fix: remove the tag; a value \
+             that starts with `!`, such as an `if: !cancelled()` expression, must be quoted",
+            tagged.tag
+        ),
+        Value::Mapping(map) => {
+            for (key, entry) in map {
+                if key.as_str() == Some("<<") {
+                    bail!(
+                        "it uses a YAML merge key `<<`, which GitHub rejects. Fix: write the merged keys \
+                         out in full"
+                    );
+                }
+                refuse_unreadable(key)?;
+                refuse_unreadable(entry)?;
+            }
+            Ok(())
+        }
+        Value::Sequence(items) => items.iter().try_for_each(refuse_unreadable),
+        _ => Ok(()),
+    }
+}
+
 /// The forbidden triggers one workflow's text declares, in `FORBIDDEN_TRIGGERS` order. Triggers are read
 /// from `on` in every form: a scalar, a list, or a map. The key `on` is matched as the string `on` and as
 /// boolean `true`: serde_yaml reads `on` as a string, but a YAML 1.1 tool reads it as `true` and writes it
-/// back as `true:`.
+/// back as `true:`. Anything the gate cannot read fails rather than passing as clean: see
+/// `refuse_unreadable`, a file with no `on` key, and an `on` value or entry that is not a string.
 pub fn forbidden_triggers(raw: &str) -> Result<Vec<&'static str>> {
     use serde_yaml::Value;
-    let doc: Value = serde_yaml::from_str(raw).context("invalid workflow YAML")?;
+    let doc: Value = serde_yaml::from_str(raw)
+        .context("it is not valid YAML. Fix: correct the YAML syntax (actionlint shows where)")?;
+    refuse_unreadable(&doc)?;
     let mut declared: BTreeSet<String> = BTreeSet::new();
+    let mut has_on = false;
     for (key, value) in doc.as_mapping().into_iter().flatten() {
         let is_on =
             matches!(key, Value::String(k) if k == "on") || matches!(key, Value::Bool(true));
         if !is_on {
             continue;
         }
+        has_on = true;
         match value {
             Value::String(name) => {
                 declared.insert(name.clone());
             }
             Value::Sequence(items) => {
-                declared.extend(items.iter().filter_map(Value::as_str).map(str::to_string))
+                for item in items {
+                    let name = item.as_str().context(
+                        "an `on` list entry is not a trigger name. Fix: list trigger names only, and \
+                         put trigger settings under an `on` map",
+                    )?;
+                    declared.insert(name.to_string());
+                }
             }
             Value::Mapping(map) => {
-                declared.extend(map.keys().filter_map(Value::as_str).map(str::to_string))
+                for name in map.keys() {
+                    let name = name.as_str().context(
+                        "an `on` map key is not a trigger name. Fix: use plain trigger names as `on` keys",
+                    )?;
+                    declared.insert(name.to_string());
+                }
             }
-            _ => {}
+            other => {
+                let kind = match other {
+                    Value::Null => "empty",
+                    Value::Bool(_) => "a bool",
+                    Value::Number(_) => "a number",
+                    _ => "not a string, a list or a map",
+                };
+                bail!(
+                    "its `on` value is {kind}. Fix: give `on` a trigger name, a list of names or a map"
+                );
+            }
         }
+    }
+    if !has_on {
+        bail!(
+            "it has no `on` key the gate can read. Fix: add a lowercase `on:` key naming its triggers"
+        );
     }
     Ok(FORBIDDEN_TRIGGERS
         .iter()
@@ -404,9 +464,25 @@ fn workflow_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
     Ok(files)
 }
 
+/// What the gate reports for one workflow, each line naming the file: every forbidden trigger it declares,
+/// or the construct that makes it unreadable, so the gate fails closed.
+fn workflow_findings(rel: &str, raw: &str) -> Vec<String> {
+    match forbidden_triggers(raw) {
+        Ok(triggers) => triggers
+            .iter()
+            .map(|trigger| {
+                format!("`{rel}` declares `{trigger}`. Fix: remove the trigger; use `pull_request` or `push`")
+            })
+            .collect(),
+        Err(err) => vec![format!(
+            "`{rel}` cannot be verified, so the gate fails closed: {err:#}"
+        )],
+    }
+}
+
 pub fn check_workflow_triggers(root: &Path, break_check: bool) -> Result<()> {
     let files = workflow_files(&root.join(".github/workflows"))?;
-    let mut violations = Vec::new();
+    let mut findings = Vec::new();
     for path in &files {
         let rel = path
             .strip_prefix(root)
@@ -414,16 +490,15 @@ pub fn check_workflow_triggers(root: &Path, break_check: bool) -> Result<()> {
             .display()
             .to_string();
         let raw = fs::read_to_string(path).with_context(|| format!("cannot read `{rel}`"))?;
-        for trigger in forbidden_triggers(&raw).with_context(|| format!("`{rel}`"))? {
-            violations.push(format!("`{rel}` declares `{trigger}`"));
-        }
+        findings.extend(workflow_findings(&rel, &raw));
     }
-    if !violations.is_empty() {
+    if !findings.is_empty() {
         bail!(
             "workflow-trigger-check: {}. A `pull_request_target` or `workflow_run` run executes as \
              refs/heads/cerebral, so it would match the ent-parity runner group's workflow restriction and \
-             could put fork-influenced code on the self-hosted pool (CER-2908)",
-            violations.join("; ")
+             could put fork-influenced code on the self-hosted pool, and a workflow the gate cannot read \
+             fails closed (CER-2908)",
+            findings.join("; ")
         );
     }
     println!(
@@ -440,10 +515,22 @@ pub fn check_workflow_triggers(root: &Path, break_check: bool) -> Result<()> {
                 bail!("workflow-trigger-check --break-check: a forbidden trigger ({form}) was accepted");
             }
         }
+        for (form, yaml) in [
+            (
+                "merge key",
+                "x-t: &t\n  workflow_run:\non:\n  push:\n  <<: *t\n",
+            ),
+            ("custom tag", "on: !foo pull_request_target\n"),
+            ("no on key", "name: x\n"),
+        ] {
+            if forbidden_triggers(yaml).is_ok() {
+                bail!("workflow-trigger-check --break-check: an unreadable workflow ({form}) was accepted");
+            }
+        }
         if !forbidden_triggers("on: [push, pull_request, workflow_dispatch]\n")?.is_empty() {
             bail!("workflow-trigger-check --break-check: a clean workflow was rejected");
         }
-        println!("  workflow-trigger-check --break-check PASS: forbidden triggers rejected, a clean workflow accepted");
+        println!("  workflow-trigger-check --break-check PASS: forbidden triggers and unreadable workflows rejected, a clean workflow accepted");
     }
     Ok(())
 }
@@ -597,6 +684,46 @@ mod tests {
             "true: [push, workflow_run]\n",
             "workflow_run",
         ),
+        (
+            "alias",
+            "x-t: &t pull_request_target\non: *t\n",
+            "pull_request_target",
+        ),
+        (
+            "core str tag on the key, block map",
+            "!!str on:\n  pull_request_target:\n    types: [opened]\n",
+            "pull_request_target",
+        ),
+        (
+            "alias for a map anchor",
+            "x-trig: &trig\n  pull_request_target:\n    types: [opened]\non: *trig\n",
+            "pull_request_target",
+        ),
+        (
+            "alias for a list anchor",
+            "x-trig: &trig [push, workflow_run]\non: *trig\n",
+            "workflow_run",
+        ),
+        (
+            "alias as a list entry",
+            "x-t: &t workflow_run\non: [push, *t]\n",
+            "workflow_run",
+        ),
+        (
+            "alias as an on map key",
+            "x-t: &t pull_request_target\non:\n  push:\n  *t :\n    types: [opened]\n",
+            "pull_request_target",
+        ),
+        (
+            "alias as the on key",
+            "x-k: &k on\n*k : pull_request_target\n",
+            "pull_request_target",
+        ),
+        (
+            "anchor inside on",
+            "on:\n  push: &p\n    branches: [cerebral]\n  workflow_run: *p\n",
+            "workflow_run",
+        ),
     ];
 
     #[test]
@@ -643,5 +770,154 @@ mod tests {
     #[test]
     fn workflow_trigger_malformed_yaml_is_rejected() {
         assert!(forbidden_triggers("on: [push\n").is_err());
+    }
+
+    /// GitHub rejects merge keys, and resolving one could let an explicit `on` shadow a merged one, so any
+    /// `<<` key fails, wherever it is and whatever it brings in.
+    const MERGE_KEY_FORMS: &[(&str, &str)] = &[
+        (
+            "top level",
+            "x-base: &base\n  on: pull_request_target\n<<: *base\njobs: {}\n",
+        ),
+        (
+            "inside on",
+            "x-t: &t\n  workflow_run:\n    workflows: [ci]\non:\n  push:\n  <<: *t\n",
+        ),
+        (
+            "list",
+            "x-a: &a\n  push:\nx-b: &b\n  pull_request_target:\non:\n  <<: [*a, *b]\n",
+        ),
+        ("harmless", "x-a: &a\n  push:\non:\n  <<: *a\n"),
+    ];
+
+    #[test]
+    fn workflow_trigger_merge_keys_are_refused() {
+        for (form, yaml) in MERGE_KEY_FORMS {
+            let err = forbidden_triggers(yaml).expect_err(form);
+            assert!(format!("{err:#}").contains("merge key"), "{form}: {err:#}");
+        }
+    }
+
+    /// A custom tag on a key, a value or a list entry, or anywhere else in the file, fails.
+    const CUSTOM_TAG_FORMS: &[(&str, &str)] = &[
+        ("value", "on: !foo pull_request_target\n"),
+        ("key", "!foo on: pull_request_target\n"),
+        ("list entry", "on: [push, !foo workflow_run]\n"),
+        ("elsewhere", "on: push\njobs: !foo {}\n"),
+    ];
+
+    #[test]
+    fn workflow_trigger_custom_tags_are_refused() {
+        for (form, yaml) in CUSTOM_TAG_FORMS {
+            let err = forbidden_triggers(yaml).expect_err(form);
+            assert!(format!("{err:#}").contains("`!foo`"), "{form}: {err:#}");
+        }
+    }
+
+    /// The core `!!str` tag is not refused: serde_yaml reads it as a plain string, so the trigger is named.
+    #[test]
+    fn workflow_trigger_core_str_tag_reads_as_a_string() {
+        assert_eq!(
+            forbidden_triggers("on: !!str pull_request_target\n").unwrap(),
+            vec!["pull_request_target"]
+        );
+        assert_eq!(
+            forbidden_triggers("!!str on: [workflow_run]\n").unwrap(),
+            vec!["workflow_run"]
+        );
+    }
+
+    /// An `on` the gate cannot read fails instead of passing as clean.
+    const UNREADABLE_ON_FORMS: &[(&str, &str)] = &[
+        ("no on key", "name: x\njobs: {}\n"),
+        ("capitalised On", "On: pull_request_target\n"),
+        ("empty file", ""),
+        ("null on", "on:\njobs: {}\n"),
+        ("number on", "on: 5\n"),
+        ("bool on", "on: true\n"),
+        ("map in on list", "on: [push, {pull_request_target: {}}]\n"),
+        (
+            "list as on map key",
+            "on:\n  ? [pull_request_target]\n  : x\n",
+        ),
+    ];
+
+    #[test]
+    fn workflow_trigger_unreadable_on_is_refused() {
+        for (form, yaml) in UNREADABLE_ON_FORMS {
+            assert!(forbidden_triggers(yaml).is_err(), "{form}: {yaml:?}");
+        }
+    }
+
+    /// Every finding names the file, the construct and the fix.
+    const FINDING_TEXTS: &[(&str, &str, &str)] = &[
+        (
+            "on: workflow_run\n",
+            "declares `workflow_run`",
+            "remove the trigger",
+        ),
+        (
+            "on: !foo push\n",
+            "custom YAML tag `!foo`",
+            "must be quoted",
+        ),
+        (
+            "x-a: &a\n  push:\non:\n  <<: *a\n",
+            "merge key `<<`",
+            "write the merged keys out",
+        ),
+        ("name: x\n", "no `on` key", "add a lowercase `on:`"),
+        ("on:\n", "`on` value is empty", "give `on` a trigger name"),
+        (
+            "on: 5\n",
+            "`on` value is a number",
+            "give `on` a trigger name",
+        ),
+        (
+            "on: true\n",
+            "`on` value is a bool",
+            "give `on` a trigger name",
+        ),
+        (
+            "on: [push, {a: b}]\n",
+            "`on` list entry",
+            "list trigger names only",
+        ),
+        (
+            "on:\n  ? [a]\n  : x\n",
+            "`on` map key",
+            "plain trigger names",
+        ),
+        ("on: [push\n", "not valid YAML", "correct the YAML syntax"),
+    ];
+
+    #[test]
+    fn workflow_trigger_findings_name_file_construct_and_fix() {
+        for (yaml, construct, fix) in FINDING_TEXTS {
+            let findings = workflow_findings("w.yml", yaml);
+            assert_eq!(findings.len(), 1, "{yaml:?}: {findings:?}");
+            let line = &findings[0];
+            for part in ["`w.yml`", construct, "Fix:", fix] {
+                assert!(line.contains(part), "{yaml:?}: missing {part:?} in {line}");
+            }
+        }
+    }
+
+    /// The repository's own workflows pass, so a false positive goes red here, before a parity push.
+    #[test]
+    fn workflow_trigger_real_workflows_pass() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("xtask sits in the repo root");
+        let files = workflow_files(&root.join(".github/workflows")).unwrap();
+        assert!(
+            files.iter().any(|f| f.ends_with("estate-xwork.yml")),
+            "the walk missed the real workflows: {files:?}"
+        );
+        for path in &files {
+            let raw = fs::read_to_string(path).unwrap();
+            let findings = workflow_findings(&path.display().to_string(), &raw);
+            assert!(findings.is_empty(), "{findings:?}");
+        }
     }
 }
