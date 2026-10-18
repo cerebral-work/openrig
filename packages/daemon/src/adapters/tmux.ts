@@ -3,7 +3,9 @@ import { writeFile as fsWriteFile, unlink as fsUnlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
-import { seatLaunchExcludedEnvKeys } from "../domain/seat-launch-env-filter.js";
+import { existsSync } from "node:fs";
+import { SEAT_ENV_SECRET_NAME, seatEnvAllowlistApplies, seatEnvScrubScript, seatKubeconfig, seatLaunchExcludedEnvKeys,
+  type SeatEnvPolicy } from "../domain/seat-launch-env-filter.js";
 import type { TmuxControlExec } from "./tmux-control.js";
 import { stat } from "node:fs/promises";
 import { verifyPaneIdleShell, type NativeProcessLister } from "../domain/native-process-lineage.js";
@@ -230,18 +232,35 @@ function isTmuxTransportAbsentError(err: unknown): boolean {
   return false;
 }
 
+/** tmux reasons that name a session or socket, never a launch value. */
+const SAFE_TMUX_REASON = /^(duplicate session|can't find (session|pane|window)|no server running|session not found|no current)/;
+
+/** A failed tmux command as its step, the names (never the values) of its `-e NAME=VALUE` launch variables
+ *  and, when it is one of the known safe phrases, tmux's reason. Never the command line: an exec error's
+ *  message starts with the whole command, values included, and can carry its output, so neither reaches a
+ *  result, warning, log or event (SEC-178; r2 on #15). */
+export function tmuxFailureMessage(err: Error): string {
+  if (!err.message.startsWith("Command failed:")) return err.message;
+  const command = err.message.split("\n", 1)[0]!;
+  const step = /^Command failed: (?:\S*\/)?tmux(?: -[SfL] \S+)* ([a-z-]+)/.exec(command)?.[1] ?? "command";
+  const names = [...new Set([...command.matchAll(/ -e '?([A-Za-z_][A-Za-z0-9_]*)=/g)].map((m) => m[1]!))];
+  const stderr = (err as { execStderr?: unknown; stderr?: unknown }).execStderr ?? (err as { stderr?: unknown }).stderr;
+  const reason = (typeof stderr === "string" ? stderr : "").trim().split(/\r?\n/)[0] ?? "";
+  return `tmux ${step} failed${names.length ? ` (env names: ${names.join(", ")})` : ""}${SAFE_TMUX_REASON.test(reason) ? `: ${reason}` : ""}`;
+}
+
 function classifyWriteError(err: unknown): TmuxResult {
   if (err instanceof DeliveryGuardError) return { ok: false, code: err.code, message: err.message };
   if (!(err instanceof Error)) {
-    return { ok: false, code: "unknown", message: String(err) };
+    return { ok: false, code: "unknown", message: "tmux command failed" };
   }
   if (err.message.includes("duplicate session")) {
-    return { ok: false, code: "duplicate_session", message: err.message };
+    return { ok: false, code: "duplicate_session", message: tmuxFailureMessage(err) };
   }
   if (err.message.includes("can't find session") || err.message.includes("no server running")) {
-    return { ok: false, code: "session_not_found", message: err.message };
+    return { ok: false, code: "session_not_found", message: tmuxFailureMessage(err) };
   }
-  return { ok: false, code: "unknown", message: err.message };
+  return { ok: false, code: "unknown", message: tmuxFailureMessage(err) };
 }
 
 /** A failed respawn's error names its argv, which carries every env value as `-e NAME=VALUE` (raw, or shell-quoted on
@@ -258,7 +277,7 @@ function redactEnvValues(result: TmuxResult, env?: Record<string, string>): Tmux
 
 /** The launch warning when the parent-session identity cleanup could not finish (#771). */
 function parentSessionEnvWarning(target: string, err: unknown): string {
-  const reason = err instanceof Error ? err.message : String(err);
+  const reason = err instanceof Error ? tmuxFailureMessage(err) : "tmux command failed";
   return `${target}: could not remove the launching session's identity (for example CLAUDECODE) from this seat's environment, so the seat may still see it: ${reason}`;
 }
 
@@ -491,6 +510,89 @@ export class TmuxAdapter {
     private shellReadiness: { handshake?: boolean; listProcesses?: NativeProcessLister; sleep?: (ms: number) => Promise<void> } = {},
   ) {}
 
+  // Spec 0013 (SEC-178): the seat_env policy. Unset, or mode "filter", keeps every path below as it was.
+  private seatEnvPolicy?: () => SeatEnvPolicy | undefined | "unreadable";
+  private seatEnvFileExists: (file: string) => boolean = existsSync;
+
+  /** Read for each launch, so a seat_env change applies to the next launch. */
+  setSeatEnvPolicy(resolve: () => SeatEnvPolicy | undefined | "unreadable", fileExists: (file: string) => boolean = existsSync): void {
+    this.seatEnvPolicy = resolve;
+    this.seatEnvFileExists = fileExists;
+  }
+
+  /** The allow-list policy when it applies to this target's seat; undefined in filter mode. Throws when the
+   *  policy cannot be read and filter mode was not the last one read: the caller refuses (fail closed). */
+  private async seatEnvAllowlistFor(target: string): Promise<SeatEnvPolicy | undefined> {
+    const policy = this.seatEnvPolicy?.();
+    if (policy === "unreadable") throw new Error("the seat_env policy could not be read");
+    if (policy?.mode !== "allowlist") return undefined;
+    let session = target.replace(/^=/, "").replace(/:.*$/, "");
+    if (policy.rigs.length > 0 && /^[%@$]\d+$/.test(target)) {
+      const argv = ["tmux", "display-message", "-p", "-t", target, "#{session_name}"];
+      session = (await this.run(argv, posixJoinArgv(argv))).trim();
+    }
+    return seatEnvAllowlistApplies(policy, session) ? policy : undefined;
+  }
+
+  /** Spec 0013, allow-list mode: mark every name the seat may not keep removed in this session's
+   *  environment (the server's global names, the names tmux's update-environment copied from the
+   *  creating client, and the launch's own), then set KUBECONFIG explicitly.
+   *  Logs the count dropped and the secret-named names dropped, names only. Returns the KUBECONFIG
+   *  fallback warning, if any. Throws when the environment can't be read or written: the caller
+   *  refuses the launch. */
+  private async applySeatEnvAllowlist(sessionTarget: string, explicit: readonly string[], policy: SeatEnvPolicy,
+    step: { name: string } = { name: "" }): Promise<string[]> {
+    step.name = "read the global environment";
+    const names: Record<string, string> = { ...await this.globalEnvironment() };
+    step.name = "read update-environment";
+    for (const key of await this.updateEnvironmentNames()) names[key] ??= "";
+    for (const key of explicit) names[key] ??= "";
+    const dropped = seatLaunchExcludedEnvKeys(names, policy, explicit);
+    step.name = "remove disallowed names";
+    for (const key of dropped) {
+      const argv = ["tmux", "set-environment", "-t", sessionTarget, "-r", key];
+      await this.run(argv, posixJoinArgv(argv));
+    }
+    const kube = seatKubeconfig(policy, this.seatEnvFileExists);
+    step.name = "set KUBECONFIG";
+    const argv = ["tmux", "set-environment", "-t", sessionTarget, "KUBECONFIG", kube.path];
+    await this.run(argv, posixJoinArgv(argv));
+    const secret = dropped.filter((key) => SEAT_ENV_SECRET_NAME.test(key)).sort();
+    console.info(`[seat env] ${sessionTarget}: allow-list dropped ${dropped.length} names${secret.length ? `; secret-named: ${secret.join(", ")}` : ""}`);
+    return kube.warning ? [`${sessionTarget}: ${kube.warning}`] : [];
+  }
+
+  /** Spec 0013: type a command that starts a process into a seat pane. In allow-list mode it is staged
+   *  behind the scrub prologue, as every launch is (sendShellCommand); otherwise it is typed and submitted
+   *  as before. For a launch that goes through no runtime adapter, such as the resume-metadata probe. */
+  async sendLaunchCommand(target: string, command: string): Promise<TmuxResult> {
+    let allowlist: SeatEnvPolicy | undefined;
+    try {
+      allowlist = await this.seatEnvAllowlistFor(target);
+    } catch {
+      return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied (step: resolve the seat env policy), so nothing was sent.` };
+    }
+    if (allowlist) return this.sendShellCommand(target, command, undefined, { sourceInPane: true });
+    const sent = await this.sendText(target, command);
+    if (!sent.ok) return sent;
+    return this.sendKeys(target, ["Enter"]);
+  }
+
+  /** The names tmux's update-environment option copies from a creating client into a new session's
+   *  environment (DISPLAY, KRB5CCNAME, SSH_CONNECTION and the rest by default). In allow-list mode they
+   *  follow the allow-list like any other name; they are not the launch's own (review r2). */
+  private async updateEnvironmentNames(): Promise<string[]> {
+    const output = await this.run(["tmux", "show-options", "-gv", "update-environment"], "tmux show-options -gv update-environment");
+    return output.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
+  }
+
+  /** The names set in one session's own environment (not the server's global names). */
+  private async sessionEnvNames(sessionTarget: string): Promise<string[]> {
+    const output = await this.run(["tmux", "show-environment", "-t", sessionTarget], `tmux show-environment -t ${shellQuote(sessionTarget)}`);
+    return output.split(/\r?\n/).filter((line) => line.length > 0 && !line.startsWith("-") && line.includes("="))
+      .map((line) => line.slice(0, line.indexOf("=")));
+  }
+
   /**
    * Run a multiplexer command. `argv` is what is EXECUTED on both paths:
    * elements are verbatim (no quoting layer) when argvExec is wired;
@@ -658,6 +760,23 @@ export class TmuxAdapter {
     } catch (err) {
       return classifyWriteError(err);
     }
+    // Spec 0013: in allow-list mode the seat keeps only allowed names, and a failure refuses the
+    // launch: the session just made is removed rather than left with what it inherited.
+    const createStep = { name: "resolve the seat env policy" };
+    try {
+      const allowlist = await this.seatEnvAllowlistFor(name);
+      if (allowlist) {
+        const warnings = await this.applySeatEnvAllowlist(exactTarget(name, "session"), Object.keys(seatEnv), allowlist, createStep);
+        createStep.name = "restart the pane";
+        if (!/^%\d+$/.test(created)) throw new Error("new-session reported no pane id");
+        const respawn = ["tmux", "respawn-pane", "-k", "-t", created];
+        if (cwd != null) respawn.push("-c", cwd);
+        await this.run(respawn, posixJoinArgv(respawn));
+        return warnings.length ? { ok: true, warnings } : { ok: true };
+      }
+    } catch {
+      return this.refuseSeatEnv(name, createStep.name, true);
+    }
     // A tmux server started from a Claude Code session or Herdr pane hands
     // their identity to every new pane. Mark it removed for this session only
     // and restart the fresh pane so its shell starts without it. The session
@@ -678,6 +797,22 @@ export class TmuxAdapter {
   /** The native resume probe starts a runtime in its pane, so it drops what a seat launch drops
    *  (seat-launch-env-filter) and restarts that pane, as createSession does. Fails open with a warning. */
   private async excludeFromProbe(name: string, pane: string, cwd?: string): Promise<TmuxResult> {
+    const probeStep = { name: "resolve the seat env policy" };
+    try {
+      const allowlist = await this.seatEnvAllowlistFor(name);
+      if (allowlist) {
+        const warnings = await this.applySeatEnvAllowlist(exactTarget(name, "session"), [], allowlist, probeStep);
+        probeStep.name = "restart the pane";
+        const respawn = ["tmux", "respawn-pane", "-k", "-t", pane];
+        if (cwd != null) respawn.push("-c", cwd);
+        await this.run(respawn, posixJoinArgv(respawn));
+        return warnings.length ? { ok: true, warnings } : { ok: true };
+      }
+    } catch {
+      this.freshProbes.delete(name);
+      this.freshProbes.delete(pane);
+      return this.refuseSeatEnv(name, probeStep.name, true);
+    }
     try {
       if (await this.excludeParentSessionEnv(exactTarget(name, "session"))) {
         const respawn = ["tmux", "respawn-pane", "-k", "-t", pane];
@@ -688,6 +823,16 @@ export class TmuxAdapter {
     } catch (err) {
       return { ok: true, warnings: [parentSessionEnvWarning(name, err)] };
     }
+  }
+
+  /** Spec 0013: the allow-list could not be applied, so nothing is launched. A session this launch
+   *  created is removed. The result names the failing step only, never an error's text. */
+  private async refuseSeatEnv(target: string, step: string, created: boolean): Promise<TmuxResult> {
+    if (created) {
+      const kill = ["tmux", "kill-session", "-t", exactTarget(target, "session")];
+      try { await this.run(kill, posixJoinArgv(kill)); } catch { /* the refusal stands either way */ }
+    }
+    return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied (step: ${step}), so the launch was refused` };
   }
 
   /** Mark the server's inherited parent-session identity, and every other name a seat launch
@@ -788,12 +933,26 @@ export class TmuxAdapter {
       this.freshShells.delete(target);
     }
     const commandBytes = Buffer.byteLength(command, "utf8");
+    // Spec 0013: in allow-list mode every command a seat runs is staged, and its script first
+    // unsets the names the seat may not keep, including those the pane shell's startup files exported.
+    let prologue = "";
+    let allowlist: SeatEnvPolicy | undefined;
+    try {
+      allowlist = await this.seatEnvAllowlistFor(target);
+      if (allowlist) {
+        const copied = new Set(await this.updateEnvironmentNames());
+        const explicit = (await this.sessionEnvNames(exactTarget(target, "session"))).filter((name) => !copied.has(name));
+        prologue = `${seatEnvScrubScript(allowlist, explicit, seatKubeconfig(allowlist, this.seatEnvFileExists).path)}\n`;
+      }
+    } catch {
+      return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied, so nothing was sent.` };
+    }
     // POSIX shells retain subshell isolation; unknown/unreadable panes use sh.
     const paneShell = options.sourceInPane ? (await this.getPaneCommand(target) ?? "").replace(/^-/, "") : "";
     const sourceInPane = ["bash", "zsh", "sh", "dash", "ksh"].includes(paneShell);
-    let path = options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName();
+    let path = !allowlist && options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName();
     let invocation = path ? sourceInPane ? `( . ${shellQuote(path)} )` : `/bin/sh ${shellQuote(path)}` : command;
-    if (path && paneShell === "fish") {
+    if (path && paneShell === "fish" && !allowlist) {
       const quotedPath = shellQuote(path);
       invocation = `/bin/sh ${quotedPath}`;
       // Fish single quotes reinterpret POSIX backslashes. Keep those payloads
@@ -808,7 +967,7 @@ export class TmuxAdapter {
     }
     if (Buffer.byteLength(invocation, "utf8") > 512) {
       // Pi commands below the canonical tty limit still fit when staging cannot.
-      if (options.stageIfLong && commandBytes < 1024) {
+      if (options.stageIfLong && commandBytes < 1024 && !allowlist) {
         path = undefined;
         invocation = command;
       } else {
@@ -818,7 +977,7 @@ export class TmuxAdapter {
     let created = false;
     try {
       if (path) {
-        await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
+        await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${prologue}${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
         created = true;
       }
       const text = beforeInput ? await this.guardedInput(target, (pane, check) => this.sendTextUnchecked(pane, invocation, () => { check(); beforeInput(); }))
@@ -1030,7 +1189,18 @@ export class TmuxAdapter {
     // parent-session identity there first (sessions made before this existed).
     // A failure here is a warning; the respawn goes ahead as it did before.
     let warnings: string[] | undefined;
+    let allowlist: SeatEnvPolicy | undefined;
+    const respawnStep = { name: "resolve the seat env policy" };
     try {
+      allowlist = await this.seatEnvAllowlistFor(exact);
+      if (allowlist) {
+        const kept = await this.applySeatEnvAllowlist(exact, Object.keys(opts?.env ?? {}), allowlist, respawnStep);
+        if (kept.length) warnings = kept;
+      }
+    } catch {
+      return this.refuseSeatEnv(exact, respawnStep.name, false);
+    }
+    if (!allowlist) try {
       await this.excludeParentSessionEnv(exact, Object.keys(opts?.env ?? {}));
     } catch (err) {
       warnings = [parentSessionEnvWarning(exact, err)];

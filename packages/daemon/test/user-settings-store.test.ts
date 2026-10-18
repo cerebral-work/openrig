@@ -185,6 +185,11 @@ describe("SettingsStore (User Settings v0)", () => {
       "queue.wake_unconfirmed_window_minutes",
       "queue.wake_swap_grace_seconds",
       "queue.wake_human_rung",
+      "seat_env.mode",
+      "seat_env.base",
+      "seat_env.exceptions",
+      "seat_env.kubeconfig",
+      "seat_env.rigs",
     ]);
   });
 

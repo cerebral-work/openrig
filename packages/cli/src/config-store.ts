@@ -214,6 +214,13 @@ export interface RiggedConfig {
     wakeSwapGraceSeconds: number;
     wakeHumanRung: string;
   };
+  seatEnv: {
+    mode: string;
+    base: string;
+    exceptions: string;
+    kubeconfig: string;
+    rigs: string;
+  };
 }
 
 const DEFAULT_WORKSPACE_ROOT = getDefaultOpenRigPath("workspace");
@@ -385,6 +392,14 @@ const DEFAULTS = {
     wakeSwapGraceSeconds: 180,
     wakeHumanRung: "always",
   },
+  // Spec 0013 (SEC-178): lockstep with the daemon settings store.
+  seatEnv: {
+    mode: "filter",
+    base: "HOME,USER,LOGNAME,SHELL,PATH,PWD,SHLVL,LANG,LANGUAGE,LC_ALL,LC_COLLATE,LC_CTYPE,LC_MESSAGES,LC_MONETARY,LC_NUMERIC,LC_TIME,TERM,COLORTERM,TERM_PROGRAM,TERM_PROGRAM_VERSION,TZ,XDG_CONFIG_HOME,XDG_DATA_HOME,XDG_CACHE_HOME,XDG_STATE_HOME,XDG_RUNTIME_DIR,XDG_CONFIG_DIRS,XDG_DATA_DIRS,TMPDIR,TMUX,TMUX_PANE,OPENRIG_*,SSH_AUTH_SOCK,WSL_INTEROP,WSL_DISTRO_NAME,WSLENV,CLAUDE_CONFIG_DIR,CODEX_HOME",
+    exceptions: "",
+    kubeconfig: getDefaultOpenRigPath("seat-env/kubeconfig"),
+    rigs: "",
+  },
 } as const;
 
 export const VALID_KEYS = [
@@ -514,6 +529,13 @@ export const VALID_KEYS = [
   // Under explicit-only, an ask that needs a person must be addressed to the person;
   // without a human registry, explicit-only posts everything, as always does.
   "queue.wake_human_rung",
+  // Spec 0013 (SEC-178): the seat environment. "filter" (the default) is today's launch filter;
+  // "allowlist" passes a seat only the base names, its launch's own names and named exceptions.
+  "seat_env.mode",
+  "seat_env.base",
+  "seat_env.exceptions",
+  "seat_env.kubeconfig",
+  "seat_env.rigs",
 ] as const;
 
 export type ValidKey = typeof VALID_KEYS[number];
@@ -615,6 +637,11 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "queue.wake_unconfirmed_window_minutes": { primary: "OPENRIG_QUEUE_WAKE_UNCONFIRMED_WINDOW_MINUTES" },
   "queue.wake_swap_grace_seconds": { primary: "OPENRIG_QUEUE_WAKE_SWAP_GRACE_SECONDS" },
   "queue.wake_human_rung": { primary: "OPENRIG_QUEUE_WAKE_HUMAN_RUNG" },
+  "seat_env.mode": { primary: "OPENRIG_SEAT_ENV_MODE" },
+  "seat_env.base": { primary: "OPENRIG_SEAT_ENV_BASE" },
+  "seat_env.exceptions": { primary: "OPENRIG_SEAT_ENV_EXCEPTIONS" },
+  "seat_env.kubeconfig": { primary: "OPENRIG_SEAT_ENV_KUBECONFIG" },
+  "seat_env.rigs": { primary: "OPENRIG_SEAT_ENV_RIGS" },
 };
 
 // Maps dotted-string config keys to the camelCase RiggedConfig path.
@@ -705,6 +732,11 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "queue.wake_unconfirmed_window_minutes": ["queue", "wakeUnconfirmedWindowMinutes"],
   "queue.wake_swap_grace_seconds": ["queue", "wakeSwapGraceSeconds"],
   "queue.wake_human_rung": ["queue", "wakeHumanRung"],
+  "seat_env.mode": ["seatEnv", "mode"],
+  "seat_env.base": ["seatEnv", "base"],
+  "seat_env.exceptions": ["seatEnv", "exceptions"],
+  "seat_env.kubeconfig": ["seatEnv", "kubeconfig"],
+  "seat_env.rigs": ["seatEnv", "rigs"],
 };
 
 function isValidKey(key: string): key is ValidKey {
@@ -890,6 +922,28 @@ function positiveIntegerConstraint(key: string) {
   };
 }
 
+// Spec 0013 (SEC-178): seat_env values. Lockstep with the other settings store.
+const SEAT_ENV_SECRET_NAME = /KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE/i;
+function seatEnvModeConstraint(raw: string): void {
+  if (raw !== "filter" && raw !== "allowlist") {
+    throw new Error(`Invalid value for seat_env.mode: must be "filter" or "allowlist", got "${raw}"`);
+  }
+}
+function seatEnvNamesConstraint(key: "seat_env.base" | "seat_env.exceptions" | "seat_env.rigs") {
+  const form = key === "seat_env.base" ? /^[A-Za-z_][A-Za-z0-9_]*\*?$/ : key === "seat_env.rigs" ? /^[A-Za-z0-9][A-Za-z0-9._-]*$/ : /^[A-Za-z_][A-Za-z0-9_]*$/;
+  return (raw: string): void => {
+    for (const name of raw.split(",").map((entry) => entry.trim()).filter(Boolean)) {
+      if (!form.test(name)) throw new Error(`Invalid ${key}: "${name}" is not ${key === "seat_env.base" ? "a name or a PREFIX* pattern" : key === "seat_env.rigs" ? "a rig name" : "an exact name"}`);
+      // The never list (spec 0013): 1Password service-account credentials.
+      if (key !== "seat_env.rigs" && (name === "OP_SERVICE_ACCOUNT_TOKEN" || name.startsWith("OP_SA_"))) throw new Error(`Invalid ${key}: ${name} is never passed to a seat`);
+      if (key === "seat_env.base" && SEAT_ENV_SECRET_NAME.test(name)) throw new Error(`Invalid seat_env.base: ${name} is secret-named; list it in seat_env.exceptions instead`);
+    }
+  };
+}
+function seatEnvKubeconfigConstraint(raw: string): void {
+  if (!raw.startsWith("/")) throw new Error(`Invalid seat_env.kubeconfig: must be an absolute path, got "${raw}"`);
+}
+
 function wakeHumanRungConstraint(raw: string): void {
   if (raw !== "always" && raw !== "explicit-only") {
     throw new Error(`Invalid value for queue.wake_human_rung: must be "always" or "explicit-only", got "${raw}"`);
@@ -1060,6 +1114,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "queue.wake_unconfirmed_window_minutes": positiveIntegerConstraint("queue.wake_unconfirmed_window_minutes"),
   "queue.wake_swap_grace_seconds": positiveIntegerConstraint("queue.wake_swap_grace_seconds"),
   "queue.wake_human_rung": wakeHumanRungConstraint,
+  "seat_env.mode": seatEnvModeConstraint,
+  "seat_env.base": seatEnvNamesConstraint("seat_env.base"),
+  "seat_env.exceptions": seatEnvNamesConstraint("seat_env.exceptions"),
+  "seat_env.kubeconfig": seatEnvKubeconfigConstraint,
+  "seat_env.rigs": seatEnvNamesConstraint("seat_env.rigs"),
 };
 
 function validateKeyConstraints(key: ValidKey, raw: string, coerced: string | number | boolean): void {
@@ -1301,6 +1360,13 @@ export class ConfigStore {
         wakeUnconfirmedWindowMinutes: v("queue.wake_unconfirmed_window_minutes") as number,
         wakeSwapGraceSeconds: v("queue.wake_swap_grace_seconds") as number,
         wakeHumanRung: v("queue.wake_human_rung") as string,
+      },
+      seatEnv: {
+        mode: v("seat_env.mode") as string,
+        base: v("seat_env.base") as string,
+        exceptions: v("seat_env.exceptions") as string,
+        kubeconfig: v("seat_env.kubeconfig") as string,
+        rigs: v("seat_env.rigs") as string,
       },
     };
   }

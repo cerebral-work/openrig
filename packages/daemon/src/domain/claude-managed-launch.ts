@@ -38,7 +38,10 @@ export class ClaudeManagedLaunch {
     /** Reads one variable from a seat's tmux session environment (the daemon's tmux adapter). */
     private readonly readSessionEnv?: (session: string, key: string) => Promise<string | undefined>,
     /** Where the daemon vendors its plugins; default is `plugins` under the OpenRig home (tests). */
-    private readonly pluginsDir?: string) {}
+    private readonly pluginsDir?: string,
+    /** Spec 0013: the KUBECONFIG a seat gets in allow-list mode, undefined in filter mode. env -i would
+     *  otherwise drop it and kubectl would fall back to ~/.kube/config. */
+    private readonly seatKubeconfig?: (session: string | undefined) => string | undefined) {}
 
   /** Names the seat's rig and member declare in `env:`, plus any one-off `rig up --env` names the
    *  launch recorded on the tmux session. Their values are already in the pane shell, which is
@@ -167,7 +170,9 @@ export class ClaudeManagedLaunch {
       ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}) };
     const seatKeys = await this.seatEnvKeys(target.nodeId, before.session ?? undefined);
     const publicEnv = publicSeatEnvironment(this.sessionEnv);
-    const assignments = Object.entries({ ...context.env, ...publicEnv, ...identity }).map(([key, value]) => shellQuote(`${key}=${value}`));
+    const kubeconfig = this.seatKubeconfig?.(before.session ?? undefined);
+    const assignments = Object.entries({ ...context.env, ...publicEnv, ...identity, ...(kubeconfig ? { KUBECONFIG: kubeconfig } : {}) })
+      .map(([key, value]) => shellQuote(`${key}=${value}`));
     const forwarded = inherited.filter(key => !(key in identity) && !(key in publicEnv)).map(key => `"${key}=\${${key}-}"`);
     // A declared name is forwarded only when the pane shell has it set, so a one-off name recorded on
     // the session never reaches a successor pane that was not given it. Set-but-empty stays empty.

@@ -150,6 +150,7 @@ import { resolveSystemWorld } from "./domain/system-world.js";
 import { AgentImageLibraryService } from "./domain/agent-images/agent-image-library-service.js";
 import { SnapshotCapturer } from "./domain/agent-images/snapshot-capturer.js";
 import { SettingsStore as ContextPackSettingsStore } from "./domain/user-settings/settings-store.js";
+import { seatEnvAllowlistApplies, seatEnvPolicyReader, seatKubeconfig } from "./domain/seat-launch-env-filter.js";
 import { WhoamiService } from "./domain/whoami-service.js";
 import { NodeCmuxService } from "./domain/node-cmux-service.js";
 import { createAppWithWebSocket, type AppDeps } from "./server.js";
@@ -504,6 +505,14 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const argvExec = spawnedArgvExec === execArgvCommand && process.platform !== "win32" && process.env.OPENRIG_TMUX_CONTROL === "1"
     ? tmuxControlExec(execArgvCommand) : spawnedArgvExec;
   const tmuxAdapter = new TmuxAdapter(opts?.tmuxExec ?? execCommand, undefined, argvExec, { handshake: true });
+  // Spec 0013 (SEC-178): the seat_env policy, read for each launch (resolveOne re-reads the config file).
+  // An unreadable policy refuses launches unless filter mode was the last one read (fail closed).
+  const seatEnvSettings = new ContextPackSettingsStore();
+  const seatEnvRead = (key: "seat_env.mode" | "seat_env.base" | "seat_env.exceptions" | "seat_env.kubeconfig" | "seat_env.rigs") =>
+    String(seatEnvSettings.resolveOne(key).value);
+  const seatEnvPolicy = seatEnvPolicyReader(() => ({ mode: seatEnvRead("seat_env.mode"), base: seatEnvRead("seat_env.base"),
+    exceptions: seatEnvRead("seat_env.exceptions"), kubeconfig: seatEnvRead("seat_env.kubeconfig"), rigs: seatEnvRead("seat_env.rigs") }));
+  tmuxAdapter.setSeatEnvPolicy(seatEnvPolicy);
   // The real tmux runs with this process's environment, so its server is the one $TMUX names.
   // An injected exec has no server of its own: printed attach commands stay in the default form.
   setDaemonTmuxServer(opts?.tmuxExec ? [] : tmuxServerArgs(process.env));
@@ -650,7 +659,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const snapshotCapture = new SnapshotCapture({ db, rigRepo, sessionRegistry, eventBus, snapshotRepo, checkpointStore });
   const claudeManagedLaunch = new ClaudeManagedLaunch(db, { ...launchSessionEnv, CLAUDE_CONFIG_DIR: process.env.CLAUDE_CONFIG_DIR }, {
     OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN: process.env.OPENRIG_CLAUDE_DISABLE_ALTERNATE_SCREEN,
-  }, (session, key) => tmuxAdapter.getSessionEnv(session, key));
+  }, (session, key) => tmuxAdapter.getSessionEnv(session, key), undefined, (session) => {
+    const policy = seatEnvPolicy();
+    return policy !== "unreadable" && session !== undefined && seatEnvAllowlistApplies(policy, session)
+      ? seatKubeconfig(policy, fs.existsSync).path : undefined;
+  });
   const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment });
   // #275: one reader for both Codex launch adapters, with the PATH, HOME and CODEX_HOME a seat session gets.
   const readCodexNetworkDefault = codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome });

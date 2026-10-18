@@ -396,12 +396,9 @@ export class ResumeMetadataRefresher {
         return "inconclusive";
       }
 
-      const send = await this.tmuxAdapter.sendText(probeSession, command);
+      // Spec 0013: the probe starts a real Claude, so in allow-list mode it is staged behind the prologue.
+      const send = await this.tmuxAdapter.sendLaunchCommand(probeSession, command);
       if (!send.ok) {
-        return "inconclusive";
-      }
-      const enter = await this.tmuxAdapter.sendKeys(probeSession, ["Enter"]);
-      if (!enter.ok) {
         return "inconclusive";
       }
 

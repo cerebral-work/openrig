@@ -172,6 +172,14 @@ if (process.argv.includes('--help')) {
     expect(command).not.toContain("UNAPPROVED_RENDERER_VALUE");
     expect(command).not.toMatch(/TMUX/);
   });
+  it("sets the allow-list KUBECONFIG explicitly, since env -i would leave kubectl on ~/.kube/config (spec 0013)", async () => {
+    const f = fixture();
+    expect((await f.managed.prepare({ nodeId: "node", session: "seat", pane: "%1" }, "auto")).command([])).not.toContain("KUBECONFIG");
+    const allowlisted = new ClaudeManagedLaunch(f.db, f.env, f.renderer, undefined, undefined,
+      (session) => session === "seat" ? "/nonexistent/openrig-seat-env/kubeconfig" : undefined);
+    const command = (await allowlisted.prepare({ nodeId: "node", session: "seat", pane: "%1" }, "auto")).command([]);
+    expect(command).toContain("'KUBECONFIG=/nonexistent/openrig-seat-env/kubeconfig'");
+  });
   it.each([
     ["present", { TERM_PROGRAM: "tmux", TERM_PROGRAM_VERSION: "3.7c" }],
     ["absent", {}],
