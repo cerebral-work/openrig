@@ -110,7 +110,7 @@ function fixture(opts: { guard?: boolean; authoredRecapResolver?: (seatRef: stri
   const ledger = () => db.prepare("SELECT kind, outcome FROM node_runtime_changes WHERE node_id = ? ORDER BY created_at, rowid").all(node.id);
   const slot = () => db.prepare("SELECT change_id FROM node_runtime_revert_slots WHERE node_id = ?").get(node.id) as { change_id: string } | undefined;
   return {
-    db, node, service, change, held, held1, ledger, slot, launches, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn>; isPaneDead: ReturnType<typeof vi.fn> },
+    db, node, service, change, held, held1, ledger, slot, launches, eventBus, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn>; isPaneDead: ReturnType<typeof vi.fn> },
     hold: () => { holdNext = true; },
   };
 }
@@ -229,5 +229,19 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
     const live = f.db.prepare("SELECT session_name FROM sessions WHERE node_id = ? AND status NOT IN ('superseded', 'detached', 'exited')").all(f.node.id);
     expect(live).toHaveLength(1);
+  });
+
+  it("a throw after the commit landed propagates and leaves exactly one committed row, no failed row (review r2 L1)", async () => {
+    const f = fixture();
+    const notify = f.eventBus.notifySubscribers.bind(f.eventBus);
+    // seat.handover_completed is persisted inside the commit transaction and notified only after tx() returns.
+    vi.spyOn(f.eventBus, "notifySubscribers").mockImplementation((event) => {
+      if (event.type === "seat.handover_completed") throw new Error("subscriber down after the commit");
+      notify(event);
+    });
+    await expect(f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).rejects.toThrow("subscriber down after the commit");
+    expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
+    expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
   });
 });
