@@ -28,6 +28,7 @@
 //            live-daemon-guard.test.ts.
 import fs from "node:fs";
 import os from "node:os";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { writeRuntimeStubs } from "./stub-runtimes.js";
 
@@ -94,11 +95,30 @@ const fixtureHome =
 // default effect again. Only the creating file registers (later files in the worker reuse the home), and only
 // a home this process made, still carrying the marker: a reused home from the environment, say a parent
 // run's, is never ours to remove.
+// linear-pending item 44: a tmux server whose socket is inside the worker's TMPDIR (a scenario scaffold's <root>/tmux.sock,
+// or a TMUX_TMPDIR's tmux-<uid>/<name>) outlives the directory when a test's own teardown never ran: it keeps listening on a
+// deleted path that no `tmux -S` can reach again. So each one is stopped, by its socket, before the directory is removed.
+// The walk is bounded (scaffolds sit two to four levels down) and only names tmux sockets; every call drops $TMUX.
+function stopTmuxServersUnder(dir: string, depth = 4): void {
+  let entries: fs.Dirent[];
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (depth > 0) stopTmuxServersUnder(full, depth - 1);
+    } else if (entry.isSocket() && (entry.name === "tmux.sock" || /^tmux-\d+$/.test(path.basename(dir)))) {
+      const childEnv = { ...process.env };
+      delete childEnv["TMUX"];
+      try { execFileSync("tmux", ["-S", full, "kill-server"], { env: childEnv, stdio: "ignore", timeout: 3000 }); } catch { /* nothing answers there */ }
+    }
+  }
+}
 if (createdHome) {
   const home = createdHome;
   const tmp = createdTmp;
   const remove = () => {
     if (!fs.existsSync(path.join(home, ".openrig-fixture"))) return;
+    if (tmp) stopTmuxServersUnder(tmp);
     // A failed removal (busy, permissions) must not turn a signal or a clean exit into a crash.
     for (const dir of [home, `${home}-user-home`, ...(tmp ? [tmp] : [])]) {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* leave it: the worker is ending */ }

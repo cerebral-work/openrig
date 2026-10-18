@@ -8,20 +8,33 @@ import { createRequire } from "node:module";
 // The shared vitest setup makes a fixture home, a sibling user home and a TMPDIR of its own per worker. It
 // removes them when the worker exits; before, a full run left them behind and filled the (RAM-backed) /tmp.
 const roots: string[] = [];
-afterEach(() => { for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+const servers: number[] = [];
+afterEach(() => {
+  // A tmux server a red run leaked is killed by its recorded PID: its socket's directory is already gone.
+  for (const pid of servers.splice(0)) { try { process.kill(pid, "SIGKILL"); } catch { /* already gone */ } }
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+const tmuxAvailable = spawnSync("sh", ["-c", "command -v tmux"]).status === 0;
+/** The PIDs `ss -xlp` shows listening on a unix socket path, whether or not that path still exists. */
+const listeners = (socket: string) => spawnSync("ss", ["-xlp"], { encoding: "utf-8" }).stdout.split("\n")
+  .filter((line) => line.split(/\s+/).includes(socket))
+  .flatMap((line) => [...line.matchAll(/pid=(\d+)/g)].map((m) => Number(m[1])));
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
-function runSetup(env: Record<string, string | undefined> = {}) {
+function runSetup(env: Record<string, string | undefined> = {}, args: string[] = []) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fixture-home-run-"));
   roots.push(tmp);
   const child = spawnSync(process.execPath, [
     "--import", createRequire(import.meta.url).resolve("tsx"),
-    path.join(import.meta.dirname, "fixtures/fixture-home-child.ts"),
+    path.join(import.meta.dirname, "fixtures/fixture-home-child.ts"), ...args,
   ], {
     encoding: "utf-8", timeout: 60_000,
     env: { PATH: process.env.PATH, TMPDIR: tmp, ...env },
   });
   expect(child.status, child.stderr).toBe(0);
-  const homes = JSON.parse(child.stdout.trim().split("\n").pop()!) as { openrigHome: string; home: string; tmpdir: string; scratch: string };
+  const homes = JSON.parse(child.stdout.trim().split("\n").pop()!) as
+    { openrigHome: string; home: string; tmpdir: string; scratch: string; tmux?: { socket: string; pid: number } };
+  if (homes.tmux) servers.push(homes.tmux.pid);
   return { tmp, ...homes };
 }
 const fixtureEntries = (tmp: string) => fs.readdirSync(tmp).filter((name) => name.startsWith(".openrig-test-fixture-home-"));
@@ -49,6 +62,48 @@ describe.skipIf(process.env["OPENRIG_E2E_REAL_CODEX"] === "1")("fixture homes ar
     expect(fs.existsSync(scratch)).toBe(false);
     expect(fs.existsSync(tmpdir)).toBe(false);
     expect(leftovers(tmp)).toEqual([]);
+  });
+
+  // linear-pending item 44: removing the worker's TMPDIR while a tmux server still listens inside it left the server
+  // running, listening on a deleted path that no `tmux -S` could reach again (two found on 2026-10-18, ppid 1).
+  it.runIf(tmuxAvailable)("stops a tmux server listening inside its TMPDIR before removing it, on a clean exit", () => {
+    const { tmpdir, tmux } = runSetup({}, ["tmux"]);
+    expect(tmux!.socket.startsWith(`${tmpdir}/`)).toBe(true);
+    expect(fs.existsSync(tmpdir)).toBe(false);
+    expect(listeners(tmux!.socket)).toEqual([]);
+    expect(alive(tmux!.pid)).toBe(false);
+  });
+
+  it.runIf(tmuxAvailable)("stops a tmux server listening inside its TMPDIR when the worker is ended by SIGTERM", async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "fixture-home-tmux-"));
+    roots.push(tmp);
+    const child = spawn(process.execPath, [
+      "--import", createRequire(import.meta.url).resolve("tsx"),
+      path.join(import.meta.dirname, "fixtures/fixture-home-child.ts"), "wait", "tmux",
+    ], { stdio: ["ignore", "pipe", "inherit"], env: { PATH: process.env.PATH, TMPDIR: tmp } });
+    const closed = new Promise<void>((resolve) => child.once("close", () => resolve()));
+    try {
+      let output = "";
+      const homes = await new Promise<{ tmpdir: string; tmux: { socket: string; pid: number } }>((resolve, reject) => {
+        child.stdout!.on("data", (chunk: Buffer) => {
+          output += String(chunk);
+          const line = output.split("\n").find((l) => l.startsWith("{") && l.endsWith("}"));
+          if (line) resolve(JSON.parse(line));
+        });
+        child.once("close", () => reject(new Error(`child ended before it printed its homes: ${output}`)));
+      });
+      servers.push(homes.tmux.pid);
+      expect(listeners(homes.tmux.socket)).toEqual([homes.tmux.pid]); // control: the probe sees a live server
+
+      child.kill("SIGTERM");
+      await closed;
+
+      expect(fs.existsSync(homes.tmpdir)).toBe(false);
+      expect(listeners(homes.tmux.socket)).toEqual([]);
+      expect(alive(homes.tmux.pid)).toBe(false);
+    } finally {
+      child.kill("SIGKILL");
+    }
   });
 
   it("keeps os.tmpdir() as given when the package opts out, and still removes the homes", () => {

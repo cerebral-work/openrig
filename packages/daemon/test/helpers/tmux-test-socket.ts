@@ -7,8 +7,8 @@ import { lstatSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const pexec = promisify(execFile);
-/** Test socket names only; "default", the live fleet's socket, never matches. */
-const TEST_SOCKET = /^(openrig|silent)-[\w-]+$/;
+/** Test socket names only (the CLI's terminal-window tests use ws-/wv-); "default", the live fleet's socket, never matches. */
+const TEST_SOCKET = /^(openrig|silent|ws|wv)-[\w-]+$/;
 
 /** Where tmux puts a `-L` socket: `$TMUX_TMPDIR` (or `/tmp`), then `tmux-<uid>`. */
 export function tmuxTestSocketPath(name: string, env: NodeJS.ProcessEnv = process.env): string {
