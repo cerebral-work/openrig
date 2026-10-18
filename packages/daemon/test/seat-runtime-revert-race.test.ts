@@ -212,11 +212,20 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(rows).toEqual([{ outcome: "failed", failure: "threw_after_respawn at deliver-context" }]);
   });
 
-  it("a failure returned after the commit landed adds no failed row beside the committed one", async () => {
+  it("an oracle failure after the commit landed reports the commit, unwinds nothing and writes no failed row", async () => {
     const f = fixture({ activityOracle: { declareOccupantSwap: () => { throw new Error("oracle down"); } } });
     const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
-      runtimeChange: f.change("claude-code", "claude-opus-5-5") });
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; code?: string; message?: string; guidance?: string };
     expect(result.ok).toBe(false);
+    expect(result.code).toBe("handover_committed_swap_undeclared");
+    expect(result.message).toContain("committed");
+    expect(result.guidance).not.toContain("--fresh --stop");
+    expect(result.guidance).toContain("Do not retry");
     expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
+    // The committed successor is untouched and is the seat's occupant on the target runtime.
+    expect(f.db.prepare("SELECT status FROM discovered_sessions").all()).toEqual([{ status: "claimed" }]);
+    expect(f.db.prepare("SELECT runtime FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "claude-code" });
+    const live = f.db.prepare("SELECT session_name FROM sessions WHERE node_id = ? AND status NOT IN ('superseded', 'detached', 'exited')").all(f.node.id);
+    expect(live).toHaveLength(1);
   });
 });

@@ -217,7 +217,7 @@ export type SeatHandoverResult =
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found"; message: string; guidance: string }
   | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
-  | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
+  | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "handover_committed_swap_undeclared" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
   | { ok: false; code: "runtime_change_unauthorized" | "runtime_change_invalid" | "runtime_change_secret_env" | "runtime_change_env_not_allowed" | "runtime_change_spec_mismatch" | "runtime_change_target_startup_failed" | "runtime_revert_unavailable"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
 
@@ -1036,7 +1036,8 @@ export class SeatHandoverService {
       sourceOutcome: input.sourceOutcome,
       change: input.change,
     });
-    if (!committed.ok) return fail(committed);
+    // A commit that landed is never unwound (review r2 follow-up): only a commit that did not land goes through fail().
+    if (!committed.ok) return committed.code === "handover_committed_swap_undeclared" ? committed : fail(committed);
     this.tmuxAdapter.deliveryGuard?.rebindLifecycle(input.node.id);
 
     // B2 (discovered): the successor is an operator-prepared live session we did
@@ -1697,10 +1698,6 @@ export class SeatHandoverService {
     try {
       committed = tx();
       if (input.change) input.change.progress.recorded = true;
-      // S19 ruling 01530 — the SOLE narrow call: after the commit lands, the activity
-      // oracle sees the swap as its own event, keyed by the durable node id, identified
-      // by the successor tenure (never the retiree's). In-memory, post-commit, optional.
-      this.activityOracle?.declareOccupantSwap(input.node.id, committed.newSessionId);
     } catch (err) {
       if (err instanceof RevertSlotMovedError) {
         return { ok: false, code: "runtime_revert_unavailable", message: "The change this revert was built from is no longer the seat's latest; nothing was reverted.",
@@ -1714,8 +1711,25 @@ export class SeatHandoverService {
       };
     }
 
+    // S19 ruling 01530 — the SOLE narrow call: after the commit lands, the activity
+    // oracle sees the swap as its own event, keyed by the durable node id, identified
+    // by the successor tenure (never the retiree's). In-memory, post-commit, optional.
+    // The commit has landed, so a failure here is reported as such and never as a failed handover: nothing is unwound,
+    // and the guidance never says to retry or relaunch.
+    let swapUndeclared: string | null = null;
+    try {
+      this.activityOracle?.declareOccupantSwap(input.node.id, committed.newSessionId);
+    } catch (err) {
+      swapUndeclared = err instanceof Error ? err.message : String(err);
+    }
+
     this.eventBus.notifySubscribers(committed.event);
     if (committed.runtimeRecord) this.eventBus.notifySubscribers(committed.runtimeRecord.event);
+    if (swapUndeclared !== null) {
+      return { ok: false, code: "handover_committed_swap_undeclared",
+        message: `The handover committed and "${input.discovered.tmuxSession}" is the seat's occupant, but the activity oracle did not take the swap: ${swapUndeclared}`,
+        guidance: "Do not retry the handover or relaunch the seat: the change landed. The seat's activity evidence may reflect its predecessor until the successor reports again." };
+    }
     const postStatus = this.statusService.getStatus(`${input.status.logical_id}@${input.status.rig_name}`);
     const currentStatus = postStatus.ok
       ? {
