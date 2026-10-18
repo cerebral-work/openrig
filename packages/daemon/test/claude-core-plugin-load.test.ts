@@ -8,7 +8,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
-import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
+import { releaseTmuxTestSocket, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -78,7 +78,7 @@ function fakeTmux(created: Array<{ name: string; env: Record<string, string> | u
 describe("which Claude seats load the vendored plugin", () => {
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), "claude-core-plugin-")); });
-  afterEach(() => { vi.unstubAllEnvs(); rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => { vi.unstubAllEnvs(); removeTmuxTestRoot(root); });
 
   it("a real daemon startup vendors the plugin and sets nothing for every Claude seat", async () => {
     // Every home the daemon touches at startup is a scratch one: the real ~/.claude and ~/.codex stay out of it.
@@ -186,7 +186,7 @@ describe("rig up: only a Claude seat whose resolved plugin selection includes op
   const RIG_ROOT = "/project/rigs/my-rig";
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), "claude-core-rigup-")); });
-  afterEach(() => { rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => { removeTmuxTestRoot(root); });
 
   const agent = (extra: string, plugins: string, resources: string) => `name: a
 version: "1.0.0"
@@ -273,7 +273,7 @@ describe("a Claude seat's launch env, on the launch paths that don't re-resolve 
   const dbs: ReturnType<typeof createFullTestDb>[] = [];
   let root: string;
   beforeEach(() => { root = mkdtempSync(join(tmpdir(), "claude-core-launch-")); });
-  afterEach(() => { for (const db of dbs.splice(0)) db.close(); rmSync(root, { recursive: true, force: true }); });
+  afterEach(() => { for (const db of dbs.splice(0)) db.close(); removeTmuxTestRoot(root); });
 
   it("fresh launch: a seat that selected the plugin has it, and a Codex seat or one that selected nothing does not", async () => {
     const { pluginsDir, vendored } = vendoredPlugins(root);
@@ -463,7 +463,7 @@ describe("handover successor, on a real tmux server", () => {
   afterAll(async () => {
     for (const seat of seats) await tmux(`kill-session -t ${q(seat)}`).catch(() => {});
     await releaseTmuxTestSocket(SOCK, { killServer: false });
-    rmSync(scratch, { recursive: true, force: true });
+    removeTmuxTestRoot(scratch);
   });
 
   async function paneEnviron(seat: string, tag: string): Promise<Record<string, string>> {
@@ -545,7 +545,7 @@ describe.skipIf(process.platform === "win32")("the managed (env -i) Claude launc
 
   function fixture(opts: { memberEnv?: object; sessionKeys?: string; saved?: unknown[] }) {
     const root = mkdtempSync(join(tmpdir(), "managed-plugin-dirs-"));
-    cleanup.push(() => rmSync(root, { recursive: true, force: true }));
+    cleanup.push(() => removeTmuxTestRoot(root));
     const bin = join(root, "bin"), home = join(root, "home"), cwd = join(root, "work");
     for (const dir of [bin, home, cwd]) mkdirSync(dir);
     writeFileSync(join(bin, "claude"), `#!/bin/sh
@@ -639,7 +639,7 @@ describe("the plugin's activity relay", () => {
     await new Promise<void>((ok) => server.listen(0, "127.0.0.1", ok));
     port = (server.address() as { port: number }).port;
   });
-  afterEach(async () => { await new Promise<void>((ok) => server.close(() => ok())); rmSync(project, { recursive: true, force: true }); });
+  afterEach(async () => { await new Promise<void>((ok) => server.close(() => ok())); removeTmuxTestRoot(project); });
 
   const settingsWithRelay = (events: string[]) => JSON.stringify({
     hooks: Object.fromEntries(events.map((e) => [e, [{ hooks: [{ type: "command", command: `node '${settingsRelay}'` }] }]])),
@@ -749,7 +749,7 @@ describe("the plugin's activity relay", () => {
 describe("the plugin's seat effects stay inside the seat's project", () => {
   const scripts = join(import.meta.dirname, "../assets/plugins/openrig-core");
   const roots: string[] = [];
-  afterEach(() => { for (const r of roots.splice(0)) rmSync(r, { recursive: true, force: true }); });
+  afterEach(() => { for (const r of roots.splice(0)) removeTmuxTestRoot(r); });
 
   function world() {
     const root = realpathSync(mkdtempSync(join(tmpdir(), "seat-boundary-")));

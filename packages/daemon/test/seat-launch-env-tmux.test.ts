@@ -8,6 +8,7 @@ import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { describe, it, expect } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -42,7 +43,7 @@ async function paneEnviron(tm: (args: string[]) => Promise<string>, target: stri
 
 describe.skipIf(!hasTmux || process.platform !== "linux")("seat launch environment on a tmux server started from a herdr pane", () => {
   it.each(["fresh", "probe"] as const)("a %s launch gets no HERDR_* name and keeps OpenRig metadata and TMUX", async (kind) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-env-"));
+    const root = createTmuxTestRoot("seat-env-");
     const socket = path.join(root, "tmux");
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/sh", OPENRIG_FIXTURE: "kept", ...HERDR_PANE };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
@@ -68,7 +69,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat launch environme
       if (kind === "fresh") expect(seat.OPENRIG_NODE_ID).toBe("n1");
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 });

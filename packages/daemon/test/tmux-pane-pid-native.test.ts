@@ -3,7 +3,7 @@
 // empty reply, so absence must be confirmed by a read that reports it (`list-panes -t <pane>`: "can't find pane"). Lifted
 // from r1's probes (r1-pr18-real-tmux-probe, r1-pr18-sweep-probe).
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,6 +13,7 @@ import { supportsControlMode, tmuxControlExec } from "../src/adapters/tmux-contr
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatIdentityReconciler } from "../src/domain/seat-identity-reconciler.js";
 import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const version = (() => {
   try { return execFileSync("tmux", ["-V"], { encoding: "utf8" }); } catch { return ""; }
@@ -38,7 +39,7 @@ describe.skipIf(!supportsControlMode(version))("pane pid reads against a real tm
     await control.close();
     try { tmux("kill-server"); } catch { /* already gone */ }
     vi.unstubAllEnvs();
-    rmSync(dir, { recursive: true, force: true });
+    removeTmuxTestRoot(dir);
   });
 
   // Panes: a killed pane in a live session, a stale id from a session killed and recreated under the same name, and a

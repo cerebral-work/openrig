@@ -19,12 +19,13 @@ import { exec, execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { startTranscriptRotation, stopTranscriptRotation, getActiveRotationCount, getLastCaptureAt } from "../src/domain/transcript-rotation.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 const run = promisify(exec);
 const runFile = promisify(execFile);
 
 describe.skipIf(process.platform === "win32")("native failed-kill transcript continuity", () => {
   it.each([true, false])("preserves capture only while the seat survives (kill fails=%s)", async (failure) => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "kill-capture-"));
+    const temp = createTmuxTestRoot("kill-capture-");
     const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "socket-"));
     const socket = path.join(socketDir, "owned.sock");
     const env = { ...process.env, HOME: temp };
@@ -72,7 +73,7 @@ describe.skipIf(process.platform === "win32")("native failed-kill transcript con
     } finally {
       stopTranscriptRotation(sessionName);
       await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
-      db.close(); fs.rmSync(temp, { recursive: true, force: true }); fs.rmSync(socketDir, { recursive: true, force: true });
+      db.close(); removeTmuxTestRoot(temp); removeTmuxTestRoot(socketDir);
     }
   });
 });

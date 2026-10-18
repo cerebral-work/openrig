@@ -1,12 +1,13 @@
 // A daemon started from inside tmux on a non-default socket creates its sessions on that server,
 // and a person's new terminal reaches the default one. Every printed attach command must name the
 // daemon's server then, and keep today's form on the default server.
-import { mkdtempSync, mkdirSync, realpathSync, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync, realpathSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { setDaemonTmuxServer, tmuxAttachCommand, tmuxServerArgs } from "../src/adapters/tmux-server.js";
 import { composeView, type ViewMemberInput } from "../src/domain/terminal/view-composer.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 describe("the daemon's tmux server", () => {
   let base: string;
@@ -15,7 +16,7 @@ describe("the daemon's tmux server", () => {
     mkdirSync(join(base, "tmux-501"));
   });
   afterEach(() => {
-    rmSync(base, { recursive: true, force: true });
+    removeTmuxTestRoot(base);
     setDaemonTmuxServer([]);
   });
 

@@ -7,6 +7,7 @@ import { promisify } from "node:util";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { execArgvCommand, execCommand, resolveOnPath } from "../src/adapters/tmux-exec.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 // The production exec functions against a real tmux. Neither takes a server flag: both must reach the server
 // named by the inherited TMUX_TMPDIR, so the test points it at a private directory and unsets TMUX.
@@ -16,7 +17,7 @@ try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch 
 
 const runFile = promisify(execFile);
 const roots: string[] = [];
-afterAll(() => { for (const root of roots) fs.rmSync(root, { recursive: true, force: true }); });
+afterAll(() => { for (const root of roots) removeTmuxTestRoot(root); });
 
 /** The file node spawns for each child started while `fn` runs. */
 async function spawnedFiles(fn: () => Promise<void>): Promise<string[]> {
@@ -28,7 +29,7 @@ async function spawnedFiles(fn: () => Promise<void>): Promise<string[]> {
 }
 
 async function scenario(mode: "shell" | "argv") {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-exec-"));
+  const root = createTmuxTestRoot("openrig-exec-");
   roots.push(root);
   const serverDir = path.join(root, "server");
   const emptyDir = path.join(root, "empty");

@@ -5,10 +5,11 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { releaseTmuxTestSocket, removeTmuxTestRoot, tmuxTestSocketPath } from "./helpers/tmux-test-socket.js";
+const hasTmux = () => { try { execFileSync("tmux", ["-V"], { stdio: "ignore" }); return true; } catch { return false; } };
+import { createTmuxTestRoot, NO_SHELL_HISTORY, releaseTmuxTestSocket, removeTmuxTestRoot, tmuxTestSocketPath } from "./helpers/tmux-test-socket.js";
 
 const pexec = promisify(execFile);
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
@@ -62,8 +63,6 @@ describe("releaseTmuxTestSocket: a test's private tmux server leaves no socket f
 });
 
 describe("removeTmuxTestRoot", () => {
-  // The race it absorbs (a pane still writing into the root after kill-server, so a plain recursive rmSync reads
-  // ENOTEMPTY) was seen on ubuntu-latest and did not reproduce locally; this pins the removal itself.
   it("removes a nested root, and a root already gone is no error", () => {
     const root = mkdtempSync(join(tmpdir(), "tmux-test-root-"));
     mkdirSync(join(root, "a", "b"), { recursive: true });
@@ -72,4 +71,68 @@ describe("removeTmuxTestRoot", () => {
     expect(existsSync(root)).toBe(false);
     expect(() => removeTmuxTestRoot(root)).not.toThrow();
   });
+
+  // A late writer, made deterministic: the first removal attempt meets an entry added after it listed the directory, and
+  // fails as Node 22's rmSync does (ENOTEMPTY from rmdir, whatever its maxRetries). The next whole removal lists again.
+  const enotempty = () => Object.assign(new Error("ENOTEMPTY: directory not empty, rmdir"), { code: "ENOTEMPTY" });
+  it("re-runs the whole removal after a late entry, so the root goes", () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-test-root-"));
+    let calls = 0;
+    removeTmuxTestRoot(root, (path) => {
+      if (calls++ === 0) { writeFileSync(join(path, ".bash_history"), "late"); throw enotempty(); }
+      rmSync(path, { recursive: true, force: true });
+    });
+    expect(calls).toBe(2);
+    expect(existsSync(root)).toBe(false);
+  });
+
+  it("gives up after 10 attempts, naming what is left and never its contents", () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-test-root-"));
+    writeFileSync(join(root, ".bash_history"), "SENTINEL-CONTENT");
+    let calls = 0;
+    expect(() => removeTmuxTestRoot(root, () => { calls++; throw enotempty(); }))
+      .toThrow(/after 10 attempts.*left: \.bash_history$/);
+    expect(calls).toBe(10);
+    try { removeTmuxTestRoot(root, () => { throw enotempty(); }); } catch (error) { expect(String(error)).not.toContain("SENTINEL-CONTENT"); }
+    rmSync(root, { recursive: true, force: true });
+  });
+
+  it("rethrows any other error at once", () => {
+    let calls = 0;
+    expect(() => removeTmuxTestRoot("/nowhere", () => { calls++; throw Object.assign(new Error("EACCES"), { code: "EACCES" }); })).toThrow("EACCES");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("createTmuxTestRoot", () => {
+  it("turns bash history off for the root's interactive and login shells", () => {
+    const root = createTmuxTestRoot("tmux-test-root-");
+    expect(readFileSync(join(root, ".bashrc"), "utf8")).toBe(NO_SHELL_HISTORY);
+    expect(readFileSync(join(root, ".bash_profile"), "utf8")).toBe(NO_SHELL_HISTORY);
+    removeTmuxTestRoot(root);
+  });
+
+  // The late writer itself, on a real server: a default-shell (login bash) pane with HOME in the root runs a command, then
+  // kill-server. A plain root gets .bash_history after kill-server returns; a createTmuxTestRoot root never does.
+  it.skipIf(!hasTmux() || process.platform !== "linux")("a login-shell pane writes no .bash_history after kill-server; a plain root does (control)", async () => {
+    const sawHistory = async (root: string) => {
+      const socket = join(root, "s");
+      const env = { HOME: root, PATH: process.env.PATH!, TERM: "xterm-256color", SHELL: "/bin/bash" };
+      const tm = (args: string[]) => pexec("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 });
+      try {
+        await tm(["new-session", "-d", "-s", "probe"]);
+        await new Promise((r) => setTimeout(r, 400));
+        await tm(["send-keys", "-t", "probe", "echo history-probe", "Enter"]);
+        await new Promise((r) => setTimeout(r, 400));
+        await tm(["kill-server"]).catch(() => {});
+        await new Promise((r) => setTimeout(r, 500));
+        return existsSync(join(root, ".bash_history"));
+      } finally {
+        await tm(["kill-server"]).catch(() => {});
+        removeTmuxTestRoot(root);
+      }
+    };
+    expect(await sawHistory(createTmuxTestRoot("tmux-test-root-"))).toBe(false);
+    expect(await sawHistory(mkdtempSync(join(tmpdir(), "tmux-test-root-plain-")))).toBe(true);
+  }, 20_000);
 });

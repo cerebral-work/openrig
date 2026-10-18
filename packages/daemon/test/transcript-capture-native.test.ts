@@ -1,8 +1,8 @@
 import { expect, it } from "vitest";
-import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
+import { releaseTmuxTestSocket, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
@@ -44,7 +44,7 @@ it.skipIf(!nativeAvailable)("preserves the exact native trailing buffer and reco
   } finally {
     stopTranscriptRotation("seat");
     await releaseTmuxTestSocket(socket, { killServer: true });
-    rmSync(root, { recursive: true, force: true });
+    removeTmuxTestRoot(root);
   }
 }, 20_000);
 
@@ -74,7 +74,7 @@ it.skipIf(!nativeAvailable)("retains active native output before a normal stop d
   } finally {
     stopTranscriptRotation("seat");
     await releaseTmuxTestSocket(socket, { killServer: true });
-    rmSync(root, { recursive: true, force: true });
+    removeTmuxTestRoot(root);
   }
 }, 15_000);
 
@@ -128,6 +128,6 @@ it.skipIf(!nativeAvailable)("keeps real idle transcript health fresh across a va
   } finally {
     stopTranscriptRotation("seat");
     await releaseTmuxTestSocket(socket, { killServer: true });
-    rmSync(root, { recursive: true, force: true });
+    removeTmuxTestRoot(root);
   }
 }, 45_000);

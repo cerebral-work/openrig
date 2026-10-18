@@ -7,7 +7,7 @@
 import { afterEach, expect, it } from "vitest";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Hono } from "hono";
@@ -19,6 +19,7 @@ import { terminalRoutes } from "../../daemon/src/routes/terminal.js";
 import { TerminalService } from "../../daemon/src/domain/terminal/terminal-service.js";
 import { HERDR_PANES_PER_PAGE } from "../../daemon/src/domain/terminal/herdr-adapter.js";
 import type { TerminalProvider } from "../../daemon/src/domain/terminal/terminal-provider.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "../../daemon/test/helpers/tmux-test-socket.js";
 
 const env = { ...process.env }; delete env["TMUX"];
 const sockets: string[] = [];
@@ -30,14 +31,14 @@ function tmux(socket: string, args: string[]): string {
 afterEach(() => {
   for (const server of servers.splice(0)) server.close();
   for (const socket of sockets.splice(0)) { try { tmux(socket, ["kill-server"]); } catch { /* already gone */ } }
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeTmuxTestRoot(dir);
 });
 
 async function fixture(herdrAvailable: boolean) {
   const id = randomUUID().slice(0, 12);
   const source = `src-${id}`, viewer = `view-${id}`;
   sockets.push(source, viewer);
-  const dir = mkdtempSync(path.join(tmpdir(), "tui-window-"));
+  const dir = createTmuxTestRoot("tui-window-");
   dirs.push(dir);
   const wrapper = path.join(dir, "tmux");
   writeFileSync(wrapper, `#!/bin/sh\nexec tmux -L ${source} -f /dev/null "$@"\n`, { mode: 0o755 });

@@ -7,13 +7,14 @@ import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { SettingsStore } from "../src/domain/user-settings/settings-store.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 const run = promisify(exec);
 const runFile = promisify(execFile);
 const keys = ["OPENRIG_TRANSCRIPTS_LINES", "OPENRIG_TRANSCRIPTS_POLL_INTERVAL_SECONDS"];
 
 describe.skipIf(process.platform === "win32")("native transcript seat environment", () => {
   it.each([false, true])("does not pin daemon transcript defaults inside a seat (argv=%s)", async (argv) => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "transcript-env-"));
+    const temp = createTmuxTestRoot("transcript-env-");
     // Unix sockets have a much shorter path bound than filesystem paths.
     const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "socket-"));
     const socket = path.join(socketDir, "owned.sock");
@@ -53,8 +54,8 @@ describe.skipIf(process.platform === "win32")("native transcript seat environmen
         if (prior[index] === undefined) delete process.env[key]; else process.env[key] = prior[index];
       }
       await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
-      fs.rmSync(temp, { recursive: true, force: true });
-      fs.rmSync(socketDir, { recursive: true, force: true });
+      removeTmuxTestRoot(temp);
+      removeTmuxTestRoot(socketDir);
     }
   });
 });

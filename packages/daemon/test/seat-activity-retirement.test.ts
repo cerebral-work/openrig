@@ -2,13 +2,14 @@ import { afterEach, describe, expect, it } from "vitest";
 import Database from "better-sqlite3";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
 import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
 import { readWaitingView } from "../src/domain/queue-waiting.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const exec = promisify(execFile);
 const cleanups: Array<() => Promise<void>> = [];
@@ -32,7 +33,7 @@ async function fixture() {
     now: () => new Date(Date.now() + 10_000) });
   cleanups.push(async () => {
     await tmux("kill-server").catch(() => {});
-    db.close(); rmSync(scratch, { recursive: true, force: true });
+    db.close(); removeTmuxTestRoot(scratch);
   });
   async function add(id: number, node: string, session: string) {
     db.prepare("INSERT OR IGNORE INTO nodes VALUES (?, NULL)").run(node);

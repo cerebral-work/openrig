@@ -9,7 +9,7 @@ import { SessionTransport } from "../src/domain/session-transport.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { createFullTestDb } from "./helpers/test-app.js";
-import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
+import { NO_SHELL_HISTORY, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const exec = promisify(execCallback);
 const quote = (s: string) => "'" + s.replace(/'/g, "'\"'\"'") + "'";
@@ -27,7 +27,7 @@ describe.skipIf(!nativeAvailable)("terminal send verification through native Bas
     const socket = path.join(root, "tmux.sock");
     const sessionName = "infra-ui@term-rig";
     const rc = path.join(root, "bashrc");
-    fs.writeFileSync(rc, "PS1='❯ '; unset PROMPT_COMMAND; bind 'set enable-bracketed-paste on'\n");
+    fs.writeFileSync(rc, `${NO_SHELL_HISTORY}PS1='❯ '; unset PROMPT_COMMAND; bind 'set enable-bracketed-paste on'\n`);
     const run = async (command: string) => (await exec(command.replace(/^tmux /,
       `tmux -S ${quote(socket)} `))).stdout;
     const db = createFullTestDb();

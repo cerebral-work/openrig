@@ -1,5 +1,5 @@
 import { describe, it, expect, afterAll, afterEach } from "vitest";
-import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
+import { releaseTmuxTestSocket, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import fs from "node:fs";
@@ -52,7 +52,7 @@ afterAll(async () => {
   await releaseTmuxTestSocket(SOCK, { killServer: false });
 });
 afterEach(() => {
-  for (const d of tmpDirs.splice(0)) fs.rmSync(d, { recursive: true, force: true });
+  for (const d of tmpDirs.splice(0)) removeTmuxTestRoot(d);
 });
 
 /** A stand-in harness: its project() writes a marker into the cwd's runtime dir, and its launch types a command

@@ -9,7 +9,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_pro
 import { promisify } from "node:util";
 import { describe, it, expect } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
-import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -27,7 +27,7 @@ async function until(check: () => Promise<boolean>, what: string): Promise<void>
 
 describe.skipIf(!tools || process.platform !== "linux")("fresh-shell launch into a pane a failing hook left in view-mode", () => {
   it("leaves the mode and launches, with a read-only client attached", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "pane-mode-"));
+    const root = createTmuxTestRoot("pane-mode-");
     const socket = path.join(root, "s");
     const marker = path.join(root, "launched");
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", MOTD_SHOWN: "update-motd" };
@@ -42,7 +42,7 @@ describe.skipIf(!tools || process.platform !== "linux")("fresh-shell launch into
     let client: ChildProcess | null = null;
     try {
       await tm(["new-session", "-d", "-s", "anchor"]);
-      await tm(["set-option", "-g", "default-command", "bash --noprofile --norc"]);
+      await tm(["set-option", "-g", "default-command", "bash --noprofile --norc +o history"]);
       await tm(["set-hook", "-g", "session-created", `run-shell -b "sh -c 'echo already running >&2; exit 1'"`]);
 
       expect(await adapter.createSession("seat", root)).toEqual({ ok: true });

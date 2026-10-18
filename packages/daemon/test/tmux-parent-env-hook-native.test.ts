@@ -9,13 +9,14 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
 
 describe.skipIf(process.platform === "win32")("parent-session cleanup with an after-new-session hook (native tmux)", () => {
   it("restarts only the seat's own pane; the linked existing window keeps its process", async () => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "tmux-hook-"));
+    const temp = createTmuxTestRoot("tmux-hook-");
     const socket = path.join(temp, "owned.sock");
     const env = { ...process.env, HOME: temp };
     delete env.TMUX;
@@ -54,7 +55,7 @@ describe.skipIf(process.platform === "win32")("parent-session cleanup with an af
     } finally {
       // This socket belongs to this test, never the user's terminal server.
       await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
-      fs.rmSync(temp, { recursive: true, force: true });
+      removeTmuxTestRoot(temp);
     }
   });
 });

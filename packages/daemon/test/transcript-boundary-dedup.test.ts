@@ -7,13 +7,14 @@ import { promisify } from "node:util";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { startTranscriptRotation, stopTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
 
 describe.skipIf(process.platform === "win32")("native transcript boundary replay", () => {
   it("does not accumulate a boundary line echoed in unchanged pane scrollback", async () => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "boundary-replay-"));
+    const temp = createTmuxTestRoot("boundary-replay-");
     const socketDir = fs.mkdtempSync(path.join(os.tmpdir(), "socket-"));
     const socket = path.join(socketDir, "owned.sock");
     const outputPath = path.join(temp, "transcript.log");
@@ -53,8 +54,8 @@ describe.skipIf(process.platform === "win32")("native transcript boundary replay
     } finally {
       stopTranscriptRotation(sessionName);
       await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
-      fs.rmSync(temp, { recursive: true, force: true });
-      fs.rmSync(socketDir, { recursive: true, force: true });
+      removeTmuxTestRoot(temp);
+      removeTmuxTestRoot(socketDir);
     }
   });
 });

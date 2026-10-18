@@ -10,6 +10,7 @@ import path from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { TMUX_MAX_BUFFER } from "../src/adapters/tmux-exec.js";
 import { clearAllTranscriptRotationsForTest, startTranscriptRotation } from "../src/domain/transcript-rotation.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
@@ -19,7 +20,7 @@ const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 describe.skipIf(!nativeAvailable)("native batched transcript capture (#161)", () => {
   it("30 sessions: byte-identical transcripts, bounded calls per round, a killed session isolated", async () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), "batched-native-"));
+    const home = createTmuxTestRoot("batched-native-");
     const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, TMUX_TMPDIR: home };
     delete env.TMUX;
     const tmux = async (...args: string[]) => (await exec("tmux", ["-f", "/dev/null", ...args], { env, timeout: 10_000, maxBuffer: 64 * 1024 * 1024 })).stdout;
@@ -95,7 +96,7 @@ describe.skipIf(!nativeAvailable)("native batched transcript capture (#161)", ()
     } finally {
       clearAllTranscriptRotationsForTest();
       await tmux("kill-server").catch(() => {});
-      fs.rmSync(home, { recursive: true, force: true });
+      removeTmuxTestRoot(home);
     }
   }, 90_000);
 });
