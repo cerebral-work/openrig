@@ -19,9 +19,36 @@ concurrency:
 
 jobs:
   xwork:
-    runs-on: ubuntu-latest
+    # A push to cerebral runs on ci-parity (CER-2908): the runner group serves only this workflow at
+    # refs/heads/cerebral. Pull requests stay on ubuntu-latest: a PR run executes from its merge ref, which
+    # the group refuses, and fork-PR code must not reach the parity runner.
+    runs-on: ${{ github.event_name == 'push' && fromJSON('{"group":"ent-parity","labels":["ci-parity"]}') || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
+      - name: Egress policy probe (ci-parity CNP must deny these)
+        if: github.event_name == 'push'
+        shell: bash
+        run: |
+          set -u
+          # Positive control first: an allow-listed name must work, or a "deny" below proves nothing.
+          code=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' https://api.github.com/zen) || { echo "::error::control api.github.com failed"; exit 1; }
+          echo "control api.github.com -> HTTP $code"
+          fail=0
+          # -k: a TLS error must not pass for a block. A block is a drop (exit 28), a refusal (7) or a refused DNS name (6).
+          for t in https://10.0.0.13:6443/version \
+                   https://10.96.0.1:443/version \
+                   https://10.0.0.100:6443/version \
+                   http://169.254.169.254/v1.json \
+                   http://100.100.100.100/ \
+                   https://kubernetes.default.svc.cluster.local/version \
+                   https://example.com/; do
+            curl -ksS --max-time 8 -o /dev/null "$t" 2>/dev/null; rc=$?
+            case $rc in
+              6|7|28) echo "blocked ($rc): $t" ;;
+              *) echo "::error::NOT blocked (curl exit $rc): $t"; fail=1 ;;
+            esac
+          done
+          exit $fail
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
