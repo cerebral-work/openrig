@@ -254,7 +254,9 @@ relay is a reason to inspect the available routing, not to surrender judgment to
 - **`rig workflow validate`** — will this spec instantiate at all, before a run finds out for you. A
   step with no allowed exit that can finish it or route onward is reported as `step_cannot_finish`.
   An allowed mapped exit is valid; in a dependency graph, `handoff` can finish a sink without a next
-  step.
+  step. A step's `gate.target` is a human seat session (the `human` seat, or `human-<name>` for one
+  person) or a role declared in `workflow.roles`; a registered human's gateway address is not a gate
+  target, and the validator's error names the exact forms.
 - **`rig workflow compile <mission>`** / **`instantiate-lifecycle`** — derive one executable graph
   from `project.yaml` → `mission.yaml` → `slice.yaml`, inspect it without writing, then start an
   eligible graph with an opaque replay key. Typed acceptance candidate, verdict, and evidence

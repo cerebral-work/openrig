@@ -26,6 +26,21 @@
  */
 export const HUMAN_SEAT_SESSION_PATTERN = /^human(?:-[A-Za-z0-9._-]+)?@(kernel|host)$/;
 
+/** Spec 0010: every accepted workflow gate-target form, for the gate_target_unresolved messages. */
+export const GATE_TARGET_FORMS =
+  "a human seat session (human@kernel, or human-<name>@kernel or human-<name>@host for one person) or a role declared in workflow.roles";
+
+/** Spec 0010: a hint for a gate target that is neither form. A <name>@external address is a gateway
+ *  (Slack) address of a registered human, not a gate target; <name>@anything suggests the per-person seat. */
+export function gateTargetHint(target: string): string {
+  const at = target.lastIndexOf("@");
+  if (at <= 0) return "";
+  const local = target.slice(0, at);
+  const external = target.slice(at + 1) === "external" ? ` "${target}" is a gateway (Slack) address, not a gate target.` : "";
+  const seat = /^[A-Za-z0-9._-]+$/.test(local) && !local.startsWith("human") ? ` For one person, use "human-${local}@kernel".` : "";
+  return external + seat;
+}
+
 export function isHumanSeatSession(value: unknown): boolean {
   return typeof value === "string" && HUMAN_SEAT_SESSION_PATTERN.test(value);
 }

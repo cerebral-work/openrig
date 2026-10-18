@@ -36,7 +36,7 @@ import type {
   WorkflowStepSpec,
 } from "./workflow-types.js";
 import { exceedsMaxHops, MAX_HOPS_BASELINE_V1 } from "./workflow-deadline.js";
-import { isHumanSeatSession } from "./human-route-enforcer.js";
+import { GATE_TARGET_FORMS, gateTargetHint, isHumanSeatSession } from "./human-route-enforcer.js";
 import { selectRoleSeat } from "./workflow-role-resolver.js";
 import {
   RigNameAmbiguousError,
@@ -1728,7 +1728,7 @@ export function compileGate(
   if (!role) {
     throw new WorkflowProjectorError(
       "gate_target_unresolved",
-      `step "${gatedStep.id}" gates on "${gate.target}" which is neither a human seat session nor a role declared in workflow.roles. Declare the role or use a human seat session (human@kernel form).`,
+      `step "${gatedStep.id}" gates on "${gate.target}", which is not a gate target. A gate target is ${GATE_TARGET_FORMS}.${gateTargetHint(gate.target)}`,
       { stepId: gatedStep.id, target: gate.target },
     );
   }
