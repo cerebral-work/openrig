@@ -4,6 +4,8 @@ import { getDaemonStatus, getDaemonUrl , daemonStatusGuard} from "../daemon-life
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { shellQuote } from "../cross-host-executor.js";
+import { readFileSync } from "node:fs";
+import nodePath from "node:path";
 
 export type SeatDeps = StatusDeps;
 
@@ -58,10 +60,26 @@ interface SeatStatusError {
   clients?: Array<{ name: string; session: string }>;
 }
 
+/** Spec 0005 — wire mirror of the daemon's runtime-change summary. Env is names with value hashes. */
+interface RuntimeChangeSummary {
+  kind: "change" | "revert";
+  from: { runtime: string | null; model: string | null; cwd: string | null; effort: string | null; permission: string | null; env: Array<{ name: string; sha256: string }> | null };
+  to: { runtime: string | null; model: string | null; cwd: string | null; effort: string | null; permission: string | null; env: Array<{ name: string; sha256: string }> | null };
+  inheritResolvesTo?: Record<string, unknown>;
+  specPath: string | null;
+  approval: string;
+  operator: string;
+  leftovers: string[];
+  resumesPredecessor: boolean;
+  changeId?: string;
+  acceptance?: "pending";
+}
+
 interface SeatHandoverPlan {
   ok: true;
   dryRun: true;
   willMutate: false;
+  runtimeChange?: RuntimeChangeSummary;
   seat: {
     ref: string;
     rigId: string;
@@ -129,6 +147,7 @@ interface SeatHandoverMutationResult {
   sourceOutcome?:
     | { mode: "fork"; forkedFrom: string; forkId?: "captured" | "pending"; limit?: string }
     | { mode: "rebuild"; primedArtifacts: Array<{ address: string; label: string }>; gaps: string[]; emptyChainReason?: string };
+  runtimeChange?: RuntimeChangeSummary;
   sideEffects: {
     departingSessionKilled: false;
     startupContextDelivered: boolean;
@@ -209,7 +228,21 @@ function printHumanHandoverPlan(plan: SeatHandoverPlan): void {
       console.log(`  - ${step.title}`);
     }
   }
+  if (plan.runtimeChange) printRuntimeChange(plan.runtimeChange);
   console.log("No changes were made.");
+}
+
+function printRuntimeChange(change: RuntimeChangeSummary): void {
+  const side = (value: RuntimeChangeSummary["from"]) =>
+    `${display(value.runtime)} model=${display(value.model)} cwd=${display(value.cwd)} permission=${display(value.permission, "inherit")}`
+    + ` env=${value.env ? value.env.map((entry) => entry.name).join(",") : "(none)"}`;
+  console.log(`Runtime ${change.kind === "revert" ? "revert" : "change"}: ${side(change.from)}`);
+  console.log(`                 -> ${side(change.to)}`);
+  if (change.inheritResolvesTo) console.log(`Inherited permission resolves to: ${JSON.stringify(change.inheritResolvesTo)}`);
+  console.log(`Approval: ${change.approval}   Issued by: ${change.operator}${change.specPath ? `   Spec: ${change.specPath}` : ""}`);
+  if (change.resumesPredecessor) console.log("The successor resumes the predecessor's recorded conversation.");
+  for (const leftover of change.leftovers) console.log(`  left in place: ${leftover}`);
+  if (change.acceptance === "pending") console.log(`Change ${change.changeId}: committed; the successor's acceptance is observed after commit.`);
 }
 
 function printHumanHandoverResult(result: SeatHandoverMutationResult): void {
@@ -223,6 +256,7 @@ function printHumanHandoverResult(result: SeatHandoverMutationResult): void {
   console.log(`Current occupant: ${result.currentOccupant}`);
   console.log(`Handover result: ${display(result.currentStatus.handoverResult)}`);
   console.log("Seat binding and inventory provenance were updated.");
+  if (result.runtimeChange) printRuntimeChange(result.runtimeChange);
   // OPR.0.5.5.5 — the per-source execution record: what actually carried context.
   if (result.sourceOutcome?.mode === "fork") {
     console.log(`Native fork of ${result.sourceOutcome.forkedFrom}: the successor carries the incumbent conversation from its first byte.`);
@@ -376,14 +410,68 @@ Examples:
     .option("--operator <address>", "Operator initiating the handover")
     .option("--dry-run", "Plan the handover without changing topology")
     .option("--json", "JSON output for agents")
+    .option("--to-runtime <runtime>", "Change the seat's runtime (codex or claude-code) with this handover; kernel operator only")
+    .option("--to-model <model>", "With --to-runtime: the successor's model (required)")
+    .option("--to-permissions <mode>", "With --to-runtime: floor, full_bypass or inherit (required; the dry run shows what inherit resolves to)")
+    .option("--to-effort <level>", "With --to-runtime: the successor's reasoning effort")
+    .option("--to-cwd <path>", "With --to-runtime: the successor's working directory")
+    .option("--to-env <NAME=VALUE>", "With --to-runtime: member env for the successor (repeatable; replaces the member env; secret-named names are refused)",
+      (value: string, previous: string[] = []) => [...previous, value])
+    .option("--spec <rig.yaml>", "With --to-runtime: the rig spec that declares the target member (on the kernel rig, the packaged variant)")
+    .option("--approval <ref>", "With --to-runtime: the go for this change, recorded as attribution")
     .description("Hand a seat to a successor (two-phase). Pass --dry-run to plan without changing topology.")
     .addHelpText("after", `
 Examples:
   rig seat handover spec-writer@openrig-pm --reason context-wall --dry-run
   rig seat handover spec-writer@openrig-pm --source rebuild --reason context-wall --dry-run --json
   rig seat handover spec-writer@openrig-pm --source fork:0b0165d7 --reason successor-test --operator orch-lead@openrig-pm --dry-run
-  rig seat handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json`)
+  rig seat handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json
+  rig seat handover operator-agent@kernel --to-runtime claude-code --to-model claude-opus-5-5 --to-permissions full_bypass \\
+    --to-cwd ~/kernel/operator --to-env CLAUDE_CONFIG_DIR=$HOME/.claude-operator \\
+    --spec <kernel package>/specs/rigs/launch/kernel/rig-claude-only.yaml --approval <go ref> --reason opus-swap --dry-run`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
+
+  // Spec 0005 — undo the seat's most recent committed runtime change. The kernel's operator or advisor may run it,
+  // so a failed post-commit cutover can be recovered when the changed operator is the broken seat.
+  cmd
+    .command("runtime-revert")
+    .argument("<seat>", "Canonical session name or logical seat ref")
+    .option("--approval <ref>", "The go for this revert, recorded as attribution (required)")
+    .option("--reason <reason>", "Why the change is reverted (required)")
+    .option("--resume-predecessor", "Resume the predecessor's recorded conversation instead of a fresh successor")
+    .option("--dry-run", "Show the revert without changing anything")
+    .option("--json", "JSON output for agents")
+    .description("Revert a seat's most recent runtime change: runtime, model, cwd, member env, permissions and startup context")
+    .action(async (seat: string, opts: { approval?: string; reason?: string; resumePredecessor?: boolean; dryRun?: boolean; json?: boolean }) => {
+      if (!opts.approval?.trim() || !opts.reason?.trim()) {
+        const error: SeatStatusError = { ok: false, code: "runtime_change_invalid", message: "rig seat runtime-revert needs --approval <ref> and --reason <text>." };
+        if (opts.json) console.log(JSON.stringify(error, null, 2));
+        else printSeatError(error, "rig seat runtime-revert needs --approval and --reason");
+        process.exitCode = 2;
+        return;
+      }
+      const deps = getDeps();
+      const daemon = await getDaemonStatus(deps.lifecycleDeps);
+      if (!daemonStatusGuard(daemon)) return;
+      const client = deps.clientFactory(getDaemonUrl(daemon));
+      const body = { approval: opts.approval, reason: opts.reason, resumePredecessor: opts.resumePredecessor === true, dryRun: opts.dryRun === true };
+      const route = `/api/seat/runtime-revert/${encodeURIComponent(seat)}`;
+      const res = opts.dryRun === true
+        ? await client.post<SeatHandoverPlan | SeatHandoverMutationResult | SeatStatusError>(route, body)
+        : await client.post<SeatHandoverPlan | SeatHandoverMutationResult | SeatStatusError>(route, body, { timeoutMs: 120_000 });
+      if (opts.json) {
+        console.log(JSON.stringify(res.data, null, 2));
+        if (res.status >= 400) process.exitCode = res.status >= 500 ? 2 : 1;
+        return;
+      }
+      if (res.status >= 400) {
+        printSeatError(res.data as SeatStatusError, `Runtime revert failed (HTTP ${res.status})`);
+        process.exitCode = res.status >= 500 ? 2 : 1;
+        return;
+      }
+      if ((res.data as { dryRun?: boolean }).dryRun) printHumanHandoverPlan(res.data as SeatHandoverPlan);
+      else printHumanHandoverResult(res.data as SeatHandoverMutationResult);
+    });
 
   // OPR.0.4.3.26 — seat-recovery VIEW retarget. Points an already-attached tmux
   // client at the seat's canonical session/window. VIEW-ONLY: never mutates
@@ -933,6 +1021,15 @@ interface HandoverActionOpts {
   operator?: string;
   dryRun?: boolean;
   json?: boolean;
+  /** Spec 0005 — a runtime change. */
+  toRuntime?: string;
+  toModel?: string;
+  toPermissions?: string;
+  toEffort?: string;
+  toCwd?: string;
+  toEnv?: string[];
+  spec?: string;
+  approval?: string;
 }
 
 /** Shared handover action for both `rig seat handover` and the top-level
@@ -954,6 +1051,47 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
     return;
   }
 
+  // Spec 0005: the runtime-change options travel together, and only with --to-runtime.
+  const changeOptions = [opts.toModel, opts.toPermissions, opts.toEffort, opts.toCwd, opts.toEnv?.length ? "env" : undefined, opts.spec, opts.approval];
+  if (!opts.toRuntime && changeOptions.some((value) => value !== undefined)) {
+    const error: SeatStatusError = {
+      ok: false,
+      code: "runtime_change_invalid",
+      message: "--to-model, --to-permissions, --to-effort, --to-cwd, --to-env, --spec and --approval belong to a runtime change.",
+      guidance: "Add --to-runtime, or use rig seat set-model for a same-runtime model change.",
+    };
+    if (opts.json) console.log(JSON.stringify(error, null, 2));
+    else printSeatError(error, "Runtime-change options need --to-runtime");
+    process.exitCode = 2;
+    return;
+  }
+  let runtimeChange: Record<string, unknown> | undefined;
+  if (opts.toRuntime) {
+    let spec: { path: string; yaml: string } | undefined;
+    if (opts.spec) {
+      const specPath = nodePath.resolve(opts.spec);
+      try {
+        spec = { path: specPath, yaml: readFileSync(specPath, "utf-8") };
+      } catch (err) {
+        const error: SeatStatusError = { ok: false, code: "runtime_change_invalid", message: `Cannot read --spec ${specPath}: ${(err as Error).message}` };
+        if (opts.json) console.log(JSON.stringify(error, null, 2));
+        else printSeatError(error, "Cannot read --spec");
+        process.exitCode = 2;
+        return;
+      }
+    }
+    runtimeChange = {
+      toRuntime: opts.toRuntime,
+      toModel: opts.toModel,
+      toPermissions: opts.toPermissions,
+      toEffort: opts.toEffort,
+      toCwd: opts.toCwd ? nodePath.resolve(opts.toCwd) : undefined,
+      toEnv: opts.toEnv,
+      spec,
+      approval: opts.approval,
+    };
+  }
+
   const daemon = await getDaemonStatus(deps.lifecycleDeps);
   if (!daemonStatusGuard(daemon)) return; // B8-1b: epistemic-matched
 
@@ -964,6 +1102,7 @@ export async function runSeatHandover(seat: string, opts: HandoverActionOpts, de
     reason: opts.reason,
     operator: opts.operator,
     dryRun: opts.dryRun === true,
+    ...(runtimeChange ? { runtimeChange } : {}),
   };
   let res;
   try {
