@@ -3,6 +3,8 @@ name: Estate xwork
 # Estate verification (cargo xwork): governance gates, the xtask crate's own
 # fmt/clippy/test, and the repo's npm gates (lint, test:repo, build:package). Fork-only; upstream workflows are untouched.
 
+# Never add pull_request_target or workflow_run triggers: they run as refs/heads/cerebral, would match the
+# ent-parity workflow restriction, and could put fork-influenced code on the self-hosted pool (CER-2908).
 on:
   pull_request:
     branches: [cerebral]
@@ -21,7 +23,8 @@ jobs:
   xwork:
     # A push to cerebral runs on ci-parity (CER-2908): the runner group serves only this workflow at
     # refs/heads/cerebral. Pull requests stay on ubuntu-latest: a PR run executes from its merge ref, which
-    # the group refuses, and fork-PR code must not reach the parity runner.
+    # the group never serves (it would wait for a runner indefinitely), and fork-PR code must not reach the
+    # parity runner.
     runs-on: ${{ github.event_name == 'push' && fromJSON('{"group":"ent-parity","labels":["ci-parity"]}') || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
