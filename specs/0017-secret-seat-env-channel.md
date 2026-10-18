@@ -79,6 +79,8 @@ Line numbers below are at cerebral `583fa40e`.
   - Otherwise it refuses the launch, naming the directory and what failed, and writes nothing.
 - **Which values are secrets** (the lead's ruling, 2026-10-18).
   - The secret set comes only from the daemon's own environment: `providerAuthEnv` and `runtimeSessionEnv[runtime]` (item 4). One resolver, built at startup, gives a runtime's secret values.
+  - **It holds every name those sources carry, not only secret-named ones** (review r2's D1). The known provider set includes routing names: `ANTHROPIC_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_ORG_ID`, `OPENAI_PROJECT_ID` and OMP's base URLs. A key and its endpoint therefore travel together, through the script, and never through tmux.
+  - **On a name collision the daemon's value now wins.** Today seat env merges last and wins (`node-launcher.ts:168-176`). After the strip, the script's export comes last. With item 4's provider-name refusal, a validated seat env can't name one of these anyway.
   - The launch env is one merged map: the daemon's session env, the runtime's env and the seat env. Exactly the resolver's names are stripped from it before tmux. Nothing is moved into the script because of its name.
   - 0013 item 9's guard keeps refusing every other secret-named variable. So a secret-named seat-env name still refuses everywhere, including a handover successor, which builds its env from stored seat env.
 - **tmux never carries the value.** `createSession` and `respawnPane` get only the launch variables left after that strip. The guard stays, as a backstop that refuses a secret-named variable reaching `-e`.
@@ -92,7 +94,9 @@ Line numbers below are at cerebral `583fa40e`.
 - **Restart-in-place, `direct_native` (Codex):** the relaunch is the `respawn-pane` command itself (`seat-restart-in-place.ts:311`).
   - When the seat has daemon secrets, that command becomes `/bin/sh <staged script>`. The script exports, then `exec`s the relaunch command, so only the path is on argv.
   - It is the same hardened script: the tracing guard first, the self-delete before any export line, and the `lstat`-checked 0700 directory. `sh` reads the rest through the descriptor it opened, so the file is gone before any value is read.
-- **Terminal seats** have no launch command, so they get no daemon secrets. Since 0013 item 9, a configured provider-auth key refuses every launch anyway, so no working seat loses a value it has today.
+- **Terminal seats** have no launch command, so they get no daemon secrets.
+  - **For keys,** no working seat loses a value it has today: since 0013 item 9, a configured provider-auth key refuses every launch anyway.
+  - **Not for routing names.** A non-secret provider name allow-listed on its own (a base URL, an org or project ID) passes the guard and reaches every seat on `-e` today, terminal seats included. After this change a terminal seat no longer gets it. The live allow-list is empty, so no seat in use loses one.
 
 ### 2. The managed Claude launch reads the value from a file, not argv
 
@@ -136,6 +140,14 @@ Line numbers below are at cerebral `583fa40e`.
 - Same style as `runtime_change_secret_env`. It names the variable and the source, never the value, and gives a remedy: provide credentials through the provider-auth allow-list, not seat env.
 - **`rig up --env` can't undo the exposure.** By the time the CLI refuses, the value is on its argv and in the shell's history. Its refusal says so: the value was already exposed on the command line and in the shell history, so rotate it if it was a real credential (review r2's L3).
 - The validation error's code is `seat_env_secret_name`.
+
+**Provider routing comes only from the daemon too** (the lead's ruling, 2026-10-18, on review r2's D2).
+- **The problem:** seat env reserved only `OPENRIG_*` and secret-named names, so `ANTHROPIC_BASE_URL` or `OPENAI_BASE_URL` passed. A rig spec, `rig up --env` or a bundle could then point a daemon-delivered key at an endpoint the seat chose.
+- **The rule:** every seat-env source refuses the whole known provider-auth set: a spec's `env:` (rig and member level, which covers a bundle's spec), `rig up --env` and an `envOverride`. That set is the daemon's `KNOWN_PROVIDER_AUTH_ENV` plus OMP's provider names, keys and routing names alike.
+- **The source:** the set moves out of `startup.ts` into one daemon module, and the CLI reads it through the same subpath as the secret-name rule.
+- **The refusal:** a provider name that is secret-named (a key) keeps REQ-0017-13's code, `seat_env_secret_name`. Every other provider name (a routing name) is refused with `seat_env_provider_auth_name`. Both name the variable and the rule ("provider routing and credentials come only from the daemon's provider-auth allow-list"), never the value. Together they refuse the whole set.
+- **Stored env:** a stored provider name is refused at the next launch, as a secret-named one is (REQ-0017-15).
+- It matters once this channel delivers keys, and it lands before any daemon source is switched on.
 
 **One exemption list, exact names.**
 - **The problem:** the name rule matches substrings, so some harmless settings match it (`TOKENIZERS_PARALLELISM` contains `TOKEN`).
@@ -190,6 +202,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-17: Where a command is not marked as a runtime launch, the tmux adapter shall write no secret value into it.
 - REQ-0017-18: When a secret-bearing script targets a fish pane, the tmux adapter shall run it with `/bin/sh`.
 - REQ-0017-19: When a `direct_native` restart-in-place seat has daemon secrets, the respawn command shall be `/bin/sh` with the staged script's absolute path as its only argument.
+- REQ-0017-20: If a rig spec's seat env, a `rig up --env`, an `envOverride` or a stored seat env names a known provider-auth variable that is not secret-named, then the daemon shall refuse it with `seat_env_provider_auth_name`, naming the variable and the rule.
 
 ## Plan
 
@@ -234,6 +247,11 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - **The secret set (the lead's ruling):**
   - **Positive:** a `runtimeSessionEnv` secret reaches the runtime through the staged script, and the deterministic argv record holds only paths.
   - **Refusal:** a handover of a seat whose stored env names a secret-named variable is refused, not delivered.
+  - **Routing names travel with the key:** a daemon `OPENAI_BASE_URL` reaches the runtime through the script and is absent from the tmux env.
+- **Provider names (D2):**
+  - a spec's `env:` naming `ANTHROPIC_BASE_URL` is refused with `seat_env_provider_auth_name`, naming the variable and the rule;
+  - so are `rig up --env` and `envOverride`, and a stored provider name at the next launch;
+  - **red first** before the change; break-once.
 - **Marking:**
   - each launch path (fresh launch, resume, the restore resume adapters, the handover successor, restart-in-place) carries the runtime's secrets;
   - a probe, a resume-metadata command and a context delivery carry none.
