@@ -564,7 +564,10 @@ export class TmuxAdapter {
 
   /** Spec 0013: type a command that starts a process into a seat pane. In allow-list mode it is staged
    *  behind the scrub prologue, as every launch is (sendShellCommand); otherwise it is typed and submitted
-   *  as before. For a launch that goes through no runtime adapter, such as the resume-metadata probe. */
+   *  as before. For a launch that goes through no runtime adapter, such as the resume-metadata probe.
+   *  `command` is a single executable: in allow-list mode it replaces the staging shell (exec) once the scrub
+   *  has run, so it is the pane's foreground process, as when typed. The stub runtime's readiness check and the
+   *  resume probe read pane_current_command, and a child of the staging subshell reads as a shell. */
   async sendLaunchCommand(target: string, command: string): Promise<TmuxResult> {
     let allowlist: SeatEnvPolicy | undefined;
     try {
@@ -572,7 +575,7 @@ export class TmuxAdapter {
     } catch {
       return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied (step: resolve the seat env policy), so nothing was sent.` };
     }
-    if (allowlist) return this.sendShellCommand(target, command, undefined, { sourceInPane: true });
+    if (allowlist) return this.sendShellCommand(target, command, undefined, { sourceInPane: true, execInScript: true });
     const sent = await this.sendText(target, command);
     if (!sent.ok) return sent;
     return this.sendKeys(target, ["Enter"]);

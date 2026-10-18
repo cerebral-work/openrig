@@ -61,7 +61,9 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
      - the loops run with noglob (`set -f`), so a listed name such as `PAT*` can't match a file in the working directory. The shell's own setting is restored before the command;
      - the shell's own names are kept: `_`, `OLDPWD`, gawk's `AWKPATH` and `AWKLIBPATH`, and bash's readonly option flags `SHELLOPTS` and `BASHOPTS` (an rc that exports them would otherwise make every bash launch refuse). None is secret-named. The launch's own names are the session's names except those `update-environment` copied;
      - they export `KUBECONFIG`. Then the command runs.
-   - The script runs in the launch's own subshell after the pane shell's startup files, so names those files exported are dropped too, and shell functions such as an rc `claude` still work.
+   - The script runs in the launch's own subshell after the pane shell's startup files, so names those files exported are dropped too, and shell functions such as an rc `claude` still work for adapter launches.
+   - A launch through `sendLaunchCommand` (the stub runner and the resume-metadata probe) is one executable, and it replaces the staging shell (`exec`) once the scrub has run. So it is the pane's foreground process, as when typed in filter mode: the stub runtime's readiness check and the resume probe read `pane_current_command`, and a child of the staging subshell reads as a shell (cw.4.3, found in QA). On this path, an rc function or alias with the runtime's name is not used; the executable on `PATH` is.
+   - The resume probe judges its pane only after its launch has started. A shell in the foreground before anything else was seen there is a launch still starting (the scrub runs first), not a return to the shell. A probe whose launch never starts is inconclusive, not a verdict on the token.
    - Only names and the `KUBECONFIG` path appear in the script; no value is read into it.
    - **Covered:** every runtime adapter's launch and resume (Claude, Codex, Pi, agy, the managed Claude launch), the resume-metadata probe and the stub runtime.
    - **Not covered:**
@@ -106,6 +108,8 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 - REQ-0013-10: If a tmux command fails, then the daemon shall report it without the command line or its output, so no launch value reaches a result, the database, an event or a log.
 - REQ-0013-11: When the scrub refuses a launch, it shall name the step and the surviving names, never a value.
 - REQ-0013-12: While `seat_env.mode` is `allowlist`, the daemon shall apply the allow-list to the names tmux's `update-environment` copies into a seat session.
+- REQ-0013-13: While `seat_env.mode` is `allowlist`, a launch through `sendLaunchCommand` shall replace the staging shell once the scrub has run.
+- REQ-0013-14: When the resume probe sees a shell in its pane's foreground before anything else was seen there, the probe shall keep waiting rather than report the token not resumable.
 
 ## Plan
 
@@ -131,6 +135,16 @@ cd packages/cli && npx vitest run test/config-store-extended.test.ts
 - it reads the pane shell's real environment and the names a launched command sees, in allow-list mode and in filter mode (the control, where those names still arrive).
 
 With the prologue disabled on purpose, the allow-list case fails on the rc-exported name. It also covers the probe path (`sendLaunchCommand`) and a readonly export in the pane rc, which must stop the command.
+
+It also checks, in allow-list mode with filter mode as the control:
+- a `sendLaunchCommand` launch is the pane's foreground command (`pane_current_command`);
+- the stub runtime's readiness check then reads ready, and the launched process keeps the guarantee (names only);
+- the resume probe, with a stand-in `claude` on the pane's `PATH`, records the token resumable.
+
+`resume-probe-launch-start.test.ts` scripts the probe's pane:
+- a shell, then Claude, is resumable;
+- a shell after the runtime was seen is not resumable;
+- a shell that never leaves the foreground is inconclusive.
 
 `seat-env-allowlist.test.ts` runs the generated prologue in a real `/bin/sh`, and in bash, zsh and dash:
 - a readonly secret export stops the command with `seat_env_refused`, naming the step and the name;

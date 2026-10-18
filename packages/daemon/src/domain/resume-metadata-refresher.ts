@@ -403,6 +403,9 @@ export class ResumeMetadataRefresher {
       }
 
       const attempts = 24;
+      // A shell in the foreground before anything else was seen there means the launch has not started yet (in
+      // allow-list mode the scrub runs first), not that it returned to the shell (cw.4.3, F-4b).
+      let started = false;
       for (let attempt = 0; attempt < attempts; attempt++) {
         const paneCommand = await this.tmuxAdapter.getPaneCommand(probeSession);
         const paneContent = (await this.tmuxAdapter.capturePaneContent(probeSession, 80)) ?? "";
@@ -415,9 +418,11 @@ export class ResumeMetadataRefresher {
         if (result.status === "resumed") {
           return "resumable";
         }
-        if (result.status === "failed") {
+        const notStartedYet = result.status === "failed" && result.code === "returned_to_shell" && !started;
+        if (result.status === "failed" && !notStartedYet) {
           return "not_resumable";
         }
+        if (!notStartedYet) started = true;
 
         if (attempt < attempts - 1) {
           await this.sleep(250);
