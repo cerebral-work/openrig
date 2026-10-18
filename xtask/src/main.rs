@@ -21,11 +21,13 @@
 //!   - `xwork --skip <gate>`   Exclude a gate (repeatable); excluded gates are never recorded as passed
 //!   - `xwork --pre-push`      Hygiene plus cargo gates if Rust inputs changed vs the `origin/cerebral` merge-base
 //!   - `stack [status]`        Read-only stacked-branch / GitButler status
+//!   - `suite-baseline`        The full-suite job's known-failure baseline (`workspaces`, `check --reports <dir>`)
 //!   - any `--break-check`     Falsification self-test: feed each gate a broken input, require red
 
 mod checks;
 mod stack;
 mod stages;
+mod suite_baseline;
 
 use std::collections::BTreeMap;
 use std::env;
@@ -356,6 +358,7 @@ fn main() -> Result<()> {
 
     match subcmd {
         "stack" => stack::run(&root, &args[1..]),
+        "suite-baseline" => suite_baseline::run(&root, &args[1..]),
         "hygiene" => run_hygiene(&root, break_check),
         "check" | "xwork" => run_xwork(&root, &args[1..]),
         other if other.starts_with("--") => run_xwork(&root, &args),

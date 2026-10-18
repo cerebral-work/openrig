@@ -1,0 +1,67 @@
+name: Full suite
+
+# cerebral-work fork (spec 0001 item 8, CER-2937): runs every workspace suite that `npm run test:workspaces`
+# names on each pull request to cerebral, then compares the failures with the reviewed Linux baseline
+# (.github/full-suite-baseline.json) through `cargo xtask suite-baseline check`. Once this job is green on a
+# pull request's head, its author doesn't run the full suite locally (AGENTS.md).
+
+# GitHub-hosted runners only: never add pull_request_target, workflow_run or push triggers, or a self-hosted
+# runner (CER-2908). This is its own file because the ent-parity runner group's workflow restriction names
+# estate-xwork.yml, whose push runs go to that group; a pull-request-only file here never reaches it.
+on:
+  pull_request:
+    branches: [cerebral]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: full-suite-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: dtolnay/rust-toolchain@stable
+      - run: |
+          command -v tmux >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y tmux; }
+          tmux -V
+      - run: npm ci
+      - name: Build the packages the suites import
+        run: npm run build
+      - name: Run each workspace suite
+        run: |
+          reports="$RUNNER_TEMP/full-suite"
+          mkdir -p "$reports" "$RUNNER_TEMP/suite-home"
+          workspaces=$(cargo xtask suite-baseline workspaces)
+          for ws in $workspaces; do
+            name="${ws##*/}"
+            echo "::group::$ws"
+            rc=0
+            # A clean environment: test code sees no runner variables. A failing workspace doesn't stop the next.
+            env -i HOME="$RUNNER_TEMP/suite-home" PATH="$PATH" TERM=xterm-256color CI=true TMPDIR="$RUNNER_TEMP" \
+              FULL_SUITE_UNHANDLED_OUT="$reports/$name.unhandled.json" \
+              npm run test -w "$ws" -- --reporter=default --reporter=json --outputFile="$reports/$name.json" \
+              --reporter="$GITHUB_WORKSPACE/.github/full-suite/unhandled-reporter.mjs" || rc=$?
+            echo "$rc" > "$reports/$name.exit"
+            echo "::endgroup::"
+            echo "$ws exited $rc"
+          done
+      - name: Compare with the Linux baseline
+        run: cargo xtask suite-baseline check --reports "$RUNNER_TEMP/full-suite"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-suite-reports
+          path: ${{ runner.temp }}/full-suite/
+          if-no-files-found: error
