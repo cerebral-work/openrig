@@ -1,7 +1,7 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
+import { releaseTmuxTestSocket, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -39,7 +39,7 @@ const scratch = mkdtempSync(path.join(tmpdir(), "seatenv-"));
 afterAll(async () => {
   await tmux(`kill-session -t ${q(SEAT)}`).catch(() => {});
   await releaseTmuxTestSocket(SOCK, { killServer: false });
-  rmSync(scratch, { recursive: true, force: true });
+  removeTmuxTestRoot(scratch);
 });
 
 /** What the pane's shell has exported right now: the shell writes it out, so no /proc is needed. */

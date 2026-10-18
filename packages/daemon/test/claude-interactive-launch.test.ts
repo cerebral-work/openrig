@@ -8,6 +8,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { ClaudeCodeAdapter } from "../src/adapters/claude-code-adapter.js";
 import { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
+import { NO_SHELL_HISTORY, createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const quote = (s: string) => "'" + s.replaceAll("'", "'\"'\"'") + "'";
@@ -26,7 +27,7 @@ async function until(predicate: () => boolean) {
 // controls prove command resolution/arguments, not native readiness or history.
 describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude interactive launch", () => {
   it("checks assignment, subshell/export and sourced-file alias/function effects", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-shell-forms-"));
+    const root = createTmuxTestRoot("claude-shell-forms-");
     const rc = path.join(root, "bashrc"), script = path.join(root, "launch");
     const effects: Record<string, string> = {};
     try {
@@ -46,11 +47,11 @@ describe.skipIf(!hasTmux || process.platform === "win32")("classic Claude intera
       }
       console.log("CLAUDE_SHELL_FORMS", JSON.stringify(effects));
       expect(Object.values(effects)).toEqual(Array(6).fill("from launch"));
-    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+    } finally { removeTmuxTestRoot(root); }
   });
 
   it("starts all 36 executable/alias/function, corrected/fallback/legacy, fresh/fork/resume/restore cells", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "claude-interactive-"));
+    const root = createTmuxTestRoot("claude-interactive-");
     const socket = path.join(root, "tmux");
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color" };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 5000 })).stdout;
@@ -70,7 +71,7 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
           fs.mkdirSync(bin, { recursive: true });
           if (shape === "executable") fs.symlinkSync(fake, path.join(bin, "claude"));
           const marker = path.join(dir, "started.json"), status = path.join(dir, "status"), rc = path.join(dir, "bashrc");
-          fs.writeFileSync(rc, `export PATH=${quote(bin + ":/usr/bin:/bin")} MARKER=${quote(marker)} HOME=${quote(dir)}\n`
+          fs.writeFileSync(rc, `${NO_SHELL_HISTORY}export PATH=${quote(bin + ":/usr/bin:/bin")} MARKER=${quote(marker)} HOME=${quote(dir)}\n`
             + `export OPENRIG_NODE_ID='rc-node' OPENRIG_HOME='rc-home' CLAUDE_CONFIG_DIR='rc-config' OPENRIG_ACTIVITY_HOOK_TOKEN='fixture-token'\nPS1='FIXTURE> '\n`
             + (shape === "alias" ? `alias claude=${quote(fake)}\n` : shape === "function" ? `claude() { ${quote(fake)} "$@"; }\n` : "")
             + `PROMPT_COMMAND='printf "%s\\n" "$?" > ${status}'\n`);
@@ -126,7 +127,7 @@ fs.writeFileSync(process.env.MARKER, JSON.stringify({argv:process.argv.slice(2),
       expect(cells.filter(cell => !cell.started || cell.exit !== 0 || cell.issues.length)).toEqual([]);
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 90_000);
 });

@@ -6,13 +6,14 @@ import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
 
 describe.skipIf(process.platform === "win32")("native tmux pane paths", () => {
   it("preserves pipe characters in pane cwd and still parses geometry", async () => {
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "tmux-cwd-"));
+    const temp = createTmuxTestRoot("tmux-cwd-");
     const socket = path.join(temp, "owned.sock");
     const cwd = path.join(temp, "work|assets|120");
     fs.mkdirSync(cwd);
@@ -32,7 +33,7 @@ describe.skipIf(process.platform === "win32")("native tmux pane paths", () => {
     } finally {
       // This socket belongs to this test, never the user's terminal server.
       await runFile("tmux", ["-S", socket, "kill-server"], { env }).catch(() => {});
-      fs.rmSync(temp, { recursive: true, force: true });
+      removeTmuxTestRoot(temp);
     }
   });
 });

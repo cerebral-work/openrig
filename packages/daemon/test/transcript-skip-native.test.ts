@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { startTranscriptRotation, stopTranscriptRotation, getTranscriptCaptureStats } from "../src/domain/transcript-rotation.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
@@ -70,7 +71,7 @@ it.skipIf(!nativeAvailable)("never loses output: random prints, idle gaps, burst
   } finally {
     stopTranscriptRotation("seat");
     await run("kill-server").catch(() => {});
-    rmSync(root, { recursive: true, force: true });
+    removeTmuxTestRoot(root);
   }
 }, 40_000);
 
@@ -96,7 +97,7 @@ it.skipIf(!nativeAvailable)("a resize while idle is captured on the next tick, t
   } finally {
     stopTranscriptRotation("seat");
     await run("kill-server").catch(() => {});
-    rmSync(root, { recursive: true, force: true });
+    removeTmuxTestRoot(root);
   }
 }, 20_000);
 
@@ -119,7 +120,7 @@ it.skipIf(!nativeAvailable)("a pane with no window-activity hint keeps the confi
   } finally {
     stopTranscriptRotation("seat");
     await run("kill-server").catch(() => {});
-    rmSync(root, { recursive: true, force: true });
+    removeTmuxTestRoot(root);
   }
 }, 20_000);
 
@@ -140,7 +141,7 @@ async function idleSeat(name: string, opts = { lines: 1000, pollIntervalMs: 1000
     while (Date.now() < until) { if (read() === await pane()) return true; await wait(100); }
     return false;
   };
-  const done = async () => { stopTranscriptRotation("seat"); await run("kill-server").catch(() => {}); rmSync(root, { recursive: true, force: true }); };
+  const done = async () => { stopTranscriptRotation("seat"); await run("kill-server").catch(() => {}); removeTmuxTestRoot(root); };
   return { run, file, pane, landsWithin, captures, done };
 }
 

@@ -7,6 +7,7 @@ import { createDaemon } from "../src/startup.js";
 import { execArgvCommand } from "../src/adapters/tmux-exec.js";
 import type { ArgvExecFn, ExecFn, TmuxAdapter } from "../src/adapters/tmux.js";
 import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const cmuxFactory: CmuxTransportFactory = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
@@ -30,7 +31,7 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
   afterEach(() => {
     Object.defineProperty(process, "platform", platform);
     vi.unstubAllEnvs();
-    fs.rmSync(tmuxDir, { recursive: true, force: true });
+    removeTmuxTestRoot(tmuxDir);
   });
 
   for (const host of ["linux", "darwin"] as const) {

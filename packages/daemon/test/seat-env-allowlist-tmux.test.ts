@@ -15,6 +15,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { SEAT_ENV_DEFAULT_BASE, SEAT_ENV_DENY_KUBECONFIG, type SeatEnvPolicy } from "../src/domain/seat-launch-env-filter.js";
+import { NO_SHELL_HISTORY, createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -58,11 +59,11 @@ async function waitForFile(file: string): Promise<string> {
 
 describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list on a real tmux server (spec 0013)", () => {
   it.each(["allowlist", "filter"] as const)("%s mode: what the pane shell and a launched command keep", async (mode) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const root = createTmuxTestRoot("seat-allow-");
     const socket = path.join(root, "tmux");
     const rc = path.join(root, "rc");
     // Like a startup file exporting credential references: names the tmux environment never had.
-    fs.writeFileSync(rc, "export REFS_API_TOKEN=placeholder\nexport REFS_PLAIN=1\nPS1='$ '\n");
+    fs.writeFileSync(rc, `${NO_SHELL_HISTORY}export REFS_API_TOKEN=placeholder\nexport REFS_PLAIN=1\nPS1='$ '\n`);
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", ...OPERATOR };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
     const adapter = new TmuxAdapter(async (cmd) => {
@@ -111,19 +112,23 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       }
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      // The late writer (#45): the pane shell keeps no history, so nothing lands in the root after kill-server.
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      const lateHistory = fs.existsSync(path.join(root, ".bash_history"));
+      removeTmuxTestRoot(root);
+      expect(lateHistory, "a .bash_history appeared after kill-server").toBe(false);
     }
   }, 30_000);
 
   // Review r2, R2: the resume-metadata probe starts a real Claude with sendLaunchCommand; R1: a readonly
   // export the rc makes cannot be removed, so the command must not run.
   it.each(["probe path", "readonly export"] as const)("allow-list mode, %s", async (kind) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const root = createTmuxTestRoot("seat-allow-");
     const socket = path.join(root, "tmux");
     const rc = path.join(root, "rc");
-    fs.writeFileSync(rc, kind === "readonly export"
+    fs.writeFileSync(rc, NO_SHELL_HISTORY + (kind === "readonly export"
       ? "export REFS_API_TOKEN=placeholder\nreadonly REFS_API_TOKEN\nPS1='$ '\n"
-      : "export REFS_API_TOKEN=placeholder\nexport REFS_PLAIN=1\nPS1='$ '\n");
+      : "export REFS_API_TOKEN=placeholder\nexport REFS_PLAIN=1\nPS1='$ '\n"));
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", ...OPERATOR };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
     const adapter = new TmuxAdapter(async (cmd) => {
@@ -158,7 +163,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       }
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -166,10 +171,10 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
   // mode too. The stub runtime's readiness check reads pane_current_command, and a runtime left as a child of the
   // staging subshell reads as a shell: "the pane is back at a shell". Filter mode is the control.
   it.each(["allowlist", "filter"] as const)("%s mode: a sendLaunchCommand launch is the pane's foreground command, and a stub seat reads ready", async (mode) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const root = createTmuxTestRoot("seat-allow-");
     const socket = path.join(root, "tmux");
     const rc = path.join(root, "rc");
-    fs.writeFileSync(rc, "export REFS_API_TOKEN=placeholder\nPS1='$ '\n");
+    fs.writeFileSync(rc, `${NO_SHELL_HISTORY}export REFS_API_TOKEN=placeholder\nPS1='$ '\n`);
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", ...OPERATOR };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
     const adapter = new TmuxAdapter(async (cmd) => {
@@ -203,7 +208,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       }
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -211,13 +216,13 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
   // pane_current_command ("claude" is resumed, a shell is "returned to shell"). The stand-in `claude` on the pane's
   // PATH runs as a process named claude. Filter mode is the control.
   it.each(["allowlist", "filter"] as const)("%s mode: the resume probe sees its Claude as the pane's foreground command", async (mode) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const root = createTmuxTestRoot("seat-allow-");
     const socket = path.join(root, "tmux");
     const bin = path.join(root, "bin");
     fs.mkdirSync(bin);
     fs.writeFileSync(path.join(bin, "claude"), "#!/bin/bash\nexec -a claude sleep 30\n", { mode: 0o755 });
     const rc = path.join(root, "rc");
-    fs.writeFileSync(rc, `export PATH=${q(bin)}:"$PATH"\nPS1='$ '\n`);
+    fs.writeFileSync(rc, `${NO_SHELL_HISTORY}export PATH=${q(bin)}:"$PATH"\nPS1='$ '\n`);
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash", ...OPERATOR };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
     const adapter = new TmuxAdapter(async (cmd) => {
@@ -242,14 +247,14 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
     } finally {
       db.close();
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
   // Review r2, INFO: in a session layer 1 never touched, the names update-environment copied are still in
   // the session's own environment. The prologue must not count them as the launch's own.
   it("allow-list mode, a session the adapter did not create: update-environment names follow the allow-list", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const root = createTmuxTestRoot("seat-allow-");
     const socket = path.join(root, "tmux");
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash" };
     const tm = async (args: string[], extra: Record<string, string> = {}) =>
@@ -261,7 +266,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
     adapter.setSeatEnvPolicy(() => POLICY, () => false);
     try {
       await tm(["new-session", "-d", "-s", "anchor"]);
-      await tm(["new-session", "-d", "-s", "dev2@rig", "bash --norc -i"], CLIENT);
+      await tm(["new-session", "-d", "-s", "dev2@rig", "bash --norc +o history -i"], CLIENT);
       expect(await tm(["show-environment", "-t", "=dev2@rig"])).toContain("KRB5CCNAME=");
       const names = path.join(root, "names");
       const sent = await adapter.sendShellCommand("dev2@rig",
@@ -273,7 +278,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       expect(launched).toContain("SSH_AUTH_SOCK");
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 });

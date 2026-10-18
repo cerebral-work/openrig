@@ -24,6 +24,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { CodexRuntimeAdapter } from "../src/adapters/codex-runtime-adapter.js";
 import { NativePermissionStore } from "../src/domain/native-permission-store.js";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const pexec = promisify(execFile);
 const SOCK = `openrig-restart-${process.pid}`;
@@ -70,7 +71,7 @@ afterAll(async () => {
   // The server exits with its last session; remove its socket file only once nothing answers on it.
   const socket = nodePath.join(`/tmp/tmux-${process.getuid?.() ?? ""}`, SOCK);
   if (!(await tmux("ls").then(() => true, () => false))) fs.rmSync(socket, { force: true });
-  fs.rmSync(root, { recursive: true, force: true });
+  removeTmuxTestRoot(root);
 });
 
 async function panePid(pane: string): Promise<number> {

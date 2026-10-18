@@ -14,6 +14,7 @@ import { resolveStubActivityEndpoint } from "../src/adapters/stub-runner.js";
 import Database from "better-sqlite3";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import { SEAT_ENV_SECRET_NAME } from "../src/domain/seat-launch-env-filter.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -49,7 +50,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
   });
 
   it.skipIf(!hasTmux || process.platform !== "linux")("a seat launched as the daemon does leaves the token on no tmux argv, server or client", async () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-argv-"));
+    const root = createTmuxTestRoot("seat-argv-");
     const socket = path.join(root, "tmux");
     const token = sentinel();
     const ran: string[] = [];
@@ -67,7 +68,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
       expect(processesWithArgv(token)).toBe(0);
     } finally {
       await run("tmux", ["-S", socket, "kill-server"], { env, timeout: 8000 }).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -101,7 +102,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
     ["head: the real builder", false],
     ["base shape: the token in the launch env", true],
   ] as const)("the managed launch's env -i argv holds no token and no secret-named value (%s)", async (_label, baseShape) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-argv-"));
+    const root = createTmuxTestRoot("managed-argv-");
     try {
       const bin = path.join(root, "bin"); const cwd = path.join(root, "work");
       for (const dir of [bin, cwd]) fs.mkdirSync(dir);
@@ -130,7 +131,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
         expect(secretAssignments).toEqual([]);
       }
     } finally {
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   });
 
@@ -141,7 +142,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
       fs.writeFileSync(path.join(home, "activity-endpoint.json"), JSON.stringify({ baseUrl: "http://127.0.0.1:17534", token }), { mode: 0o600 });
       expect(resolveStubActivityEndpoint({ OPENRIG_HOME: home, OPENRIG_URL: "http://127.0.0.1:17534" })).toEqual({ baseUrl: "http://127.0.0.1:17534", token });
     } finally {
-      fs.rmSync(home, { recursive: true, force: true });
+      removeTmuxTestRoot(home);
     }
   });
 });

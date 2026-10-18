@@ -12,6 +12,7 @@ import { SuccessorSessionLauncher } from "../src/domain/successor-session-launch
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -25,7 +26,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("handover with a secre
     // Spec 0017 item 4: exempt by exact name, so the launch guard lets it through.
     ["TOKENIZERS_PARALLELISM", false],
   ] as const)("seat env %s: refused before the cutover leaves the retiree running (%s)", async (name, refused) => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), "succ-secret-"));
+    const root = createTmuxTestRoot("succ-secret-");
     const socket = path.join(root, "tmux");
     const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/sh" };
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout.trim();
@@ -62,7 +63,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("handover with a secre
     } finally {
       db.close();
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 });

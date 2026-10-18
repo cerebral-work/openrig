@@ -10,6 +10,7 @@ import { TmuxAdapter } from "../src/adapters/tmux.js";
 import {
   startTranscriptRotation, stopTranscriptRotation, clearAllTranscriptRotationsForTest, getLastCaptureAt, getTranscriptCaptureStats,
 } from "../src/domain/transcript-rotation.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 /** The production exec's stdout bound, which every tmux call shares. */
 const TMUX_MAX_BUFFER = 64 * 1024 * 1024;
@@ -100,7 +101,7 @@ afterEach(async () => {
   clearAllTranscriptRotationsForTest();
   await advance(6000);
   vi.useRealTimers();
-  fs.rmSync(root, { recursive: true, force: true });
+  removeTmuxTestRoot(root);
 });
 
 /** Start every session at once and let the immediate first ticks settle. */
@@ -473,7 +474,7 @@ describe("batched transcript capture: generative", () => {
         runs.push(events);
         clearAllTranscriptRotationsForTest();
         await advance(6000);
-        fs.rmSync(root, { recursive: true, force: true }); fs.mkdirSync(root);
+        removeTmuxTestRoot(root); fs.mkdirSync(root);
       }
       expect(runs[0], `seed ${seed}`).toEqual(runs[1]);
       expect(runs[0]!.length, `seed ${seed}`).toBeGreaterThan(0);

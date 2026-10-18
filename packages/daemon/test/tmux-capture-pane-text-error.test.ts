@@ -9,6 +9,7 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { execArgvCommand } from "../src/adapters/tmux-exec.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 let nativeAvailable = process.platform !== "win32";
 try { execFileSync("tmux", ["-V"], { timeout: 2000, stdio: "ignore" }); } catch { nativeAvailable = false; }
@@ -38,7 +39,7 @@ for a in "$@"; do
 done
 run
 `, { mode: 0o755 });
-afterAll(() => fs.rmSync(bin, { recursive: true, force: true }));
+afterAll(() => removeTmuxTestRoot(bin));
 afterEach(() => vi.unstubAllEnvs());
 
 describe.skipIf(process.platform === "win32")("chained capture error classification, fake tmux", { timeout: 60_000 }, () => {
@@ -74,14 +75,14 @@ describe("chained capture error classification, listing first", () => {
 });
 
 describe.skipIf(!nativeAvailable)("chained capture error classification, real tmux", { timeout: 60_000 }, () => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-panetext-native-"));
+  const home = createTmuxTestRoot("openrig-panetext-native-");
   const sock = path.join(home, "sock");
   const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, TMUX_TMPDIR: home };
   delete env.TMUX;
   const tmux = async (...args: string[]) => (await exec("tmux", ["-f", "/dev/null", "-S", sock, ...args], { env, timeout: 10_000 })).stdout;
   afterAll(async () => {
     await tmux("kill-server").catch(() => {});
-    fs.rmSync(home, { recursive: true, force: true });
+    removeTmuxTestRoot(home);
   });
   /** The production argv transport against this test's private server; `tail` extends every chain, never a single capture. */
   const adapter = (tail: string[] = []) => {

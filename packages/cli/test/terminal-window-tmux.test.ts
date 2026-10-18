@@ -1,13 +1,13 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { DaemonClient } from "../src/client.js";
 import { openTerminalWindow, type WindowDeps } from "../src/terminal-window.js";
 import { composeView } from "../../daemon/src/domain/terminal/view-composer.js";
-import { releaseTmuxTestSocket } from "../../daemon/test/helpers/tmux-test-socket.js";
+import { createTmuxTestRoot, releaseTmuxTestSocket, removeTmuxTestRoot } from "../../daemon/test/helpers/tmux-test-socket.js";
 
 // Real isolated tmux servers; the desktop launcher alone is inert.
 const sockets: string[] = [];
@@ -19,7 +19,7 @@ function tmux(socket: string, args: string[]): string {
 afterEach(async () => {
   // kill-server alone leaves the socket file (tmux 3.4); the shared teardown also unlinks it (linear-pending item 44).
   for (const socket of sockets.splice(0)) await releaseTmuxTestSocket(socket, { killServer: true });
-  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  for (const dir of dirs.splice(0)) removeTmuxTestRoot(dir);
 });
 
 it.each([
@@ -29,7 +29,7 @@ it.each([
   const source = `ws-${id}`;
   const viewer = placement === "shared" ? source : `wv-${id}`;
   sockets.push(...new Set([source, viewer]));
-  const dir = mkdtempSync(path.join(tmpdir(), "window-test-"));
+  const dir = createTmuxTestRoot("window-test-");
   dirs.push(dir);
   const wrapper = path.join(dir, "tmux");
   writeFileSync(wrapper, `#!/bin/sh\nexec tmux -L ${source} -f /dev/null "$@"\n`, { mode: 0o755 });

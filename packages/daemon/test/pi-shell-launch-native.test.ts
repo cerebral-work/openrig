@@ -11,6 +11,7 @@ import { PiRuntimeAdapter } from "../src/adapters/pi-runtime-adapter.js";
 import { PiResumeAdapter } from "../src/adapters/pi-resume.js";
 import { SeatLaunchEnvironment } from "../src/domain/seat-launch-environment.js";
 import { buildPiRunnerCommand, piSeatPaths } from "../src/adapters/pi-runner-protocol.js";
+import { NO_SHELL_HISTORY, createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const exec = promisify(execCallback);
 const run = promisify(execFile);
@@ -27,7 +28,7 @@ describe.skipIf(!hasTmux || process.platform === "win32")("Pi launch through nat
     const launchMode = mode.split("-")[0];
     const longTmp = mode.endsWith("long-tmpdir");
     const routing = mode.includes("-routing");
-    const temp = fs.mkdtempSync(path.join(os.tmpdir(), "pi-shell-"));
+    const temp = createTmuxTestRoot("pi-shell-");
     const socket = path.join(temp, "tmux.sock");
     const session = "pi-fixture";
     const long = Array.from({ length: 8 }, () => "nested-directory-" + "x".repeat(35)).join(path.sep);
@@ -50,7 +51,7 @@ const http=require('node:http');
 http.get(process.env.OPENRIG_URL+'/identity', {headers:{'x-node':process.env.OPENRIG_NODE_ID}}, r=>{
   let body='';r.on('data',c=>body+=c);r.on('end',()=>console.log(JSON.stringify({body:JSON.parse(body), home:process.env.OPENRIG_HOME, node:process.env.OPENRIG_NODE_ID, generation:process.env.OPENRIG_OCCUPANT_GENERATION, runtime:process.env.OPENRIG_RUNTIME, agentDir:process.env.PI_CODING_AGENT_DIR, sessionsDir:process.env.PI_CODING_AGENT_SESSION_DIR, HOME:process.env.HOME, PATH:process.env.PATH, extraPresent:process.env.UNRELATED_SECRET!==undefined})));
 }).on('error',()=>{process.exitCode=1;});\n`, { mode: 0o700 });
-      fs.writeFileSync(rc, `export OPENRIG_HOME=/wrong OPENRIG_URL=http://127.0.0.1:1 OPENRIG_NODE_ID=wrong OPENRIG_RUNTIME=wrong OPENRIG_OCCUPANT_GENERATION=wrong\nexport PATH=${quote(userBin + ":" + sessionEnv.PATH)} HOME=${quote(temp)} UNRELATED_SECRET=synthetic\nprintf ready > ${quote(path.join(temp, "rc-ready"))}\n`);
+      fs.writeFileSync(rc, `${NO_SHELL_HISTORY}export OPENRIG_HOME=/wrong OPENRIG_URL=http://127.0.0.1:1 OPENRIG_NODE_ID=wrong OPENRIG_RUNTIME=wrong OPENRIG_OCCUPANT_GENERATION=wrong\nexport PATH=${quote(userBin + ":" + sessionEnv.PATH)} HOME=${quote(temp)} UNRELATED_SECRET=synthetic\nprintf ready > ${quote(path.join(temp, "rc-ready"))}\n`);
     }
     const runner = path.join(temp, "offline-runner.cjs");
     fs.writeFileSync(runner, `const fs = require('node:fs'); const path = require('node:path');
@@ -95,7 +96,7 @@ setInterval(() => {}, 1000);
         ...(routing ? Object.entries(sessionEnv).flatMap(([key, value]) => ["-e", `${key}=${value}`]) : []),
         `env PATH=${quote(process.env.PATH ?? "")} ${canonical
           ? `/bin/sh -c 'stty icanon -echo; while IFS= read -r line; do eval "$line"; done'`
-          : routing ? `/bin/bash --noprofile --rcfile ${quote(rc)} -i` : "/bin/bash --noprofile --norc -i"}`]);
+          : routing ? `/bin/bash --noprofile --rcfile ${quote(rc)} -i` : "/bin/bash --noprofile --norc +o history -i"}`]);
       const longTmpdir = path.join(temp, ...Array.from({ length: 9 }, () => "t".repeat(60)));
       let fileOps: TmuxFileOps | undefined;
       if (longTmp) {
@@ -167,7 +168,7 @@ setInterval(() => {}, 1000);
     } finally {
       await run("tmux", ["-S", socket, "kill-server"]).catch(() => {});
       if (routeServer?.listening) await new Promise<void>(resolve => routeServer.close(() => resolve()));
-      fs.rmSync(temp, { recursive: true, force: true });
+      removeTmuxTestRoot(temp);
     }
   }, 10_000);
 });

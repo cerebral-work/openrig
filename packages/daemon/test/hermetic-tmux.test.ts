@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from "vitest";
-import { existsSync, readdirSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
+import { existsSync, readdirSync, mkdtempSync, mkdirSync } from "node:fs";
 import { stageTopologyRoot } from "./helpers/scenario-stage.js";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -11,6 +11,7 @@ import {
   TMUX_ATTACHMENT_ENV_VARS,
   type HermeticScaffold,
 } from "./helpers/hermetic-env.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 // 51-02 delta D5 (advisor-ruled, guard precision pins) — TMUX ISOLATION.
 //
@@ -23,7 +24,7 @@ const scaffolds: HermeticScaffold[] = [];
 const dirs: string[] = [];
 afterEach(() => {
   for (const s of scaffolds.splice(0)) s.cleanup();
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
+  for (const d of dirs.splice(0)) removeTmuxTestRoot(d);
 });
 
 const cleanBase = () => ({ HOME: "/tmp/whatever", PATH: process.env.PATH, TERM: "xterm" });
@@ -82,7 +83,7 @@ describe("D5 p2 — an inherited TMUX_TMPDIR is ABSENT from the child and REPLAC
       expect(s.tmuxTmpDir.startsWith(s.root)).toBe(true);
       expect(existsSync(s.tmuxTmpDir)).toBe(true);
     } finally {
-      rmSync(inherited, { recursive: true, force: true });
+      removeTmuxTestRoot(inherited);
     }
   });
 

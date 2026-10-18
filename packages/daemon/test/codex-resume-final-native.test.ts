@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from "vitest";
 import { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
@@ -14,7 +15,7 @@ const runFile = promisify(execFile);
 // Controlled provider-shaped output, not an authenticated Codex invocation.
 // The actual terminal process receives the real production resume command.
 async function finalObservation(output: string) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "codex-final-"));
+  const home = createTmuxTestRoot("codex-final-");
   const socket = path.join(home, "owned.sock");
   const gate = path.join(home, "final-output.txt");
   const bin = path.join(home, "bin");
@@ -64,7 +65,7 @@ async function finalObservation(output: string) {
     return result;
   } finally {
     await tmux(["kill-server"]).catch(() => {});
-    fs.rmSync(home, { recursive: true, force: true });
+    removeTmuxTestRoot(home);
   }
 }
 

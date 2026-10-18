@@ -10,13 +10,14 @@ import { activityRoutes } from "../src/routes/activity.js";
 import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { ClaimService } from "../src/domain/claim-service.js";
 import { discoveryRoutes } from "../src/routes/discovery.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => { for (const cleanup of cleanups.splice(0)) await cleanup(); });
@@ -69,7 +70,7 @@ describe("retired hook evidence through the real HTTP route", () => {
     const tmux = async (...args: string[]) => (await exec("tmux", ["-S", socket, ...args])).stdout;
     cleanups.push(async () => {
       await tmux("kill-server").catch(() => {});
-      rmSync(scratch, { recursive: true, force: true });
+      removeTmuxTestRoot(scratch);
     });
     const adapter = new TmuxAdapter(async () => { throw new Error("unexpected shell path"); }, undefined,
       async argv => tmux(...argv.slice(1)));

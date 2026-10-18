@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -7,6 +7,7 @@ import { execArgvCommand } from "../src/adapters/tmux-exec.js";
 import { CONTROL_OPTION, controlSessionName, markOwnRows, supportsControlMode, tmuxControlExec, withoutOwnRows } from "../src/adapters/tmux-control.js";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { TmuxDiscoveryScanner } from "../src/domain/tmux-discovery-scanner.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const version = (() => {
   try { return execFileSync("tmux", ["-V"], { encoding: "utf8" }); } catch { return ""; }
@@ -47,7 +48,7 @@ describe.skipIf(!supportsControlMode(version))("tmux control mode against a real
     await control.close();
     try { tmux("kill-server"); } catch { /* already gone */ }
     vi.unstubAllEnvs();
-    rmSync(dir, { recursive: true, force: true });
+    removeTmuxTestRoot(dir);
   });
 
   const reads: string[][] = [

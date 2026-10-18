@@ -1,8 +1,8 @@
 import { describe, it, expect, afterAll } from "vitest";
-import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
+import { releaseTmuxTestSocket, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -51,7 +51,7 @@ const tempDirs: string[] = [];
 afterAll(async () => {
   for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // BY NAME, never kill-server
   await releaseTmuxTestSocket(SOCK, { killServer: false });
-  for (const d of tempDirs) { try { rmSync(d, { recursive: true, force: true }); } catch { /* best-effort */ } }
+  for (const d of tempDirs) { try { removeTmuxTestRoot(d); } catch { /* best-effort */ } }
 });
 
 async function seedPane(seat: string): Promise<string> {

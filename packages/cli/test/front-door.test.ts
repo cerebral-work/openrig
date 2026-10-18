@@ -6,12 +6,13 @@
 // behave unchanged. New file; shipped CLI floors untouched.
 import { describe, it, expect, vi } from "vitest";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer } from "node:net";
 import { runFrontDoor, resolveTuiPath, probeFrontDoor, type FrontDoorIo } from "../src/front-door.js";
 import { DaemonClient, DaemonConnectionError, DaemonResponseError, DaemonTimeoutError } from "../src/client.js";
+import { removeTmuxTestRoot } from "../../daemon/test/helpers/tmux-test-socket.js";
 
 // A GUARANTEED-refused local port (bind an ephemeral port, capture it, close → connecting refuses).
 // A REAL socket refusal, not a hand-built error — buys the actual Node/undici rejection shape.
@@ -442,7 +443,7 @@ describe("PUBLIC bin ownership (guard finding 1 — the wrapper is the real fron
       expect(text).not.toMatch(/Usage: rig \[options\] \[command\]/);
     } finally {
       tmux(["kill-server"]); // Only this test's private server.
-      rmSync(home, { recursive: true, force: true });
+      removeTmuxTestRoot(home);
     }
   });
 

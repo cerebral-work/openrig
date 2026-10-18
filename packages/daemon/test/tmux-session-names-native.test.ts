@@ -7,12 +7,13 @@ import { describe, expect, it } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { shellQuote } from "../src/adapters/shell-quote.js";
 import { TmuxDiscoveryScanner } from "../src/domain/tmux-discovery-scanner.js";
+import { createTmuxTestRoot, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(exec);
 const runFile = promisify(execFile);
 
 async function withServer(mode: "shell" | "argv", names: string[], check: (adapter: TmuxAdapter) => Promise<void>) {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "tmux-names-"));
+  const home = createTmuxTestRoot("tmux-names-");
   const socket = path.join(home, "owned.sock");
   const env = { ...process.env, HOME: home };
   delete env.TMUX;
@@ -37,7 +38,7 @@ async function withServer(mode: "shell" | "argv", names: string[], check: (adapt
     await check(adapter);
   } finally {
     await tmux(["kill-server"]).catch(() => {});
-    fs.rmSync(home, { recursive: true, force: true });
+    removeTmuxTestRoot(home);
   }
 }
 

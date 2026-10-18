@@ -6,6 +6,7 @@ import {promisify} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {describe,it,expect} from 'vitest';
 import {TmuxAdapter,type TmuxFileOps} from '../src/adapters/tmux.js';
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 const run=promisify(execFile);
 const q=(v:string)=>"'"+v.replaceAll("'","'\"'\"'")+"'";
 async function until(f:()=>boolean){for(let i=0;i<240;i++){if(f())return;await new Promise(r=>setTimeout(r,25));}throw Error('private pane did not produce receipt');}
@@ -70,7 +71,7 @@ it.each(['return','exit','errexit'])('keeps pane environment, lifetime and histo
  for(let i=0;shellPid>0&&alive()&&i<200;i++)await new Promise(r=>setTimeout(r,25));
  const stuck=shellPid>0&&alive();
  let rmFailed=false;let rmError:unknown;
- try{fs.rmSync(root,{recursive:true,force:true,maxRetries:5,retryDelay:50});}catch(e){rmFailed=true;rmError=e;}
+ try{removeTmuxTestRoot(root);}catch(e){rmFailed=true;rmError=e;}
  if(failed)throw failure;
  if(stuck)throw new Error('pane shell did not exit within 5 s');
  if(rmFailed)throw rmError;

@@ -9,6 +9,7 @@ import { migrate } from "../src/db/migrate.js";
 import { ALL_MIGRATIONS } from "../src/db/all-migrations.js";
 import { ProbeStoppedError, boundedProbeExec, endRunningProbeGroups } from "../src/adapters/bounded-probe-exec.js";
 import { execPreflightCommand, runtimeProbeFailure } from "../src/adapters/preflight-exec.js";
+import { noShellHistory, removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 // A runtime probe runs in its own detached process group, so nothing ends it when the daemon stops first.
 const roots: string[] = [];
@@ -27,7 +28,7 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0)) await cleanup();
   for (const pid of seenPids) { try { process.kill(pid, "SIGKILL"); } catch { /* gone */ } }
   seenPids.clear();
-  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+  for (const root of roots.splice(0)) removeTmuxTestRoot(root);
 });
 
 function alive(pid: number): boolean {
@@ -171,6 +172,7 @@ describe.skipIf(process.platform === "win32")("runtime probe groups end when the
     fs.writeFileSync(path.join(bin, "codex"), "#!/bin/sh\necho 'codex-cli 0.139.0'\n", { mode: 0o755 });
     const home = path.join(root, "home");
     fs.mkdirSync(path.join(home, "openrig"), { recursive: true });
+    noShellHistory(home);
     const pidFile = path.join(root, "child.pid");
     const termMarker = path.join(root, "got-term");
     const daemon = spawn(process.execPath, [
