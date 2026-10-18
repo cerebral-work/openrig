@@ -577,6 +577,8 @@ A rig that is already running gains edges in two ways:
 
 `delegates_to` is read live (queue ownership and the `edges` in `rig whoami`). `can_observe` is recorded and shown, but no runtime behaviour reads it yet.
 
+`rig edge remove <rig-id> <from> <to> --kind <kind>` removes one edge and relaunches nothing. It is how a rig that holds a launch-order cycle recovers: remove one edge of the cycle, and the rig grows again and restore launches the seats it held. An absent edge is an error, never success. The daemon records who removed the edge (a `rig.edge_removed` event). A removed `delegates_to` edge stops counting for queue ownership and `rig whoami` at once.
+
 ---
 
 ## Startup Block

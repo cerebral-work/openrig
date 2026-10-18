@@ -37,8 +37,8 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
    - Every seat the plan can order launches, as before.
    - Each seat in a cycle, or behind one, gets its own node result:
      - status `awaiting-decision`;
-     - error `restore_graph_cycle: <edges>; no session was started; remove one of these edges, then restore. There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges.`
-     - The last sentence is the same one a growth refusal gives (`NO_EDGE_REMOVAL`), so an operator who meets a held seat after a reboot isn't told to remove an edge that no command removes (orch-lead ruling, 2026-10-18).
+     - error `restore_graph_cycle: <edges>; no session was started; remove one of these edges with: rig edge remove <rigId> <from> <to> --kind <kind>, then restore.`
+     - The recovery is the same one a growth refusal gives (`edgeRemovalCommand` in `launch-graph-cycles.ts`), naming `rig edge remove` (CER-2981, spec 0008). Until that command existed it read "There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges."
    - `<edges>` are the stored edges (`source kind target`, logical ids) of every cycle at or upstream of that seat, sorted. An unrelated cycle is not named.
    - `awaiting-decision` and not `attention_required`, per orch-lead's ruling (2026-10-18), because the restore vocabulary (`types.ts` `RestoreNodeResult`) reserves:
      - `attention_required` for a live session parked on a prompt;
@@ -53,7 +53,7 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
    - The expand, add-member and materialize routes return it as 400 (each mapping has a route test).
    - The refusal names the cycle's edges and says how to recover:
      - **The cycle uses an edge from the request:** leave one of the new edges out and retry.
-     - **The cycle is entirely existing edges:** like `rig edge add`, a rig that already holds a cycle refuses any growth. The refusal ends with the same sentence as the restore reason: "There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges."
+     - **The cycle is entirely existing edges:** like `rig edge add`, a rig that already holds a cycle refuses any growth. The refusal ends with the same recovery as the restore reason: "Remove one of these edges with: rig edge remove <rigId> <from> <to> --kind <kind>, then retry."
    - The live database had no such rig on 2026-10-18: a read-only copy, scanned with this detector, showed 0 of 34 rigs holding a cycle.
 3. **`rig import` (instantiate) is unchanged.** It already refused cycles: `computePodLaunchOrder` runs before `createRig`.
    - A launch-kind self-edge is refused as a cycle on every path. The legacy schema refuses all self-edges (`rigspec-schema.ts`).
@@ -67,11 +67,12 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
 - REQ-0014-03: While a held seat is reported, the restore orchestrator shall start no session for it.
 - REQ-0014-04: When a materialize write would make the rig's launch-dependency graph cyclic, the pod instantiator shall refuse with `cycle_error` before writing any rig, node, pod or edge.
 - REQ-0014-05: The pod instantiator shall name the cycle's edges, stored or requested, in a `cycle_error` refusal.
+- REQ-0014-06: When a restore holds a seat or a growth refusal names a stored cycle, the message shall name `rig edge remove` with the rig's id as the recovery.
 
 ## Plan
 
 1. Fork branch `fix/restore-graph-cycle` from `cerebral` b6847523; a PR on hold.
-2. Not built here: `rig edge remove`, which orch-lead@vilicus files as a follow-up. Today only `rig remove <rigId> <seat>` drops an edge, by removing a whole seat.
+2. `rig edge remove` was built afterwards (CER-2981, spec 0008), and the restore reason and the growth refusal now name it.
 
 ## Test
 

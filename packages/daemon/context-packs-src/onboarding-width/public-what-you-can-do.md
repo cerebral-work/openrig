@@ -384,7 +384,8 @@ not have to tear one down to change it, and you rarely have to start from nothin
   `rig expand` also takes cross-pod edges for the new pod (the fragment's `crossPodEdges:` list).
 - **`rig edge add <rig-id> <from> <to> --kind <kind>`** — add an edge between two seats that already
   exist (for example `delegates_to` from `orch.lead` to `dev.build`). It writes one edge and relaunches
-  nothing; a repeat reports the existing edge.
+  nothing; a repeat reports the existing edge. `rig edge remove` (same arguments) removes one edge, the
+  recovery for a rig that holds a launch-order cycle; an absent edge is an error, and who removed it is recorded.
 - **`rig remove`** / **`rig shrink`** — take a seat, or an entire pod, out of a running topology.
   If it holds active work, pass `--fallback <live-seat>` to reroute before mutation; without a
   valid fallback the command refuses rather than strand the rows.

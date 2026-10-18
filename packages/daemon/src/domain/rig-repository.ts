@@ -541,6 +541,11 @@ export class RigRepository {
     return result.changes > 0;
   }
 
+  /** CER-2981: delete one edge row by id; true when a row was deleted. */
+  removeEdge(edgeId: string): boolean {
+    return this.db.prepare("DELETE FROM edges WHERE id = ?").run(edgeId).changes > 0;
+  }
+
   addEdge(rigId: string, sourceId: string, targetId: string, kind: string): Edge {
     const id = ulid();
     this.db

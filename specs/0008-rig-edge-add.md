@@ -13,6 +13,8 @@ references: []
 
 A rig expanded after `rig up` could not gain edges between seats that already exist. The cortex factory (rig `01M55MGC8973G7FRHW9P7EZT9F`) lacks its template's `delegates_to` edges from the lead to the five added seats, and the reviewers' `can_observe` edges to the dev seats. `rig expand` accepts cross-pod edges for the pod it adds, through a fragment key, `crossPodEdges:`, that no doc mentioned (`cli/src/commands/expand.ts`). `rig add` qualifies both ends with its own pod (`rigspec-instantiator.ts` `addMemberToPod`). No verb added an edge between two existing nodes.
 
+
+`rig edge remove` (CER-2981) is the reverse. Since spec 0014, a rig whose edge graph holds a launch-order cycle refuses any growth, and restore holds the cycle's seats, but no command removed an edge. The only recovery was `rig remove <rigId> <seat>`, which drops a whole seat.
 ## Design
 
 1. `POST /api/rigs/:rigId/edges` with `{ from, to, kind }`, where `from` and `to` are logical ids (`pod.member`), handled by `domain/rig-edge-add.ts` `addRigEdge`.
@@ -27,6 +29,21 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 7. Docs: `docs/reference/rig-spec.md` ("Edges on a running rig"), the `rig expand` help and the capability map describe `crossPodEdges` and `rig edge add`.
 8. Runtime effect: `delegates_to` is read live by `queue-owner.ts` and by the `edges` in `rig whoami`. `can_observe` is recorded and shown, but no runtime behaviour reads it yet.
 
+### Removing an edge (CER-2981)
+
+9. **The route:** `DELETE /api/rigs/:rigId/edges?from=<logical id>&to=<logical id>&kind=<kind>`, handled by `domain/rig-edge-add.ts` `removeRigEdge`. The edge is named by the same three values `rig edge add` takes. A missing parameter is 400 `validation_failed`.
+10. **Checks, in the add's order, every rejection before any write:**
+    - the rig exists (404 `rig_not_found`) and is unarchived (409 `rig_archived`);
+    - the kind is valid (400 `invalid_kind`);
+    - both logical ids are nodes of the rig (400 `node_not_found`);
+    - the edge exists (404 `edge_not_found`). Removing an absent edge is never reported as success.
+11. **The write:** an edge's identity to the operator is (from, to, kind), and the edges table allows duplicate rows, so every row matching it is deleted (the lead's ruling on review r1). In the same transaction, one `rig.edge_removed` event per deleted row records `{ rigId, edgeId, from, to, kind, by }`. `by` is the caller's transport identity (`X-OpenRig-Session`) with its recorded provenance, `{ session, provenance }` (`relay:v1` when relayed), or null when absent: attribution, not authentication. The result is 200 `{ ok: true, status: "removed", edges }`, one entry per deleted row; the CLI adds `(<n> duplicate rows)` when there were several. A row another caller deleted between the read and the write is skipped with no event; if none remains, the result is `edge_not_found`. That `rig expand` can store a duplicated pod edge twice is a separate defect.
+12. **What it never touches:** no node, session, binding or pane changes, so the rig ID and every seat's conversation are kept.
+13. **No validity rule applies.** Edges are optional and only shape-checked, and removing one cannot create a cycle. Removing a cycle edge lets the rig grow again and lets restore launch the seats it held.
+14. **Runtime effect:** a removed `delegates_to` edge stops counting for `queue-owner.ts` routing and `rig whoami` at once.
+15. **Authorization** is the same as `rig edge add`: the `/api/*` `browserBoundary`. The add records no audit; the remove's event is new.
+16. **CLI:** `rig edge remove <rig-id> <from> <to> --kind <kind> [--json]`. Docs: `docs/reference/rig-spec.md` and the capability map describe it.
+
 ## Requirements
 
 - REQ-0008-01: When `rig edge add` names two nodes of an unarchived rig and a valid kind, the daemon shall insert exactly one edge row between them.
@@ -38,6 +55,10 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 - REQ-0008-07: The `rig expand` help shall document the fragment's `crossPodEdges` key.
 - REQ-0008-08: If `from` and `to` name the same node, then the daemon shall reject the request with `self_edge` before any write.
 - REQ-0008-09: If a `delegates_to` or `spawned_by` edge would close a launch-order cycle, then the daemon shall reject the request with `cycle` before any write.
+- REQ-0008-10: When `rig edge remove` names an existing edge of an unarchived rig by its two logical ids and kind, the daemon shall delete every edge row matching them and record one `rig.edge_removed` event per deleted row, naming that row, the caller's transport identity and its provenance.
+- REQ-0008-11: The edge removal shall leave every node, session, binding and pane of the rig unchanged.
+- REQ-0008-12: If no edge of the rig matches the two logical ids and the kind, then the daemon shall reject the removal with `edge_not_found` and write nothing.
+- REQ-0008-13: If the rig is archived, the kind is invalid, or either logical id is not a node of the rig, then the daemon shall reject the removal before any write.
 
 ## Plan
 
@@ -51,5 +72,7 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 cd packages/daemon && npx vitest run test/rig-edge-add-route.test.ts test/rig-expansion-route.test.ts
 cd packages/cli && npx vitest run test/edge.test.ts test/lazy-program.test.ts test/expand.test.ts
 ```
+
+Removal (CER-2981): `rig-edge-add-route.test.ts` (the DELETE route: removed with its event and the caller's identity, a relayed caller, a wrong kind or the reverse direction as 404 while the edge exists, duplicate rows all removed with one event each, an already-removed edge as 404, a row gone before the write as 404 with no event, the rejections, a cross-site request refused), `rig-growth-graph-cycle.test.ts` (after removing a cycle edge the rig grows again), `restore-graph-cycle.test.ts` (the held seat's reason names `rig edge remove` with the rig's id; after removing a cycle edge restore launches every seat it held) and `cli/test/edge.test.ts` (`rig edge remove`).
 
 Route cases: created, row counts unchanged apart from edges, idempotent repeat, rejections (unknown node, another rig's node, bad kind, missing field, a self-edge of any kind, a `delegates_to` or `spawned_by` edge closing a cycle, while a `can_observe` edge back is accepted), 404 for an unknown rig, 409 for an archived rig, and whoami showing the edge at once. CLI cases: the request body, created, exists, error exit 1, and `--json`.

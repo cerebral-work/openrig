@@ -1,12 +1,13 @@
 // Spec 0008: POST /api/rigs/:rigId/edges adds one edge between two EXISTING nodes of a rig, the
 // cross-pod case the expand and add-member paths cannot reach. Only an edge row is written: no node,
 // session or binding changes, so the rig ID and every seat's conversation are kept.
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import type Database from "better-sqlite3";
 import { createFullTestDb, createTestApp } from "./helpers/test-app.js";
 import { WhoamiService } from "../src/domain/whoami-service.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
+import { heldByLaunchCycles } from "../src/domain/launch-graph-cycles.js";
 
 describe("POST /api/rigs/:rigId/edges", () => {
   let db: Database.Database;
@@ -138,3 +139,122 @@ describe("POST /api/rigs/:rigId/edges", () => {
     expect(counts()).toEqual(before);
   });
 });
+
+// CER-2981: DELETE /api/rigs/:rigId/edges removes one edge, the reverse of the add above, and records who removed it.
+describe("DELETE /api/rigs/:rigId/edges (CER-2981)", () => {
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db);
+  });
+
+  afterEach(() => { db.close(); });
+
+  function seed() {
+    const rig = setup.rigRepo.createRig("cortex");
+    const lead = setup.rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/tmp" });
+    const build = setup.rigRepo.addNode(rig.id, "dev.build", { runtime: "claude-code", cwd: "/tmp" });
+    const edge = setup.rigRepo.addEdge(rig.id, lead.id, build.id, "delegates_to");
+    return { rig, edge };
+  }
+  const EDGE = { from: "orch.lead", to: "dev.build", kind: "delegates_to" };
+  const del = (rigId: string, query: Record<string, string>, headers: Record<string, string> = {}) =>
+    setup.app.request(`/api/rigs/${rigId}/edges?${new URLSearchParams(query)}`, { method: "DELETE", headers });
+  const counts = () => {
+    const n = (t: string) => (db.prepare(`SELECT COUNT(*) AS c FROM ${t}`).get() as { c: number }).c;
+    return { nodes: n("nodes"), sessions: n("sessions"), bindings: n("bindings"), edges: n("edges") };
+  };
+  const removed = () => (db.prepare("SELECT rig_id, payload FROM events WHERE type = 'rig.edge_removed'").all() as Array<{ rig_id: string; payload: string }>)
+    .map((row) => ({ eventRigId: row.rig_id, ...JSON.parse(row.payload) as Record<string, unknown> }));
+
+  it("removes exactly that edge, records who removed it and when, and changes nothing else", async () => {
+    const { rig, edge } = seed();
+    const before = counts();
+    const res = await del(rig.id, EDGE, { "X-OpenRig-Session": "orch-lead@cortex" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, status: "removed", edges: [{ id: edge.id, kind: "delegates_to" }] });
+    expect(counts()).toEqual({ ...before, edges: before.edges - 1 });
+    expect(removed()).toEqual([expect.objectContaining({ eventRigId: rig.id, rigId: rig.id, edgeId: edge.id, ...EDGE,
+      by: { session: "orch-lead@cortex", provenance: "transport:v1" } })]);
+  });
+
+  it("records a relayed caller as relay:v1, and no caller as null", async () => {
+    const first = seed();
+    expect((await del(first.rig.id, EDGE, { "X-OpenRig-Session": "orch-lead@cortex", "X-OpenRig-Relay": "remote-host",
+      "X-OpenRig-Provenance": "transport:v1" })).status).toBe(200);
+    setup.rigRepo.addEdge(first.rig.id, first.edge.sourceId, first.edge.targetId, "delegates_to");
+    expect((await del(first.rig.id, EDGE)).status).toBe(200);
+    expect(removed().map((event) => event.by)).toEqual([{ session: "orch-lead@cortex", provenance: "relay:v1" }, null]);
+  });
+
+  it("a wrong kind or the reverse direction is 404 edge_not_found while the edge exists, and the edge stays (review r1 F1)", async () => {
+    const { rig, edge } = seed();
+    const before = counts();
+    for (const query of [{ ...EDGE, kind: "can_observe" }, { ...EDGE, from: "dev.build", to: "orch.lead" }]) {
+      const res = await del(rig.id, query);
+      expect(res.status, JSON.stringify(query)).toBe(404);
+      expect(await res.json()).toMatchObject({ ok: false, code: "edge_not_found" });
+    }
+    expect(counts()).toEqual(before);
+    expect(db.prepare("SELECT id FROM edges").all()).toEqual([{ id: edge.id }]);
+    expect(removed()).toEqual([]);
+  });
+
+  it("duplicate rows of one (from, to, kind) are all removed in one call, one event each, leaving no cycle (the lead's ruling)", async () => {
+    const { rig, edge } = seed();
+    const twin = setup.rigRepo.addEdge(rig.id, edge.sourceId, edge.targetId, "delegates_to");
+    const back = setup.rigRepo.addEdge(rig.id, edge.targetId, edge.sourceId, "delegates_to"); // closes a cycle with either twin
+    const res = await del(rig.id, EDGE, { "X-OpenRig-Session": "orch-lead@cortex" });
+    expect(res.status, await res.clone().text()).toBe(200);
+    expect(await res.json()).toMatchObject({ ok: true, status: "removed", edges: [{ id: edge.id }, { id: twin.id }] });
+    expect(db.prepare("SELECT id FROM edges").all()).toEqual([{ id: back.id }]);
+    expect(removed().map((event) => event.edgeId).sort()).toEqual([edge.id, twin.id].sort());
+    const left = setup.rigRepo.getRig(rig.id)!.edges.map((e) => ({ from: e.sourceId, to: e.targetId, kind: e.kind }));
+    expect(heldByLaunchCycles(setup.rigRepo.getRig(rig.id)!.nodes.map((n) => n.id), left)).toEqual(new Map());
+  });
+
+  it("an edge already removed is 404 edge_not_found, never success, and writes nothing", async () => {
+    const { rig } = seed();
+    expect((await del(rig.id, EDGE)).status).toBe(200);
+    const before = counts();
+    const res = await del(rig.id, EDGE);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ ok: false, code: "edge_not_found" });
+    expect(counts()).toEqual(before);
+    expect(removed()).toHaveLength(1);
+  });
+
+  it("a delete that changes no row (the edge went between the lookup and the write) is edge_not_found with no event (review r1 INFO)", async () => {
+    const { rig } = seed();
+    const removeEdge = vi.spyOn(setup.rigRepo, "removeEdge").mockReturnValue(false);
+    const res = await del(rig.id, EDGE);
+    removeEdge.mockRestore();
+    expect(res.status).toBe(404);
+    expect(await res.json()).toMatchObject({ ok: false, code: "edge_not_found" });
+    expect(removed()).toEqual([]);
+  });
+
+  it("rejects a missing parameter, an unknown node, a bad kind, an unknown rig and an archived rig before any write", async () => {
+    const { rig } = seed();
+    const before = counts();
+    expect((await del(rig.id, { from: "orch.lead", to: "dev.build" })).status).toBe(400);
+    expect(await (await del(rig.id, { ...EDGE, to: "dev.ghost" })).json()).toMatchObject({ code: "node_not_found" });
+    expect(await (await del(rig.id, { ...EDGE, kind: "befriends" })).json()).toMatchObject({ code: "invalid_kind" });
+    expect((await del("no-such-rig", EDGE)).status).toBe(404);
+    setup.rigRepo.archiveRig(rig.id);
+    expect((await del(rig.id, EDGE)).status).toBe(409);
+    expect(counts()).toEqual(before);
+    expect(removed()).toEqual([]);
+  });
+
+  it("a cross-site browser request is refused by the boundary, as for rig edge add, and the edge stays", async () => {
+    const { rig } = seed();
+    const res = await del(rig.id, EDGE, { Host: "127.0.0.1:7433", Origin: "http://evil.example" });
+    expect(res.status).toBe(403);
+    expect(counts().edges).toBe(1);
+    expect(removed()).toEqual([]);
+  });
+});
+

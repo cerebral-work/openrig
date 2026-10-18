@@ -16,6 +16,7 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import type { ClaudeResumeAdapter } from "../src/adapters/claude-resume.js";
 import type { CodexResumeAdapter } from "../src/adapters/codex-resume.js";
 import type { RestoreNodeResult } from "../src/domain/types.js";
+import { removeRigEdge } from "../src/domain/rig-edge-add.js";
 
 const SEATS = ["dev.build", "dev.qa", "ops.mon", "orch.lead"];
 
@@ -58,10 +59,11 @@ function harness(edges: Array<[string, "delegates_to" | "spawned_by", string]>) 
     if (!result.ok) throw new Error(`restore refused: ${result.code}`);
     return { result: result.result, sessions, byId: new Map<string, RestoreNodeResult>(result.result.nodes.map((n) => [n.logicalId, n])) };
   };
-  return { restore };
+  const removeEdge = (from: string, kind: string, to: string) => removeRigEdge(rigRepo, eventBus, { rigId: rig.id, from, to, kind, by: null });
+  return { restore, removeEdge, rigId: rig.id };
 }
 
-const CYCLE = /^restore_graph_cycle: (.+); no session was started; remove one of these edges, then restore\. There is no edge-removal command yet: rig remove <rigId> <seat> drops a seat together with its edges\.$/;
+const CYCLE = /^restore_graph_cycle: (.+); no session was started; remove one of these edges with: rig edge remove \S+ <from> <to> --kind <kind>, then restore\.$/;
 const cycleEdges = (node: RestoreNodeResult | undefined) => node?.error?.match(CYCLE)?.[1]?.split(", ");
 
 describe("restore with a launch-dependency cycle (spec 0014)", () => {
@@ -95,6 +97,22 @@ describe("restore with a launch-dependency cycle (spec 0014)", () => {
       expect(cycleEdges(byId.get(seat))).toEqual(cycle);
     }
     expect(byId.get("ops.mon")!.error ?? "").not.toMatch(/restore_graph_cycle/);
+  });
+
+  it("CER-2981: the held seat's reason names rig edge remove with the rig's id; removing one cycle edge lets restore launch every seat it held", async () => {
+    const cyclic = [["orch.lead", "delegates_to", "dev.build"], ["dev.build", "delegates_to", "orch.lead"], ["dev.build", "delegates_to", "dev.qa"]] as
+      Array<[string, "delegates_to", string]>;
+    const held = harness(cyclic);
+    const { byId: heldById } = await held.restore();
+    expect(heldById.get("orch.lead")!.error).toContain(`remove one of these edges with: rig edge remove ${held.rigId} <from> <to> --kind <kind>, then restore.`);
+
+    const fixed = harness(cyclic);
+    expect(fixed.removeEdge("dev.build", "delegates_to", "orch.lead")).toMatchObject({ ok: true, status: "removed" });
+    const { byId, sessions } = await fixed.restore();
+    for (const seat of ["orch.lead", "dev.build", "dev.qa"]) {
+      expect(byId.get(seat)!.error ?? "").not.toMatch(/restore_graph_cycle/);
+      expect(sessions.get(seat)).toBeGreaterThan(0);
+    }
   });
 
   it("a spawned_by cycle holds both seats, naming the edges as stored", async () => {
