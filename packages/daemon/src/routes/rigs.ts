@@ -37,6 +37,7 @@ import type { Pod, ExpansionPodFragment } from "../domain/types.js";
 import type { RigExpansionService } from "../domain/rig-expansion-service.js";
 import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
+import { addRigEdge } from "../domain/rig-edge-add.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
 import type { SelfAttachService } from "../domain/self-attach-service.js";
 
@@ -782,6 +783,27 @@ rigsRoutes.post("/:rigId/expand", async (c) => {
 
   const httpStatus = result.status === "ok" ? 201 : 207;
   return c.json(result, httpStatus);
+});
+
+// POST /api/rigs/:rigId/edges — add one edge between two EXISTING nodes (spec 0008). The cross-pod case
+// expand (new pod only) and add-member (pod-local only) cannot reach. Writes one edge row and nothing
+// else, so the rig ID and every seat's session are kept. Authorized like expand and add-member: the
+// /api/* browserBoundary in server.ts.
+rigsRoutes.post("/:rigId/edges", async (c) => {
+  const rigId = c.req.param("rigId")!;
+  const rigRepo = c.get("rigRepo" as never) as RigRepository;
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const field = (k: string) => (typeof body[k] === "string" && (body[k] as string).trim() ? (body[k] as string).trim() : null);
+  const from = field("from"), to = field("to"), kind = field("kind");
+  if (!from || !to || !kind) {
+    return c.json({ ok: false, code: "validation_failed", error: "from, to and kind are required (logical ids such as orch.lead, dev.build)" }, 400);
+  }
+  const result = addRigEdge(rigRepo, { rigId, from, to, kind });
+  if (!result.ok) {
+    const status = result.code === "rig_not_found" ? 404 : result.code === "rig_archived" ? 409 : 400;
+    return c.json(result, status);
+  }
+  return c.json(result, result.status === "created" ? 201 : 200);
 });
 
 // POST /api/rigs/:rigId/pods/:podNamespace/members — add a single member to an

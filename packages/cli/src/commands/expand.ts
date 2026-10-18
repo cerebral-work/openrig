@@ -26,6 +26,7 @@ export function expandCommand(depsOverride?: StatusDeps): Command {
     .argument("<pod-fragment-path>", "Path to YAML pod fragment file")
     .option("--json", "JSON output for agents")
     .option("--rig-root <path>", "Root directory for agent resolution")
+    .addHelpText("after", "\nThe fragment may carry a top-level crossPodEdges: list of { from, to, kind } with pod.member\nendpoints, for edges between the new pod and the rig. For an edge between seats that already\nexist, use rig edge add.")
     .action(async (rigId: string, fragmentPath: string, opts: { json?: boolean; rigRoot?: string }) => {
       const deps = getDeps();
       const status = await getDaemonStatus(deps.lifecycleDeps);

@@ -78,6 +78,7 @@ export const COMMAND_LOADERS: ReadonlyMap<string, Load> = new Map<string, Load>(
   ["health", async () => (await import("./commands/health.js")).healthCommand()],
   ["doctor", async () => (await import("./commands/doctor.js")).doctorCommand()],
   ["expand", async () => (await import("./commands/expand.js")).expandCommand()],
+  ["edge", async () => (await import("./commands/edge.js")).edgeCommand()],
   ["add", async () => (await import("./commands/add.js")).addMemberCommand()],
   ["create", async () => (await import("./commands/create.js")).createCommand()],
   ["grow", async () => (await import("./commands/grow.js")).growCommand()],

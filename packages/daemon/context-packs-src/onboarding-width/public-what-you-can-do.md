@@ -379,6 +379,10 @@ not have to tear one down to change it, and you rarely have to start from nothin
 - **`rig add`** / **`rig expand`** — graft one more member, or a whole new pod, onto a rig that is
   already running. `rig add` takes the rig's name or ID; a name two active rigs share is refused
   with `rig_ambiguous` and the candidates. `rig grow --new-pod` and `rig expand` are one ingress; choose by input shape.
+  `rig expand` also takes cross-pod edges for the new pod (the fragment's `crossPodEdges:` list).
+- **`rig edge add <rig-id> <from> <to> --kind <kind>`** — add an edge between two seats that already
+  exist (for example `delegates_to` from `orch.lead` to `dev.build`). It writes one edge and relaunches
+  nothing; a repeat reports the existing edge.
 - **`rig remove`** / **`rig shrink`** — take a seat, or an entire pod, out of a running topology.
   If it holds active work, pass `--fallback <live-seat>` to reroute before mutation; without a
   valid fallback the command refuses rather than strand the rows.
