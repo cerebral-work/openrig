@@ -338,6 +338,8 @@ interface Candidate {
   evidenceAt: string;
   why: string;
   verificationTargets?: string[];
+  /** stalled-after-claim only: the claim's age, shown beside the stall age (CER-2984). */
+  claimAgeMinutes?: number;
 }
 
 function isFindingRow(item: QueueItem): boolean {
@@ -394,6 +396,7 @@ function evidenceBody(db: Database.Database, c: Candidate): string {
     `row: ${c.row.qitemId}\n` +
     `destination: ${c.row.destinationSession} (source ${c.row.sourceSession}, state ${c.row.state})\n` +
     `age: ${c.ageMinutes} min\n` +
+    (c.claimAgeMinutes === undefined ? "" : `claimed: ${c.claimAgeMinutes} min ago\n`) +
     `last transition: ${lastTransitionLine(db, c.row.qitemId)}\n` +
     `why: ${c.why}\n` +
     `Resolve the underlying row; the sweep closes this finding itself once the row is no longer stuck.`
@@ -453,7 +456,9 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
         kind: stalled.kind,
         row,
         route: resolveOrch(stalled.target) ?? stalled.target,
-        ageMinutes: minutesSince(row.claimedAt, now),
+        // The stall runs from the receipt's anchor, not the first claim (CER-2984).
+        ageMinutes: minutesSince(stalled.stalledSince, now),
+        claimAgeMinutes: minutesSince(row.claimedAt, now),
         // Keep this null arm for the 0.5.7 mechanized-pull turn-end hook that knows the in-flight row;
         // it is the first honest row-scoped writer, and wiring reopens only in that slice.
         evidenceAt: latestIso(lastMeaningfulTransition(deps.db, row.qitemId)?.at, row.lastHeartbeat, row.claimedAt),
@@ -682,7 +687,7 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           sourceSession: c.row.sourceSession,
           destinationSession: c.route,
           body: evidenceBody(deps.db, c),
-          summary: `Stuck sweep: ${c.verificationTargets ? "successor-verification-required" : c.kind} on ${c.row.qitemId} (${c.ageMinutes} min)`,
+          summary: `Stuck sweep: ${c.verificationTargets ? "successor-verification-required" : c.kind} on ${c.row.qitemId} (${c.claimAgeMinutes === undefined ? `${c.ageMinutes} min` : `stalled ${c.ageMinutes} min, claimed ${c.claimAgeMinutes} min ago`})`,
           evidenceRef: `rig queue show ${c.row.qitemId}`,
           tags: [STUCK_SWEEP_FINDING_TAG, dedupTag, recoveryTag(c.row.qitemId)],
           // Churn B2: the kinds that resolve themselves are recorded without a wake.

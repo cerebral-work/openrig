@@ -224,6 +224,18 @@ describe("S04 pickup receipts — derived, visible, threshold-honest", () => {
     expect(mod.stalledPickupFinding(repo.getById(fresh.qitemId)!)).toBeNull();
   });
 
+  it("CER-2984 STALLED SINCE: a stalled receipt carries the anchor its age runs from: the latest of the claim, the last meaningful change and a later heartbeat", async () => {
+    const { derivePickup } = await import("../src/domain/queue-pickup.js");
+    const claimedAt = "2026-10-18T06:30:09.000Z";
+    const resumed = "2026-10-18T12:48:22.000Z";
+    const base = { state: "in-progress", claimedAt, lastHeartbeat: null, postClaimMotionCount: 0, thresholdMinutes: 3, now: new Date("2026-10-18T12:53:09.000Z") };
+    expect(derivePickup({ ...base, lastMeaningfulAt: resumed })).toMatchObject({ state: "stalled-after-claim", stalledSince: resumed });
+    expect(derivePickup({ ...base, lastMeaningfulAt: claimedAt })).toMatchObject({ state: "stalled-after-claim", stalledSince: claimedAt });
+    const heartbeat = "2026-10-18T12:49:00.000Z";
+    expect(derivePickup({ ...base, lastMeaningfulAt: resumed, lastHeartbeat: heartbeat })).toMatchObject({ stalledSince: heartbeat });
+    expect(derivePickup({ ...base, lastMeaningfulAt: resumed, now: new Date("2026-10-18T12:50:00.000Z") })).toEqual({ state: "working" });
+  });
+
   it("VIEW LENS 'pickup': claimed rows with derived state + named stalled evidence, queryable", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
