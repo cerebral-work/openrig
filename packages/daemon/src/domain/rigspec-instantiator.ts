@@ -31,6 +31,79 @@ interface RigInstantiatorDeps {
   tmuxAdapter?: import("../adapters/tmux.js").TmuxAdapter;
 }
 
+/** Launch order over the launch-dependency edges (delegates_to: source first; spawned_by: target
+ *  first), alphabetical among peers. Throws on a dependency cycle. Shared by the spec path and
+ *  `rig edge add` (spec 0008), so both refuse the same graphs. */
+export function computeLaunchOrder(
+  nodes: ReadonlyArray<{ id: string }>,
+  edges: ReadonlyArray<Pick<RigSpecEdge, "from" | "to" | "kind">>,
+): string[] {
+  const inDegree: Record<string, number> = {};
+  const adjacency: Record<string, string[]> = {};
+
+  for (const node of nodes) {
+    inDegree[node.id] = 0;
+    adjacency[node.id] = [];
+  }
+
+  for (const edge of edges) {
+    if (!LAUNCH_DEPENDENCY_KINDS.has(edge.kind)) continue;
+
+    let from: string;
+    let to: string;
+
+    if (edge.kind === "delegates_to") {
+      from = edge.from;
+      to = edge.to;
+    } else {
+      // spawned_by: target (parent) before source (child)
+      from = edge.to;
+      to = edge.from;
+    }
+
+    if (adjacency[from]) {
+      adjacency[from]!.push(to);
+      inDegree[to] = (inDegree[to] ?? 0) + 1;
+    }
+  }
+
+  // Topological sort with alphabetical tiebreaker
+  const queue = Object.keys(inDegree)
+    .filter((id) => inDegree[id] === 0)
+    .sort();
+
+  const order: string[] = [];
+  while (queue.length > 0) {
+    const current = queue.shift()!;
+    order.push(current);
+
+    const neighbors = (adjacency[current] ?? []).slice().sort();
+    for (const neighbor of neighbors) {
+      inDegree[neighbor] = (inDegree[neighbor] ?? 1) - 1;
+      if ((inDegree[neighbor] ?? 0) === 0) {
+        // Insert sorted
+        let inserted = false;
+        for (let i = 0; i < queue.length; i++) {
+          if (queue[i]!.localeCompare(neighbor) > 0) {
+            queue.splice(i, 0, neighbor);
+            inserted = true;
+            break;
+          }
+        }
+        if (!inserted) queue.push(neighbor);
+      }
+    }
+  }
+
+  // Cycle detection: if not all nodes reached, there's a cycle
+  if (order.length !== nodes.length) {
+    const missing = nodes.filter((n) => !order.includes(n.id)).map((n) => n.id);
+    throw new Error(`Dependency cycle detected among nodes: ${missing.join(", ")}`);
+  }
+
+  return order;
+}
+
 export class RigInstantiator {
   readonly db: Database.Database;
   private rigRepo: RigRepository;
@@ -231,73 +304,7 @@ export class RigInstantiator {
   }
 
   private computeLaunchOrder(spec: RigSpec): string[] {
-    const nodes = spec.nodes;
-    const edges = spec.edges;
-
-    const inDegree: Record<string, number> = {};
-    const adjacency: Record<string, string[]> = {};
-
-    for (const node of nodes) {
-      inDegree[node.id] = 0;
-      adjacency[node.id] = [];
-    }
-
-    for (const edge of edges) {
-      if (!LAUNCH_DEPENDENCY_KINDS.has(edge.kind)) continue;
-
-      let from: string;
-      let to: string;
-
-      if (edge.kind === "delegates_to") {
-        from = edge.from;
-        to = edge.to;
-      } else {
-        // spawned_by: target (parent) before source (child)
-        from = edge.to;
-        to = edge.from;
-      }
-
-      if (adjacency[from]) {
-        adjacency[from]!.push(to);
-        inDegree[to] = (inDegree[to] ?? 0) + 1;
-      }
-    }
-
-    // Topological sort with alphabetical tiebreaker
-    const queue = Object.keys(inDegree)
-      .filter((id) => inDegree[id] === 0)
-      .sort();
-
-    const order: string[] = [];
-    while (queue.length > 0) {
-      const current = queue.shift()!;
-      order.push(current);
-
-      const neighbors = (adjacency[current] ?? []).slice().sort();
-      for (const neighbor of neighbors) {
-        inDegree[neighbor] = (inDegree[neighbor] ?? 1) - 1;
-        if ((inDegree[neighbor] ?? 0) === 0) {
-          // Insert sorted
-          let inserted = false;
-          for (let i = 0; i < queue.length; i++) {
-            if (queue[i]!.localeCompare(neighbor) > 0) {
-              queue.splice(i, 0, neighbor);
-              inserted = true;
-              break;
-            }
-          }
-          if (!inserted) queue.push(neighbor);
-        }
-      }
-    }
-
-    // Cycle detection: if not all nodes reached, there's a cycle
-    if (order.length !== nodes.length) {
-      const missing = nodes.filter((n) => !order.includes(n.id)).map((n) => n.id);
-      throw new Error(`Dependency cycle detected among nodes: ${missing.join(", ")}`);
-    }
-
-    return order;
+    return computeLaunchOrder(spec.nodes, spec.edges);
   }
 }
 

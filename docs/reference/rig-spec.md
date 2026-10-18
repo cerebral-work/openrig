@@ -573,6 +573,8 @@ A rig that is already running gains edges in two ways:
 
 - **Between seats that already exist** (`rig edge add <rig-id> <from> <to> --kind <kind>`): adds one edge and relaunches nothing, so the rig ID and every seat's session are kept. A repeat reports the existing edge.
 
+`rig edge add` refuses a self-edge, and a `delegates_to` or `spawned_by` edge that would make a launch-order cycle, as a rig spec does.
+
 `delegates_to` is read live (queue ownership and the `edges` in `rig whoami`). `can_observe` is recorded and shown, but no runtime behaviour reads it yet.
 
 ---
