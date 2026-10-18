@@ -4,7 +4,8 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import fs from "node:fs";
 import path from "node:path";
-import { isSecretSeatEnvName, SEAT_ENV_SECRET_NAME, SEAT_ENV_SECRET_NAME_EXEMPTIONS } from "../src/domain/seat-launch-env-filter.js";
+import { isSecretSeatEnvName, SEAT_ENV_DEFAULT_BASE, SEAT_ENV_SECRET_NAME, SEAT_ENV_SECRET_NAME_EXEMPTIONS, seatEnvKeeps, seatEnvScrubScript, type SeatEnvPolicy } from "../src/domain/seat-launch-env-filter.js";
+import { execFileSync } from "node:child_process";
 import { secretSeatEnvOverrideNames, validateSeatEnv } from "../src/domain/seat-env.js";
 import { secretNamedLaunchVars } from "../src/adapters/tmux.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -34,14 +35,19 @@ describe("the one rule and its exemption list (REQ-0017-14)", () => {
     }
   });
 
-  it("has one copy in the source: every other check imports it", () => {
+  it("has one definition in the source: every other check imports it", () => {
     const literal = "KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE";
     const found: string[] = [];
     const walk = (dir: string) => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) walk(full);
-        else if (/\.(ts|tsx|mts|js|mjs)$/.test(entry.name) && fs.readFileSync(full, "utf-8").includes(literal)) found.push(path.relative(REPO_ROOT, full));
+        else if (/\.(ts|tsx|mts|js|mjs)$/.test(entry.name)) {
+          // The regex literal, or the words spelled as a quoted list (review r2 L1: the scrub had one).
+          const text = fs.readFileSync(full, "utf-8");
+          const copies = text.split(literal).length - 1 + (text.match(/["'`]KEY["'`]\s*,\s*["'`]TOKEN["'`]/g) ?? []).length;
+          for (let i = 0; i < copies; i++) found.push(path.relative(REPO_ROOT, full));
+        }
       }
     };
     for (const pkg of fs.readdirSync(path.join(REPO_ROOT, "packages"))) {
@@ -53,6 +59,27 @@ describe("the one rule and its exemption list (REQ-0017-14)", () => {
 
   it("the launch guard exempts the same names", () => {
     expect(secretNamedLaunchVars({ TOKENIZERS_PARALLELISM: "false", GITHUB_TOKEN: "x", DEBUG: "1" })).toEqual(["GITHUB_TOKEN"]);
+  });
+});
+
+describe("the allow-list scrub uses the same rule and exemption list (review r2 L1 on #43)", () => {
+  const policy = (base: readonly string[]): SeatEnvPolicy => ({ mode: "allowlist", base, exceptions: [], kubeconfig: "/scoped", rigs: [] });
+  // Placeholder values only. The scrub runs in a real /bin/sh; the names left afterwards are what the command would get.
+  const kept = (p: SeatEnvPolicy, explicit: string[]) => execFileSync("/bin/sh", ["-c",
+    `${seatEnvScrubScript(p, explicit, "/deny/kubeconfig")}\nawk 'BEGIN { for (k in ENVIRON) print k }'`],
+  { env: { HOME: "/h", PATH: process.env.PATH!, LANG: "C", TOKENIZERS_PARALLELISM: "false", EXAMPLE_API_KEY: "placeholder" }, encoding: "utf8" })
+    .split("\n");
+  it.each([
+    ["base-listed", policy([...SEAT_ENV_DEFAULT_BASE, "TOKENIZERS_PARALLELISM"]), [], true],
+    ["the launch's own name", policy(SEAT_ENV_DEFAULT_BASE), ["TOKENIZERS_PARALLELISM"], true],
+    ["unlisted", policy(SEAT_ENV_DEFAULT_BASE), [], false],
+  ] as const)("an exempt name %s: the scrub and seatEnvKeeps agree", (_label, p, explicit, expected) => {
+    const names = kept(p, [...explicit]);
+    expect(names.includes("TOKENIZERS_PARALLELISM")).toBe(expected);
+    expect(seatEnvKeeps("TOKENIZERS_PARALLELISM", p, [...explicit])).toBe(expected);
+    // Controls: a secret-named name the launch names is still dropped, and a base name survives.
+    expect(kept(p, [...explicit, "EXAMPLE_API_KEY"]).includes("EXAMPLE_API_KEY")).toBe(false);
+    expect(names.includes("LANG")).toBe(true);
   });
 });
 

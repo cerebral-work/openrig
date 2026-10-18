@@ -189,8 +189,11 @@ function caseless(word: string): string {
  *  Then KUBECONFIG is exported. Only names and the KUBECONFIG path appear; no value is read into it. */
 export function seatEnvScrubScript(policy: SeatEnvPolicy, explicit: readonly string[], kubeconfig: string): string {
   const word = /^[A-Za-z_][A-Za-z0-9_]*\*?$/;
-  const keep = [SEAT_ENV_ACTIVITY_TOKEN, ...policy.exceptions].filter((name) => word.test(name) && !seatEnvNever(name));
-  const secret = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CRED", "PASSPHRASE", "PRIVATE"].map((w) => `*${caseless(w)}*`);
+  // Spec 0017 item 4: the exempt names a launch keeps (base-listed or its own), as seatEnvKeeps does, ahead of the
+  // secret arm; and the secret arm's words from the one rule, never a copy.
+  const exempt = Object.keys(SEAT_ENV_SECRET_NAME_EXEMPTIONS).filter((name) => explicit.includes(name) || matchesBase(name, policy.base));
+  const keep = [SEAT_ENV_ACTIVITY_TOKEN, ...policy.exceptions, ...exempt].filter((name) => word.test(name) && !seatEnvNever(name));
+  const secret = SEAT_ENV_SECRET_NAME.source.split("|").map((w) => `*${caseless(w)}*`);
   // `_` and OLDPWD are the shell's own (bash exports `_` to every command it runs); gawk adds AWKPATH and
   // AWKLIBPATH to ENVIRON itself; SHELLOPTS and BASHOPTS are bash's option flags, readonly, so an rc that
   // exports them would otherwise make every bash launch refuse (review r2). None is secret-named.
