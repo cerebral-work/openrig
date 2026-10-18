@@ -52,6 +52,7 @@ describe("growing an existing rig never closes a launch-dependency cycle (spec 0
     expect(result).toMatchObject({ ok: false, code: "cycle_error" });
     if (result.ok) return;
     expect(result.error).toContain("dev.impl delegates_to orch.lead, orch.lead delegates_to dev.impl");
+    expect(result.error).toContain("Leave one of the new edges out and retry.");
     expect(shape(rig.id)).toEqual(before);
   });
 
@@ -95,7 +96,9 @@ describe("growing an existing rig never closes a launch-dependency cycle (spec 0
     const result = await setup.rigExpansionService.expand({ rigId: rig.id, pod: pod("ops", ["mon"]) });
     expect(result).toMatchObject({ ok: false, code: "cycle_error" });
     if (result.ok) return;
-    expect(result.error).toContain("orch.lead delegates_to orch.peer, orch.peer delegates_to orch.lead");
+    expect(result.error).toContain("This rig already holds a launch-order cycle: orch.lead delegates_to orch.peer, orch.peer delegates_to orch.lead");
+    expect(result.error).toContain("There is no edge-removal command yet");
+    expect(result.error).toContain("'rig remove <rigId> <seat>'");
     expect(shape(rig.id)).toEqual(before);
   });
 });

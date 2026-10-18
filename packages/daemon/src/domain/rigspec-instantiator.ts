@@ -1752,17 +1752,24 @@ export class PodRigInstantiator {
       ...rigSpec.pods.flatMap((pod) => pod.members.map((member) => `${pod.id}.${member.id}`)),
     ])];
     const known = new Set(nodes);
+    const stored = rig.edges.map((edge) => ({ from: logicalById.get(edge.sourceId) ?? "", to: logicalById.get(edge.targetId) ?? "", kind: edge.kind }));
     const edges = [
-      ...rig.edges.map((edge) => ({ from: logicalById.get(edge.sourceId) ?? "", to: logicalById.get(edge.targetId) ?? "", kind: edge.kind })),
+      ...stored,
       ...rigSpec.pods.flatMap((pod) => pod.edges.map((edge) => ({ from: `${pod.id}.${edge.from}`, to: `${pod.id}.${edge.to}`, kind: edge.kind }))),
       ...rigSpec.edges.map((edge) => ({ from: edge.from, to: edge.to, kind: edge.kind })),
     ].filter((edge) => known.has(edge.from) && known.has(edge.to));
     try {
       computeLaunchOrder(nodes.map((id) => ({ id })), edges);
       return null;
-    } catch (err) {
-      const named = describeLaunchEdges([...heldByLaunchCycles(nodes, edges).values()].flat());
-      return `This change would close a launch-order cycle: ${named}. ${(err as Error).message}. Nothing was written.`;
+    } catch {
+      const cycle = [...heldByLaunchCycles(nodes, edges).values()].flat();
+      const storedLabels = new Set(stored.map((edge) => describeLaunchEdges([edge])));
+      if (cycle.some((edge) => !storedLabels.has(describeLaunchEdges([edge])))) {
+        return `This change would close a launch-order cycle: ${describeLaunchEdges(cycle)}. Nothing was written. Leave one of the new edges out and retry.`;
+      }
+      return `This rig already holds a launch-order cycle: ${describeLaunchEdges(cycle)}. Nothing was written. There is no edge-removal `
+        + "command yet: the only command that drops one of these edges today is 'rig remove <rigId> <seat>' on a seat named here, "
+        + "which removes that seat together with its edges.";
     }
   }
 

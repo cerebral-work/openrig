@@ -45,7 +45,10 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
    - It runs `computeLaunchOrder`, the check `rig edge add` uses, over the rig's seats and edges plus the spec's. Edges naming a seat that is neither are left to the existing missing-node refusal.
    - A cycle is refused before the write transaction, with code `cycle_error`. The message names the cycle edges and says nothing was written.
    - The expand, add-member and materialize routes return it as 400.
-   - Like `rig edge add`, a rig that already holds a cycle refuses any growth until an edge is removed. The refusal names the existing edges.
+   - The refusal names the cycle's edges and says how to recover:
+     - **The cycle uses an edge from the request:** leave one of the new edges out and retry.
+     - **The cycle is entirely existing edges:** like `rig edge add`, a rig that already holds a cycle refuses any growth. The refusal says plainly that there is no edge-removal command yet. Today the only command that drops one of those edges is `rig remove <rigId> <seat>` on a seat in the cycle, which removes that seat with its edges.
+   - The live database had no such rig on 2026-10-18: a read-only copy, scanned with this detector, showed 0 of 34 rigs holding a cycle.
 3. **The spec path is unchanged.** It already refuses self-edges and cycles (`rigspec-schema.ts`, `computePodLaunchOrder`).
 4. `heldByLaunchCycles` (`launch-graph-cycles.ts`) is a pure helper. It finds the seats no order can place and the cycle edges at or upstream of each, and both the restore reason and the growth refusal use it. Restore keeps its own ordering. The helper only names edges for the seats that ordering left out, so no seat can be dropped even if the two disagreed.
 
@@ -60,7 +63,7 @@ Launch dependency, as in the spec path and `rig edge add`: `delegates_to` launch
 ## Plan
 
 1. Fork branch `fix/restore-graph-cycle` from `cerebral` b6847523; a PR on hold.
-2. Not built here: a route or CLI to remove one edge (today only spec re-import or direct repair can remove one).
+2. Not built here: `rig edge remove`, which orch-lead@vilicus files as a follow-up. Today only `rig remove <rigId> <seat>` drops an edge, by removing a whole seat.
 
 ## Test
 
