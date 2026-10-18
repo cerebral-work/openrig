@@ -22,6 +22,10 @@ import { isClaudeSidecarFromEarlierProcess, type ResumeTokenCaptureDeps } from "
 import { observeClaudePaneRuntime, type NativeProcessLister } from "./native-process-lineage.js";
 import { validateResumeToken } from "./resume-token-validation.js";
 
+/** The foreground processes that are Claude itself (claude, or node for an npm install): the names the claim
+ *  service expects in a claude-code pane. The probe's launch has started only when one of these is seen. */
+const CLAUDE_RUNTIME_COMMANDS = new Set(["claude", "node"]);
+
 const execFileAsync = promisify(execFile);
 
 export interface ResumeRefreshSession {
@@ -403,12 +407,17 @@ export class ResumeMetadataRefresher {
       }
 
       const attempts = 24;
-      // A shell in the foreground before anything else was seen there means the launch has not started yet (in
-      // allow-list mode the scrub runs first), not that it returned to the shell (cw.4.3, F-4b).
+      // A shell in the foreground before Claude was seen there means the launch has not started yet (in allow-list
+      // mode the scrub runs first), not that it returned to the shell (cw.4.3, F-4b). Only Claude's own process counts
+      // as started, never the scrub's helpers (awk, rm): a token the probe never tested is never "not resumable".
       let started = false;
       for (let attempt = 0; attempt < attempts; attempt++) {
         const paneCommand = await this.tmuxAdapter.getPaneCommand(probeSession);
         const paneContent = (await this.tmuxAdapter.capturePaneContent(probeSession, 80)) ?? "";
+        // The allow-list scrub refused the launch, so Claude never ran: the token was not tested.
+        if (paneContent.includes("seat_env_refused")) {
+          return "inconclusive";
+        }
         const result = assessNativeResumeProbe({
           runtime: "claude-code",
           paneCommand,
@@ -422,7 +431,7 @@ export class ResumeMetadataRefresher {
         if (result.status === "failed" && !notStartedYet) {
           return "not_resumable";
         }
-        if (!notStartedYet) started = true;
+        if (paneCommand && CLAUDE_RUNTIME_COMMANDS.has(paneCommand)) started = true;
 
         if (attempt < attempts - 1) {
           await this.sleep(250);
