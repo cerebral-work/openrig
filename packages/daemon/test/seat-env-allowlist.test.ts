@@ -1,4 +1,7 @@
 import { describe, it, expect } from "vitest";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
 import {
   SEAT_ENV_ACTIVITY_TOKEN,
@@ -71,18 +74,60 @@ describe("seat env allow-list (spec 0013)", () => {
 
   // Review r2, R1: a name the shell cannot unset must stop the command, in every shell.
   const shells = ["bash", "zsh", "dash"].filter((sh) => spawnSync("sh", ["-c", `command -v ${sh}`]).status === 0);
-  const runAfter = (sh: string, setup: string) => {
+  const runAfter = (sh: string, setup: string, extra: { env?: Record<string, string>; cwd?: string } = {}) => {
     const script = seatEnvScrubScript(POLICY, [], "/deny/kubeconfig");
     const count = `awk 'BEGIN { n = 0; for (k in ENVIRON) if (k ~ /^(EXAMPLE_TOKEN|BASH_FUNC_)/) n++; print n }'`;
-    return spawnSync(sh, ["-c", `${setup}\n( ${script}\necho "survivors=$(${count})"; echo RAN )`],
-      { env: { PATH: "/usr/bin:/bin", HOME: "/tmp" }, encoding: "utf8" });
+    return spawnSync(sh, ["-c", `${setup}\n( ${script}\necho "opts=$-"; echo "survivors=$(${count})"; echo RAN )`],
+      { env: { PATH: "/usr/bin:/bin", HOME: "/tmp", ...extra.env }, cwd: extra.cwd, encoding: "utf8" });
   };
 
   it.each(shells)("%s: a readonly secret export stops the command and reports seat_env_refused", (sh) => {
     const ran = runAfter(sh, "export EXAMPLE_TOKEN=placeholder; readonly EXAMPLE_TOKEN");
     expect(ran.stdout).not.toContain("RAN");
     expect(ran.stderr).toContain("seat_env_refused (step:");
+    // The lead's ruling on round 2: the refusal names the step and the surviving names, never a value.
+    expect(ran.stderr).toMatch(/seat_env_refused \(step: [a-z -]+; names: EXAMPLE_TOKEN\)/);
     expect(ran.stderr).not.toContain("placeholder");
+  });
+
+  // Review r2, R1b: without awk the listing is empty, so neither loop would run and the command would
+  // run with every name. A listing that produced nothing refuses instead.
+  it.each(shells)("%s: with no awk on the pane's PATH the command does not run", (sh) => {
+    const ran = runAfter(sh, "export EXAMPLE_TOKEN=placeholder; PATH=/nonexistent/openrig-no-awk");
+    expect(ran.stdout).not.toContain("RAN");
+    expect(ran.stderr).toContain("seat_env_refused (step: list the environment");
+    expect(ran.stderr).not.toContain("placeholder");
+  });
+
+  // Review r2, LOW: the listing is not pathname-expanded, so a name such as PAT* cannot match a file
+  // named PATH in the working directory and pass as a kept name. Noglob is restored for the command.
+  it.each(shells)("%s: names are not glob-expanded, and the command keeps the shell's glob setting", (sh) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "seat-glob-"));
+    try {
+      fs.writeFileSync(path.join(dir, "PATH"), "");
+      const ran = runAfter(sh, ":", { env: { "PAT*": "placeholder" }, cwd: dir });
+      expect(ran.stderr).not.toContain("placeholder");
+      if (ran.stdout.includes("RAN")) {
+        // dash drops a non-identifier name itself; then nothing of it may survive.
+        expect(spawnSync(sh, ["-c", "awk 'BEGIN { for (k in ENVIRON) if (k == \"PAT*\") print k }'"],
+          { env: { PATH: "/usr/bin:/bin", "PAT*": "x" }, encoding: "utf8" }).stdout.trim()).toBe("");
+      } else {
+        expect(ran.stderr).toContain("seat_env_refused (step:");
+      }
+      const plain = runAfter(sh, ":");
+      expect(plain.stdout).toContain("RAN");
+      expect(plain.stdout).not.toMatch(/opts=[^\n]*f/);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  // Review r2, LOW: SHELLOPTS and BASHOPTS are readonly in bash; an rc that exports them must not make
+  // every launch refuse. They are shell-option flags, not secrets.
+  it.runIf(shells.includes("bash"))("bash: exported SHELLOPTS and BASHOPTS do not stop the command", () => {
+    const ran = runAfter("bash", "export SHELLOPTS BASHOPTS");
+    expect(ran.stderr).not.toContain("seat_env_refused");
+    expect(ran.stdout).toContain("RAN");
   });
 
   it.each(shells)("%s: a removable secret export is removed and the command runs", (sh) => {
@@ -97,7 +142,7 @@ describe("seat env allow-list (spec 0013)", () => {
     expect(removed.stdout).toContain("RAN");
     const stuck = runAfter("bash", "f() { :; }; export -f f; readonly -f f");
     expect(stuck.stdout).not.toContain("RAN");
-    expect(stuck.stderr).toContain("seat_env_refused (step: re-list the environment)");
+    expect(stuck.stderr).toContain("seat_env_refused (step: re-list the environment; names: BASH_FUNC_f%%)");
   });
 
   it("names the locale and XDG directories exactly: no LC_* or XDG_* wildcard (review r2)", () => {

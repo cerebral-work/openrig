@@ -21,6 +21,9 @@ const OPERATOR = {
   OP_SERVICE_ACCOUNT_TOKEN: "placeholder", EXAMPLE_API_KEY: "placeholder", KUBECONFIG: "/admin/kubeconfig",
   EDITOR: "vi", HERDR_SOCKET_PATH: "/parent/herdr.sock",
 };
+// Names tmux's update-environment copies from the client that creates a session (review r2, INFO):
+// the daemon has them, the server's global environment does not.
+const CLIENT = { DISPLAY: ":9", KRB5CCNAME: "/tmp/krb5cc_placeholder", SSH_CONNECTION: "placeholder", SSH_AUTH_SOCK: "/tmp/agent.sock" };
 const POLICY: SeatEnvPolicy = { mode: "allowlist", base: SEAT_ENV_DEFAULT_BASE, exceptions: [], kubeconfig: "/scoped/absent", rigs: [] };
 
 async function paneEnvironNames(tm: (args: string[]) => Promise<string>, target: string): Promise<Record<string, string>> {
@@ -59,7 +62,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
     const tm = async (args: string[]) => (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env, timeout: 8000 })).stdout;
     const adapter = new TmuxAdapter(async (cmd) => {
       if (!cmd.startsWith("tmux ")) throw new Error("unexpected fixture command");
-      return (await run("/bin/sh", ["-c", cmd.replace(/^tmux /, `tmux -S ${q(socket)} -f /dev/null `)], { env, timeout: 8000 })).stdout;
+      return (await run("/bin/sh", ["-c", cmd.replace(/^tmux /, `tmux -S ${q(socket)} -f /dev/null `)], { env: { ...env, ...CLIENT }, timeout: 8000 })).stdout;
     });
     if (mode === "allowlist") adapter.setSeatEnvPolicy(() => POLICY, () => false);
     try {
@@ -89,9 +92,15 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
         }
         expect(launched).toEqual(expect.arrayContaining(["HOME", "PATH", "TMUX", "OPENRIG_NODE_ID", "CLAUDE_CONFIG_DIR", "KUBECONFIG"]));
         expect(kubeconfig).toBe(SEAT_ENV_DENY_KUBECONFIG);
+        // update-environment names follow the allow-list: SSH_AUTH_SOCK is a base name, the rest are not.
+        for (const gone of ["DISPLAY", "KRB5CCNAME", "SSH_CONNECTION"]) {
+          expect(shell[gone], `pane shell: ${gone}`).toBeUndefined();
+          expect(launched, `launched command: ${gone}`).not.toContain(gone);
+        }
+        expect(launched).toContain("SSH_AUTH_SOCK");
       } else {
         // The control: without the allow-list the same seat sees the operator's names.
-        expect(launched).toEqual(expect.arrayContaining(["OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY", "REFS_API_TOKEN", "KUBECONFIG"]));
+        expect(launched).toEqual(expect.arrayContaining(["OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY", "REFS_API_TOKEN", "KUBECONFIG", "DISPLAY", "KRB5CCNAME"]));
         expect(kubeconfig).toBe("/admin/kubeconfig");
       }
     } finally {
@@ -141,6 +150,37 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
         expect(screen).not.toContain("placeholder");
         expect(fs.existsSync(names)).toBe(false);
       }
+    } finally {
+      await tm(["kill-server"]).catch(() => {});
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  }, 30_000);
+
+  // Review r2, INFO: in a session layer 1 never touched, the names update-environment copied are still in
+  // the session's own environment. The prologue must not count them as the launch's own.
+  it("allow-list mode, a session the adapter did not create: update-environment names follow the allow-list", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "seat-allow-"));
+    const socket = path.join(root, "tmux");
+    const env = { HOME: root, PATH: process.env.PATH!, TMPDIR: root, TERM: "xterm-256color", SHELL: "/bin/bash" };
+    const tm = async (args: string[], extra: Record<string, string> = {}) =>
+      (await run("tmux", ["-S", socket, "-f", "/dev/null", ...args], { env: { ...env, ...extra }, timeout: 8000 })).stdout;
+    const adapter = new TmuxAdapter(async (cmd) => {
+      if (!cmd.startsWith("tmux ")) throw new Error("unexpected fixture command");
+      return (await run("/bin/sh", ["-c", cmd.replace(/^tmux /, `tmux -S ${q(socket)} -f /dev/null `)], { env, timeout: 8000 })).stdout;
+    });
+    adapter.setSeatEnvPolicy(() => POLICY, () => false);
+    try {
+      await tm(["new-session", "-d", "-s", "anchor"]);
+      await tm(["new-session", "-d", "-s", "dev2@rig", "bash --norc -i"], CLIENT);
+      expect(await tm(["show-environment", "-t", "=dev2@rig"])).toContain("KRB5CCNAME=");
+      const names = path.join(root, "names");
+      const sent = await adapter.sendShellCommand("dev2@rig",
+        `env | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p' | sort > ${q(names)}.tmp; mv ${q(names)}.tmp ${q(names)}`,
+        undefined, { sourceInPane: true });
+      expect(sent).toEqual({ ok: true });
+      const launched = (await waitForFile(names)).trim().split("\n");
+      for (const gone of ["DISPLAY", "KRB5CCNAME", "SSH_CONNECTION"]) expect(launched, gone).not.toContain(gone);
+      expect(launched).toContain("SSH_AUTH_SOCK");
     } finally {
       await tm(["kill-server"]).catch(() => {});
       fs.rmSync(root, { recursive: true, force: true });

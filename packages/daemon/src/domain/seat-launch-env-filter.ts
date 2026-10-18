@@ -162,21 +162,31 @@ function caseless(word: string): string {
  *  export are dropped too:
  *  - names come from awk's ENVIRON keys, which a multi-line value or an exported function body cannot
  *    fool, and which include bash's exported functions (BASH_FUNC_<name>%%);
+ *  - a listing that produced nothing refuses: without awk on the pane's PATH both loops would run zero
+ *    times and the command would run with every name (review r2, R1b);
  *  - each name the seat may not keep is unset (a function with unset -f). A name that cannot be unset
  *    (a readonly export, a non-identifier name) is tried in a throwaway subshell first, so no shell
  *    aborts on it;
  *  - the environment is listed again, and if any name the seat may not keep is still there the script
- *    prints seat_env_refused with its step and exits 126: the command never runs (review r2, R1).
+ *    prints seat_env_refused with its step and the surviving NAMES (never a value) on the pane's stderr
+ *    and exits 126: the command never runs (review r2, R1). The seat then fails readiness, which the
+ *    daemon records;
+ *  - the loops run with noglob (set -f), so a listed name such as PAT* cannot match a file in the
+ *    working directory; the shell's setting is restored for the command.
  *  Then KUBECONFIG is exported. Only names and the KUBECONFIG path appear; no value is read into it. */
 export function seatEnvScrubScript(policy: SeatEnvPolicy, explicit: readonly string[], kubeconfig: string): string {
   const word = /^[A-Za-z_][A-Za-z0-9_]*\*?$/;
   const keep = [SEAT_ENV_ACTIVITY_TOKEN, ...policy.exceptions].filter((name) => word.test(name) && !seatEnvNever(name));
   const secret = ["KEY", "TOKEN", "SECRET", "PASSWORD", "CRED", "PASSPHRASE", "PRIVATE"].map((w) => `*${caseless(w)}*`);
   // `_` and OLDPWD are the shell's own (bash exports `_` to every command it runs); gawk adds AWKPATH and
-  // AWKLIBPATH to ENVIRON itself. None is secret-named, so they are kept rather than reported.
-  const allowed = [...policy.base, ...explicit, "_", "OLDPWD", "AWKPATH", "AWKLIBPATH"].filter((name) => word.test(name));
+  // AWKLIBPATH to ENVIRON itself; SHELLOPTS and BASHOPTS are bash's option flags, readonly, so an rc that
+  // exports them would otherwise make every bash launch refuse (review r2). None is secret-named.
+  const allowed = [...policy.base, ...explicit, "_", "OLDPWD", "AWKPATH", "AWKLIBPATH", "SHELLOPTS", "BASHOPTS"]
+    .filter((name) => word.test(name));
   const quotedPath = `'${kubeconfig.replace(/'/g, `'\\''`)}'`;
-  const refuse = (step: string) => `{ IFS=$__openrig_ifs; echo "openrig: seat_env_refused (step: ${step}); the command was not run" >&2; exit 126; }`;
+  // The refusal names the step and, where some survive, the names: never a value.
+  const refuse = (step: string, names?: string) =>
+    `{ IFS=$__openrig_ifs; printf 'openrig: seat_env_refused (step: %s%s); the command was not run\\n' '${step}' ${names ? `"; names:${names}"` : "''"} >&2; exit 126; }`;
   return [
     `__openrig_names() { awk 'BEGIN { for (k in ENVIRON) print k }'; }`,
     `__openrig_keeps() {`,
@@ -191,19 +201,26 @@ export function seatEnvScrubScript(policy: SeatEnvPolicy, explicit: readonly str
     `__openrig_ifs=$IFS`,
     `IFS='`,
     `'`,
+    `case $- in *f*) __openrig_glob= ;; *) __openrig_glob=1 ;; esac`,
+    `set -f`,
+    `[ -n "$(__openrig_names)" ] || ${refuse("list the environment")}`,
     `for __openrig_n in $(__openrig_names); do`,
     `  __openrig_keeps "$__openrig_n" && continue`,
     `  case "$__openrig_n" in`,
     `    BASH_FUNC_*) __openrig_f=\${__openrig_n#BASH_FUNC_}; unset -f "\${__openrig_f%\\%\\%}" 2>/dev/null ;;`,
-    `    *) if (unset "$__openrig_n") 2>/dev/null; then unset "$__openrig_n"; else ${refuse("remove a name that cannot be unset")}; fi ;;`,
+    `    *) if (unset "$__openrig_n") 2>/dev/null; then unset "$__openrig_n"; else ${refuse("remove a name that cannot be unset", " $__openrig_n")}; fi ;;`,
     `  esac`,
     `done`,
+    `[ -n "$(__openrig_names)" ] || ${refuse("list the environment")}`,
+    `__openrig_left=`,
     `for __openrig_n in $(__openrig_names); do`,
-    `  __openrig_keeps "$__openrig_n" || ${refuse("re-list the environment")}`,
+    `  __openrig_keeps "$__openrig_n" || __openrig_left="$__openrig_left $__openrig_n"`,
     `done`,
+    `[ -z "$__openrig_left" ] || ${refuse("re-list the environment", "$__openrig_left")}`,
     `IFS=$__openrig_ifs`,
+    `[ -z "$__openrig_glob" ] || set +f`,
     `unset -f __openrig_names __openrig_keeps`,
-    `unset __openrig_n __openrig_f __openrig_ifs`,
+    `unset __openrig_n __openrig_f __openrig_ifs __openrig_glob __openrig_left`,
     `KUBECONFIG=${quotedPath}; export KUBECONFIG`,
   ].join("\n");
 }

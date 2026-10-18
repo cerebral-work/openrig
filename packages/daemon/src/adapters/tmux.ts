@@ -535,7 +535,8 @@ export class TmuxAdapter {
   }
 
   /** Spec 0013, allow-list mode: mark every name the seat may not keep removed in this session's
-   *  environment (the server's global names and the launch's own), then set KUBECONFIG explicitly.
+   *  environment (the server's global names, the names tmux's update-environment copied from the
+   *  creating client, and the launch's own), then set KUBECONFIG explicitly.
    *  Logs the count dropped and the secret-named names dropped, names only. Returns the KUBECONFIG
    *  fallback warning, if any. Throws when the environment can't be read or written: the caller
    *  refuses the launch. */
@@ -543,6 +544,8 @@ export class TmuxAdapter {
     step: { name: string } = { name: "" }): Promise<string[]> {
     step.name = "read the global environment";
     const names: Record<string, string> = { ...await this.globalEnvironment() };
+    step.name = "read update-environment";
+    for (const key of await this.updateEnvironmentNames()) names[key] ??= "";
     for (const key of explicit) names[key] ??= "";
     const dropped = seatLaunchExcludedEnvKeys(names, policy, explicit);
     step.name = "remove disallowed names";
@@ -573,6 +576,14 @@ export class TmuxAdapter {
     const sent = await this.sendText(target, command);
     if (!sent.ok) return sent;
     return this.sendKeys(target, ["Enter"]);
+  }
+
+  /** The names tmux's update-environment option copies from a creating client into a new session's
+   *  environment (DISPLAY, KRB5CCNAME, SSH_CONNECTION and the rest by default). In allow-list mode they
+   *  follow the allow-list like any other name; they are not the launch's own (review r2). */
+  private async updateEnvironmentNames(): Promise<string[]> {
+    const output = await this.run(["tmux", "show-options", "-gv", "update-environment"], "tmux show-options -gv update-environment");
+    return output.split(/\r?\n/).map((line) => line.trim()).filter((line) => line.length > 0);
   }
 
   /** The names set in one session's own environment (not the server's global names). */
@@ -929,7 +940,8 @@ export class TmuxAdapter {
     try {
       allowlist = await this.seatEnvAllowlistFor(target);
       if (allowlist) {
-        const explicit = await this.sessionEnvNames(exactTarget(target, "session"));
+        const copied = new Set(await this.updateEnvironmentNames());
+        const explicit = (await this.sessionEnvNames(exactTarget(target, "session"))).filter((name) => !copied.has(name));
         prologue = `${seatEnvScrubScript(allowlist, explicit, seatKubeconfig(allowlist, this.seatEnvFileExists).path)}\n`;
       }
     } catch {
