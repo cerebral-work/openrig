@@ -76,7 +76,7 @@ So none of Claude's own launches, tools or hooks takes Claude out of the pane's 
 
 ### 1. Native observations become three-way
 
-The identity sweep and the rebind read the pane through typed variants of `observeNativePaneProcess`, `observeClaudePaneRuntime` and the verify helpers, which return one of these. The untyped helpers stay as they are for their other callers (claim, restore, delivery, restart-in-place and the runtime adapters), where no observation is already a refusal. "The seat's runtime" is the runtime candidate under the pane process that names the seat's conversation (the resume token, or the recorded rotation), or the sole candidate when there is no token.
+The identity sweep reads the pane through typed variants of `observeNativePaneProcess`, `observeClaudePaneRuntime` and the verify helpers, which return one of these. The untyped helpers stay as they are for their other callers (the rebind, claim, restore, delivery, restart-in-place and the runtime adapters), where no observation is already a refusal. "The seat's runtime" is the runtime candidate under the pane process that names the seat's conversation (the resume token, or the recorded rotation), or the sole candidate when there is no token.
 
 **`proof`**: today's `NativeProcessObservation`. The seat's runtime is in the pane's foreground process group (its `pgid` equals the pane root's `tpgid`), and it is the only runtime candidate there.
 - **Wrapper shape:** the wrapper shell leads the foreground group, with Claude inside it, so Claude is in the group: proof.
@@ -94,7 +94,7 @@ The identity sweep and the rebind read the pane through typed variants of `obser
 - `ps` failed, exited non-zero, or parsed to zero rows. A successful `ps -A` always lists at least itself. Today's `catch { return [] }` becomes a typed failure.
 - the pane pid read is unavailable (0015's `observePanePid`);
 - the pane pid is missing from the `ps` rows: the pane process started or ended between the two reads;
-- a candidate's executable path read failed because the process exited (`ENOENT` or `ESRCH`).
+- a candidate's executable path read failed because the process exited (`ENOENT` or `ESRCH`). A candidate with no path and no recorded read error (on a platform without the read, for example) is not unavailable: it isn't a candidate, as today.
   - `readNativeExecutablePaths` (`native-process-executable.ts:30`) folds every `readlink` error into "no path" today.
   - It reports the error class instead: exited gives unavailable, refused gives contrary.
   - Caveat (review r2): a seat run under another unix user legitimately reads `EACCES`. When seats move to their own users, this rule needs that user's exe read, or it must be revisited.
@@ -107,11 +107,12 @@ The identity sweep and the rebind read the pane through typed variants of `obser
 
 | first \ second | proof (same fingerprint) | proof (other fingerprint) | contrary | unavailable |
 |---|---|---|---|---|
-| proof | proof | unavailable | unavailable | unavailable |
+| proof | proof | contrary | unavailable | unavailable |
 | contrary | unavailable | unavailable | contrary | contrary |
 | unavailable | unavailable | unavailable | contrary | unavailable |
 
 - Proof needs both samples to agree.
+- **Two proofs of different processes are contrary** (the lead's ruling, 2026-10-18). The process holding the seat's conversation changed between two samples taken moments apart. That is the PID-reuse case upstream's #273 pins as `mismatch`, and the identity axis exists to flag it.
 - Positive evidence of another process wins over a failed read (the lead's ruling). A working seat never produces contrary, so this costs a legitimate seat nothing.
 
 **What the sweep records:**
@@ -120,18 +121,16 @@ The identity sweep and the rebind read the pane through typed variants of `obser
 - `unavailable` gives the runtime's unavailable verdict: `tmux_unavailable` for `claude-code` and `terminal`. That is never down-ranked (`node-inventory.ts:268`); it replaces today's `mismatch` / `process_identity_ambiguous` at `seat-identity-reconciler.ts:339-353`.
 - A seat the sweep did not sample (its selection read failed, or its label changed between the selection read and the final one) has no native reading, so it is unavailable too. The next sweep samples it, so a takeover is still flagged within one sweep of the first successful observation (item 3).
 
-`listNativeProcesses` keeps its array result for callers outside identity proof (menu input). The sweep and the rebind read through a typed variant.
+`listNativeProcesses` keeps its array result for callers outside identity proof (menu input). The sweep reads through a typed variant.
 
-### 2. The rebind reports a failed lookup, not a mismatch
+### 2. The rebind: unchanged here (a follow-up)
 
-In `rebindAndVerifyPaneIdentity`, each of these gives "tmux pane identity lookup failed", records no verdict, and **leaves the binding unchanged**:
-- a failed `listPanes`;
-- a failed pid read;
-- an unavailable native observation, in the Claude and Codex rechecks and in the strict branch (which moves to the typed `ps` variant).
+An earlier revision made the rebind report a failed lookup, record no verdict and leave the binding unchanged. That item is withdrawn from this spec (the lead's ruling, 2026-10-18), because its premise held for one caller of five:
+- Attention clearing refuses on any rebind failure (`clearAttention` returns `not_demonstrably_responsive`).
+- Restore (both sites), restart-in-place and fresh launch (`seat-lifecycle-service.ts:1170`) call the rebind right after a launch. They rely on it binding the new pane and recording `mismatch` for an unproved Claude, so the seat stays in `attention_required`.
+- Recording no verdict there would let a seat keep an older `verified` after a restore, the failure item 3 exists to prevent. Their upstream tests pin today's rule (restore's "A3 retains attention for unproved Claude").
 
-The return comes before `updateBinding` (`:169`), as 0015's pid-read return already does.
-- A contrary observation still records `mismatch` (binding first, then the verdict, as today).
-- The callers already refuse on any rebind failure: `clearAttention` returns `not_demonstrably_responsive`. So "lookup failed" lets no operation proceed that refuses today.
+The rebind keeps today's behaviour. A follow-up ticket scopes the change to attention clearing.
 
 ### 3. The identity security goal
 
@@ -174,26 +173,27 @@ The identity axis exists to catch a pane that something other than the seat's ru
 - The 0015 fail-open rule for Claude and terminal seats.
 - Cortex-edge's guard (CER-2979).
 - Workflow role resolution's use of `lifecycleState`.
+- The rebind (item 2), a follow-up.
 
 ## Requirements
 
 - REQ-0016-01: If a native process observation cannot read the process list or the pane pid, or a candidate exited before its executable path was read, then the observer shall report the observation unavailable.
-- REQ-0016-02: When the sweep combines its two samples, it shall report proof only for two proofs with the same fingerprint, contrary when either sample is contrary and neither is a proof, and unavailable otherwise.
+- REQ-0016-02: When the sweep combines its two samples, it shall report proof only for two proofs with the same fingerprint, contrary for two proofs with different fingerprints or when either sample is contrary and neither is a proof, and unavailable otherwise.
 - REQ-0016-03: When the process list shows a different runtime or a different conversation in the pane's foreground group, the observer shall report a contrary observation.
 - REQ-0016-04: While the seat's runtime is alive under the pane but not in the pane's foreground process group, the observer shall report a contrary observation.
 - REQ-0016-05: When the pane's foreground group holds more than one runtime candidate, the observer shall report a contrary observation.
 - REQ-0016-06: When a Claude or terminal seat's native observation is unavailable, the identity reconciler shall record `tmux_unavailable`.
 - REQ-0016-07: While a seat runs Codex, the identity reconciler shall record `mismatch` for an unavailable observation.
-- REQ-0016-08: If the rebind cannot list the panes, read the pid or observe the runtime, then the rebind shall report the identity lookup failed, record no verdict and leave the binding unchanged.
 - REQ-0016-09: When every process under the pane was fully read and none is a runtime candidate, the observer shall report a contrary observation.
 - REQ-0016-10: If a candidate's executable path read is refused, then the observer shall report a contrary observation.
 
 ## Plan
 
 1. This spec. Scope (i) was chosen in review; it was revised after the security read, and comes back for a re-read before any code.
-2. One fork PR, naming CER-2982: the three-way observation (item 1) and the rebind change (item 2), with their tests. No migration.
+2. One fork PR, naming CER-2982: the three-way observation (item 1), with its tests. No migration.
 3. The upstream proposal for the bounded hold and Codex (item 4), not a fork change.
 4. Follow-ups for item 3's known limitations: native proof for non-shell labels, and a timeout on the `ps` exec.
+5. A follow-up ticket for the rebind (item 2), scoped to attention clearing.
 
 ## Test
 
@@ -212,17 +212,13 @@ The identity axis exists to catch a pane that something other than the seat's ru
 - **Extra candidates:** a second Claude in the foreground group, with `-p` or without, descendant or not: contrary.
 - **Precedence:** a candidate naming another conversation alongside a failed read: contrary. A sole candidate whose exe read failed with `ENOENT`: unavailable.
 - **The two-sample table:** each cell of the table in item 1.
+- **No path and no recorded error:** a version-named Claude with neither is not a candidate (contrary when nothing else runs), as #273's "unknown path" case pins.
 
 **The sweep:**
 - A verified managed Claude seat with one failed native sample gets `tmux_unavailable`. Today it gets `mismatch` / `process_identity_ambiguous`: red first.
 - A contrary observation gives `mismatch` / `process_identity_mismatch`.
 
 **Codex:** an unavailable observation is `mismatch` / `tmux_unavailable`, the verdict exactly as upstream (upstream's pinned test still passes); a contrary one is `mismatch` / `process_identity_mismatch`.
-
-**The rebind:**
-- A failed `listPanes`, pid read or `ps` gives "tmux pane identity lookup failed", records no verdict, and leaves the binding unchanged.
-- This holds in the Claude and Codex rechecks and in the strict branch (restore and restart-in-place); the strict branch's failed `ps` is red first.
-- A contrary observation records `mismatch`.
 
 **Break-once:** each rule, broken on purpose, turns its test red.
 
