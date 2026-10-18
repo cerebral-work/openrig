@@ -8,6 +8,7 @@ import { WhoamiService } from "../src/domain/whoami-service.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { TranscriptStore } from "../src/domain/transcript-store.js";
 import { heldByLaunchCycles } from "../src/domain/launch-graph-cycles.js";
+import { addRigEdge } from "../src/domain/rig-edge-add.js";
 
 describe("POST /api/rigs/:rigId/edges", () => {
   let db: Database.Database;
@@ -255,6 +256,76 @@ describe("DELETE /api/rigs/:rigId/edges (CER-2981)", () => {
     expect(res.status).toBe(403);
     expect(counts().edges).toBe(1);
     expect(removed()).toEqual([]);
+  });
+});
+
+// CER-3001: POST /api/rigs/:rigId/edges records a rig.edge_added event in the insert's transaction, shaped like rig.edge_removed.
+describe("POST /api/rigs/:rigId/edges records who added the edge (CER-3001)", () => {
+  let db: Database.Database;
+  let setup: ReturnType<typeof createTestApp>;
+
+  beforeEach(() => {
+    db = createFullTestDb();
+    setup = createTestApp(db);
+  });
+
+  afterEach(() => { vi.restoreAllMocks(); db.close(); });
+
+  function seed() {
+    const rig = setup.rigRepo.createRig("cortex");
+    setup.rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: "/tmp" });
+    setup.rigRepo.addNode(rig.id, "dev.build", { runtime: "claude-code", cwd: "/tmp" });
+    return { rig };
+  }
+  const EDGE = { from: "orch.lead", to: "dev.build", kind: "delegates_to" };
+  const post = (rigId: string, body: unknown, headers: Record<string, string> = {}) => setup.app.request(`/api/rigs/${rigId}/edges`, {
+    method: "POST", headers: { "Content-Type": "application/json", ...headers }, body: JSON.stringify(body),
+  });
+  const added = () => (db.prepare("SELECT rig_id, payload FROM events WHERE type = 'rig.edge_added'").all() as Array<{ rig_id: string; payload: string }>)
+    .map((row) => ({ eventRigId: row.rig_id, ...JSON.parse(row.payload) as Record<string, unknown> }));
+  const edgeCount = () => (db.prepare("SELECT COUNT(*) AS c FROM edges").get() as { c: number }).c;
+
+  it("an add records rig.edge_added with the new edge and the caller's transport identity", async () => {
+    const { rig } = seed();
+    const res = await post(rig.id, EDGE, { "X-OpenRig-Session": "orch-lead@cortex" });
+    expect(res.status, await res.clone().text()).toBe(201);
+    const { edge } = await res.json() as { edge: { id: string } };
+    expect(added()).toEqual([expect.objectContaining({ eventRigId: rig.id, rigId: rig.id, edgeId: edge.id, ...EDGE,
+      by: { session: "orch-lead@cortex", provenance: "transport:v1" } })]);
+  });
+
+  it("records a relayed caller as relay:v1, and no caller as null", async () => {
+    const { rig } = seed();
+    expect((await post(rig.id, EDGE, { "X-OpenRig-Session": "orch-lead@cortex", "X-OpenRig-Relay": "remote-host",
+      "X-OpenRig-Provenance": "transport:v1" })).status).toBe(201);
+    expect((await post(rig.id, { ...EDGE, kind: "can_observe" })).status).toBe(201);
+    expect(added().map((event) => event.by)).toEqual([{ session: "orch-lead@cortex", provenance: "relay:v1" }, null]);
+  });
+
+  it("a repeat of an existing edge and a rejection write no row and record no event", async () => {
+    const { rig } = seed();
+    expect((await post(rig.id, EDGE)).status).toBe(201);
+    expect((await post(rig.id, EDGE)).status).toBe(200); // exists
+    expect((await post(rig.id, { ...EDGE, to: "orch.lead" })).status).toBe(400); // self-edge
+    expect((await post(rig.id, { ...EDGE, kind: "befriends" })).status).toBe(400);
+    expect(edgeCount()).toBe(1);
+    expect(added()).toHaveLength(1);
+  });
+
+  it("an event write that fails rolls the insert back: no edge without its audit record (review r1 F1)", () => {
+    const { rig } = seed();
+    vi.spyOn(setup.eventBus, "persistWithinTransaction").mockImplementation(() => { throw new Error("event write failed"); });
+    expect(() => addRigEdge(setup.rigRepo, setup.eventBus, { rigId: rig.id, ...EDGE, by: null })).toThrow("event write failed");
+    expect(edgeCount()).toBe(0);
+    expect(added()).toEqual([]);
+  });
+
+  it("an insert that fails leaves no event and no edge: the event is written in the insert's transaction", () => {
+    const { rig } = seed();
+    vi.spyOn(setup.rigRepo, "addEdge").mockImplementation(() => { throw new Error("insert failed"); });
+    expect(() => addRigEdge(setup.rigRepo, setup.eventBus, { rigId: rig.id, ...EDGE, by: null })).toThrow("insert failed");
+    expect(edgeCount()).toBe(0);
+    expect(added()).toEqual([]);
   });
 });
 
