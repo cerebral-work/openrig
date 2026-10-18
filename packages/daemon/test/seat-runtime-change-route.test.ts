@@ -121,4 +121,20 @@ describe("spec 0005: runtime-change routes", () => {
     expect(declare.status).toBe(500);
     expect(await declare.json()).toEqual(failed);
   });
+
+  it("a pending declaration reaches rig seat status and the rig nodes route as served (cw.4.3)", async () => {
+    const generation = setup.sessionRegistry.currentOccupantTenure(nodeId())?.generationUuid ?? null;
+    seedCommitted(generation);
+    const status = await app.request("/api/seat/status/dev-impl%40seat-rig");
+    expect(status.status).toBe(200);
+    expect(await status.json()).toMatchObject({ pending_declaration: { change_id: "c-1", kind: "change", operator: "operator-agent@kernel" } });
+    const rigId = (db.prepare("SELECT id FROM rigs WHERE name = 'seat-rig'").get() as { id: string }).id;
+    const nodes = await app.request(`/api/rigs/${rigId}/nodes`);
+    expect(nodes.status).toBe(200);
+    const entry = (await nodes.json() as Array<{ logicalId: string; pendingDeclaration?: unknown }>).find((e) => e.logicalId === "dev.impl");
+    expect(entry?.pendingDeclaration).toMatchObject({ changeId: "c-1", kind: "change", operator: "operator-agent@kernel" });
+
+    expect((await post("/api/seat/runtime-declare/dev-impl%40seat-rig", {}, "operator-agent@kernel")).status).toBe(200);
+    expect(await (await app.request("/api/seat/status/dev-impl%40seat-rig")).json()).toMatchObject({ pending_declaration: null });
+  });
 });
