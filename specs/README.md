@@ -12,6 +12,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0002](0002-agy-runtime.md) | agy (Google Antigravity CLI) runtime (retro) | complete | daemon, adapters, ui, tui | PR #1 |
 | [0003](0003-fresh-shell-launch-readiness.md) | Fresh-shell launch readiness (retro; pane modes added) | complete | daemon, launcher, tmux | PR #3, PR #8, CER-2889 |
 | [0004](0004-stuck-finding-source-evidence.md) | Stuck findings resolve only on source evidence (retro) | complete | daemon, queue | PR #4 |
+| [0005](0005-cross-runtime-seat-migration.md) | Cross-runtime seat migration | planned | daemon, cli, handover, seat-lifecycle | [0001](0001-fork-distribution-model.md) |
 | [0006](0006-seat-launch-env-filter.md) | Seat launches drop every HERDR_* name | complete | daemon, tmux, seat launch | PR #7, SEC-178 |
 | [0008](0008-rig-edge-add.md) | `rig edge add`: an edge between existing seats | complete | daemon, cli, topology | feat/factory-expansion-fixes |
 | [0009](0009-workflow-rig-name-resolution.md) | Workflow rig-name resolution: unarchived rigs only | complete | daemon, workflow | feat/factory-expansion-fixes |
