@@ -312,6 +312,14 @@ describe("POST /api/rigs/:rigId/edges records who added the edge (CER-3001)", ()
     expect(added()).toHaveLength(1);
   });
 
+  it("an event write that fails rolls the insert back: no edge without its audit record (review r1 F1)", () => {
+    const { rig } = seed();
+    vi.spyOn(setup.eventBus, "persistWithinTransaction").mockImplementation(() => { throw new Error("event write failed"); });
+    expect(() => addRigEdge(setup.rigRepo, setup.eventBus, { rigId: rig.id, ...EDGE, by: null })).toThrow("event write failed");
+    expect(edgeCount()).toBe(0);
+    expect(added()).toEqual([]);
+  });
+
   it("an insert that fails leaves no event and no edge: the event is written in the insert's transaction", () => {
     const { rig } = seed();
     vi.spyOn(setup.rigRepo, "addEdge").mockImplementation(() => { throw new Error("insert failed"); });
