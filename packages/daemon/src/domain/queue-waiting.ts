@@ -68,7 +68,8 @@ export function readWaitingView(db: Database.Database, id: string, readActivity?
     qitem_id: string; source_session: string; destination_session: string; state: string; blocked_on: string | null; closure_required_at: string | null;
   } | undefined;
   if (!row) return null;
-  const blocker = row.blocked_on?.startsWith("qitem-") ? db.prepare(
+  // Spec 0011: a blocker that is a queue row (any prefix) projects its owner and state.
+  const blocker = row.blocked_on ? db.prepare(
     "SELECT destination_session, state FROM queue_items WHERE qitem_id = ?",
   ).get(row.blocked_on) as { destination_session: string; state: string } | undefined : undefined;
   let recoveryOwner: string | null = null;
@@ -76,7 +77,7 @@ export function readWaitingView(db: Database.Database, id: string, readActivity?
   const subject = row.blocked_on ? blocker?.destination_session ?? row.blocked_on : row.destination_session;
   let observed: ReturnType<WaitingActivityReader> = null;
   try { observed = readActivity?.(subject) ?? null; } catch { /* unavailable remains unknown */ }
-  const meaningful = lastMeaningfulTransition(db, row.blocked_on?.startsWith("qitem-") ? row.blocked_on : id);
+  const meaningful = lastMeaningfulTransition(db, blocker && row.blocked_on ? row.blocked_on : id);
   const sweepInterval = sweepSeconds();
   const view: WaitingView = {
     obligation: id, owner: row.destination_session, state: row.state, actionableSince: row.state === "pending" ? pendingSince(db, id) : null,

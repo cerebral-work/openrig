@@ -56,6 +56,8 @@ function compactWatchdogJob(job: Record<string, unknown>): Record<string, unknow
     registeredAt: job.registeredAt,
     terminalReason: job.terminalReason,
     bindingState: job.bindingState,
+    // Spec 0011: a park-generated timer names the row it serves and whether it fires once.
+    parkTimer: job.parkTimer,
   };
 }
 

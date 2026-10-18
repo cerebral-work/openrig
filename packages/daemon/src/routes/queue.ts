@@ -668,6 +668,8 @@ export function queueRoutes(): Hono {
         // OPR.0.4.4.19 FR-6 — the leg-1 park surface: blockedOn plus the
         // park-time summary/evidence_ref persist inputs.
         blockedOn: body.blockedOn,
+        // Spec 0011: this route is the CLI and agent path, where a park must name a live row, a typed gate or an address.
+        strictBlocker: true,
         wakeWatchdogId: body.wakeWatchdogId,
         wakeAfterSeconds: body.wakeAfterSeconds,
         summary: body.summary,

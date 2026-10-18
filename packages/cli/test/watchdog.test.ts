@@ -296,6 +296,24 @@ describe("rig watchdog CLI (PL-004 Phase C)", () => {
     expect(errors.at(-1)).toMatch(/Showing 100 of 101.*--all --full/);
   });
 
+  // Spec 0011: a park-generated timer names the row it serves and whether it fires once, in both views.
+  it.each([[], ["--json"]])("list %j keeps a park timer's label in the compact view", async (...flags) => {
+    const job = {
+      jobId: "park-timer-1", policy: "periodic-reminder", targetSession: "worker@rig", intervalSeconds: 7200,
+      lastEvaluationAt: null, lastFireAt: null, actionable: false, lastActionableAt: null, state: "active",
+      registeredAt: "2026-10-18T12:00:00.000Z", parkTimer: { oneShot: true, serves: ["qitem-20261018120000-abcdef01"] },
+    };
+    const plain = { ...job, jobId: "plain-1" } as Record<string, unknown>;
+    delete plain.parkTimer;
+    const { deps } = makeDeps({ routes: { "GET /api/watchdog/list": { status: 200, data: [job, plain] } } });
+    const program = createProgram({ watchdogDeps: deps });
+    program.exitOverride();
+    await program.parseAsync(["node", "rig", "watchdog", "list", ...(flags as string[])]);
+    const result = JSON.parse(logs.at(-1)!) as Array<Record<string, unknown>>;
+    expect(result.find((j) => j.jobId === "park-timer-1")?.parkTimer).toEqual({ oneShot: true, serves: ["qitem-20261018120000-abcdef01"] });
+    expect(result.find((j) => j.jobId === "plain-1")).not.toHaveProperty("parkTimer");
+  });
+
   it("list --all --full preserves the complete legacy record", async () => {
     const jobs = [
       {

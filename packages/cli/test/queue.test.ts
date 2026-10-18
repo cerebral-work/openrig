@@ -1214,6 +1214,21 @@ describe("rig queue CLI", () => {
     expect(help).toMatch(/workspace.*not.imminent/i);
   });
 
+  it("spec 0011: block help lists the blocker forms, what is refused, and a time-only park", () => {
+    const { deps } = makeDeps();
+    const program = createProgram({ queueDeps: deps });
+    const block = program.commands.find((c) => c.name() === "queue")?.commands.find((c) => c.name() === "block");
+    let help = "";
+    block?.configureOutput({ writeOut: (text) => { help += text; } });
+    block?.outputHelp();
+    expect(help).toContain("fold:<what>, auth:<what> or external:<what>");
+    expect(help).toContain("an existing custom row id");
+    expect(help).toContain("member@rig on this daemon, or member@rig@host for a remote seat");
+    expect(help).toContain("Only a live row lifts a park by itself: a typed gate or a seat address needs --wake-after or --wake-watchdog.");
+    expect(help).toContain("Bare free text, an unknown <word>: prefix, an unknown seat and a row that is not live are refused.");
+    expect(help).toContain("rig queue block <qitemId> --on external:<what> --wake-after 2h --continuation");
+  });
+
   it("handoff-and-complete sends NO body fromSession — the handing-off seat derives from the transport header (X-OpenRig-Session); --from is dropped, --to stays the target", async () => {
     const saved = process.env["OPENRIG_SESSION_NAME"];
     process.env["OPENRIG_SESSION_NAME"] = "bob@rig"; // the seat env == the X-OpenRig-Session the DaemonClient stamps

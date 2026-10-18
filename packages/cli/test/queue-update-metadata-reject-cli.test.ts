@@ -184,10 +184,50 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     expect(repo.getByIdOrThrow(id)).toEqual(before);
   });
 
-  it.each(["block", "update"] as const)("%s still accepts an external typed gate without looking up its qitem suffix", async (verb) => {
+  // Spec 0011: an external gate is still a typed gate, never looked up as a qitem; on the CLI path it now needs a wake.
+  // (This harness has no watchdog tables, so a wake can't be armed here; the daemon tests accept the woken park.)
+  it.each(["block", "update"] as const)("%s classifies an external typed gate without looking up its qitem suffix", async (verb) => {
     const gate = "external:other-host/qitem-19990101000000-deadbeef";
-    const { exit } = await runCli([...parkArgs(verb, gate), "--json"]);
+    const { out, exit } = await runCli([...parkArgs(verb, gate), "--json"]);
+    expect(exit).toBe(2);
+    expect(JSON.parse(out)).toMatchObject({ error: "blocker_wake_required", rejectedBlocker: gate });
+  });
+
+  // Spec 0011, the wake rule: nothing on this daemon lifts a typed gate or a seat address, so the CLI park needs a wake.
+  it.each(["block", "update"] as const)("%s refuses a typed gate without a wake, with the accepted forms and an example", async (verb) => {
+    const before = repo.getByIdOrThrow(id);
+    const { out, exit } = await runCli([...parkArgs(verb, "external:operator-go"), "--json"]);
+    expect(exit).toBe(2);
+    const body = JSON.parse(out);
+    expect(body).toMatchObject({ error: "blocker_wake_required", rejectedBlocker: "external:operator-go" });
+    expect(body.message).toContain("fold:<what>, auth:<what>, external:<what>");
+    expect(body.message).toContain("rig queue block <qitemId> --on external:<what> --wake-after 2h");
+    expect(repo.getByIdOrThrow(id)).toEqual(before);
+  });
+
+  // Spec 0011: the CLI park must name something that can lift it. A custom row id is a row like any other.
+  it.each(["block", "update"] as const)("%s refuses bare free text and an unknown prefix, listing the accepted forms", async (verb) => {
+    for (const [blockedOn, code] of [["operator decision", "blocker_not_found"], ["gate:time", "blocker_unknown_prefix"]] as const) {
+      const before = repo.getByIdOrThrow(id);
+      const { out, exit } = await runCli([...parkArgs(verb, blockedOn), "--json"]);
+      expect(exit, blockedOn).toBe(2);
+      const body = JSON.parse(out);
+      expect(body).toMatchObject({ error: code, rejectedBlocker: blockedOn });
+      expect(body.message).toContain("fold:<what>, auth:<what>, external:<what>");
+      expect(body.message).toContain("A free-text human wait uses external:<name> with a wake.");
+      expect(repo.getByIdOrThrow(id)).toEqual(before);
+    }
+  });
+
+  it.each(["block", "update"] as const)("%s refuses a custom row that is done and accepts one that is live", async (verb) => {
+    const done = await repo.create({ qitemId: `done-custom-row-${verb}`, sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "done" });
+    repo.update({ qitemId: done.qitemId, actorSession: "dev-x@rig", state: "done", closureReason: "no-follow-on", transitionNote: "finished" });
+    const refused = await runCli([...parkArgs(verb, `done-custom-row-${verb}`), "--json"]);
+    expect(refused.exit).toBe(2);
+    expect(JSON.parse(refused.out)).toMatchObject({ error: "blocker_not_live", rejectedBlocker: `done-custom-row-${verb}`, blockerState: "done" });
+    await repo.create({ qitemId: `live-custom-row-${verb}`, sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "live" });
+    const { exit } = await runCli([...parkArgs(verb, `live-custom-row-${verb}`), "--json"]);
     expect(exit).toBeFalsy();
-    expect(repo.getByIdOrThrow(id)).toMatchObject({ state: "blocked", blockedOn: gate });
+    expect(repo.getByIdOrThrow(id)).toMatchObject({ state: "blocked", blockedOn: `live-custom-row-${verb}` });
   });
 });
