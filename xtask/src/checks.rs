@@ -689,6 +689,41 @@ mod tests {
             "x-t: &t pull_request_target\non: *t\n",
             "pull_request_target",
         ),
+        (
+            "core str tag on the key, block map",
+            "!!str on:\n  pull_request_target:\n    types: [opened]\n",
+            "pull_request_target",
+        ),
+        (
+            "alias for a map anchor",
+            "x-trig: &trig\n  pull_request_target:\n    types: [opened]\non: *trig\n",
+            "pull_request_target",
+        ),
+        (
+            "alias for a list anchor",
+            "x-trig: &trig [push, workflow_run]\non: *trig\n",
+            "workflow_run",
+        ),
+        (
+            "alias as a list entry",
+            "x-t: &t workflow_run\non: [push, *t]\n",
+            "workflow_run",
+        ),
+        (
+            "alias as an on map key",
+            "x-t: &t pull_request_target\non:\n  push:\n  *t :\n    types: [opened]\n",
+            "pull_request_target",
+        ),
+        (
+            "alias as the on key",
+            "x-k: &k on\n*k : pull_request_target\n",
+            "pull_request_target",
+        ),
+        (
+            "anchor inside on",
+            "on:\n  push: &p\n    branches: [cerebral]\n  workflow_run: *p\n",
+            "workflow_run",
+        ),
     ];
 
     #[test]
