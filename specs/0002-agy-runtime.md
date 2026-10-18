@@ -21,6 +21,8 @@ Retro spec for fork PR #1 (merged 2026-10-17, shipped in `0.6.10-cw.2`). OpenRig
 4. **Readiness** (`classifyAgyScreen`, `domain/agy-runtime.ts`), from recorded 1.4.0 captures in `test/fixtures/agy/`: the trust dialog wins over everything and is never answered; `esc to cancel` or a spinner means working; a `? for shortcuts` footer means ready.
 5. **Resume.** `agy --conversation <uuid>`. The id exists only after the first turn, so it is captured later: the packaged PreInvocation hook `assets/agy-hook/openrig-agy-hook.sh` writes it to `$OPENRIG_HOME/state/agy/<session>.json`, and only when `OPENRIG_SESSION_NAME` is set. A fresh launch drops the previous occupant's sidecar.
 6. **Hook registration.** The hook is registered as `openrig` in the global `~/.gemini/config/hooks.json` by a textual splice, so other hooks (for example `moshi-hook`) stay byte-for-byte unchanged, and an identical block is not rewritten.
+
+   Items 5 and 6 rest on two unverified inputs: the hook script's header marks the `conversationId` in the PreInvocation payload as an ASSUMPTION (unconfirmed), and the `hooks.json` schema comes from herdr's installer for agy 1.2.x and was not re-verified on 1.4.0.
 7. **Surfaces.** `runtime-verifier.ts` proves the binary with `agy --version`; the UI and TUI carry an `agy` brand and mark.
 
 ## Requirements
