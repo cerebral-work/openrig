@@ -26,6 +26,10 @@ export interface PickupReceipt {
   state: "unclaimed" | "working" | "stalled-after-claim" | "parked" | "terminal";
   /** Present iff stalled or terminal: the named evidence replacing the manual cross-surface join. */
   evidence?: string;
+  /** Present iff stalled: the anchor the stall age runs from, the latest of the claim, the last
+   *  meaningful queue change and a post-claim heartbeat. Report ages from this, never from the
+   *  first claim: a row claimed, parked and resumed stalls from the resume (CER-2984). */
+  stalledSince?: string;
 }
 
 /** The closed states. The waiting view already reports every state outside
@@ -83,6 +87,8 @@ export function derivePickup(facts: PickupFacts): PickupReceipt {
   const minutes = Math.floor(ageMs / 60_000);
   return {
     state: "stalled-after-claim",
+    // An unparsable claim or change timestamp leaves the anchor NaN: no stalledSince, never a throw (F1).
+    ...(Number.isFinite(anchor) ? { stalledSince: new Date(anchor).toISOString() } : {}),
     evidence: facts.lastMeaningfulAt === undefined
       ? `claimed ${minutes} min ago, zero substantive transitions since`
       : `no meaningful queue change for ${minutes} min; owner activity ${facts.activity ?? "unknown"} (queue age does not prove idle)`,
@@ -98,6 +104,8 @@ export interface StalledPickupFinding {
   target: string;
   qitemId: string;
   evidence: string;
+  /** The receipt's stalledSince: the one anchor a stall age is reported from. */
+  stalledSince?: string;
 }
 
 export function stalledPickupFinding(item: {
@@ -111,5 +119,6 @@ export function stalledPickupFinding(item: {
     target: item.destinationSession ?? "",
     qitemId: item.qitemId,
     evidence: item.pickup.evidence ?? "",
+    stalledSince: item.pickup.stalledSince,
   };
 }

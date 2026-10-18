@@ -252,6 +252,48 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     });
   });
 
+  it("CER-2984 STALL AGE: a claimed, parked and resumed row reports its stall age from the resume, with the claim age shown separately", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 383);
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: "blocked", blockedOn: "external:ci", transitionNote: "parked on CI" });
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@r", state: "in-progress", transitionNote: "resumed" });
+    const at = (note: string, minutes: number) =>
+      db.prepare("UPDATE queue_transitions SET ts = ? WHERE qitem_id = ? AND transition_note = ?")
+        .run(new Date(Date.now() - minutes * 60_000).toISOString(), row.qitemId, note);
+    at("parked on CI", 335);
+    at("resumed", 1);
+    // Inside the threshold after the resume: no finding, however old the claim.
+    expect((await runSweep()).result.findings).not.toContainEqual(expect.objectContaining({ qitemId: row.qitemId }));
+    at("resumed", 5);
+    await runSweep();
+    const [finding] = await findingsFor(row.qitemId);
+    expect(finding?.summary).toBe(`Stuck sweep: stalled-after-claim on ${row.qitemId} (stalled 5 min, claimed 383 min ago)`);
+    expect(finding?.body).toContain("age: 5 min\nclaimed: 383 min ago\n");
+  });
+
+  it("CER-2984 F1: an unparsable claim timestamp never throws; the sweep completes and still reports the other rows", async () => {
+    const bad = await mkRow();
+    repo.claim({ qitemId: bad.qitemId, destinationSession: "worker@r" });
+    db.prepare("UPDATE queue_items SET claimed_at = 'not-a-date' WHERE qitem_id = ?").run(bad.qitemId);
+    const good = await mkRow();
+    repo.claim({ qitemId: good.qitemId, destinationSession: "worker@r" });
+    ageClaim(good.qitemId, 60);
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("findings");
+    expect(await findingsFor(good.qitemId)).toHaveLength(1);
+  });
+
+  it("CER-2984 STALL AGE: a never-parked row reports the same age as before, its claim age", async () => {
+    const row = await mkRow();
+    repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
+    ageClaim(row.qitemId, 60);
+    await runSweep();
+    const [finding] = await findingsFor(row.qitemId);
+    expect(finding?.summary).toBe(`Stuck sweep: stalled-after-claim on ${row.qitemId} (stalled 60 min, claimed 60 min ago)`);
+    expect(finding?.body).toContain("age: 60 min\nclaimed: 60 min ago\n");
+  });
+
   it("UNDELIVERED HALF: a pending row whose nudge failed yields exactly one finding routed to the destination's orchestrator", async () => {
     const row = await mkRow();
     failNudge(row.qitemId);
