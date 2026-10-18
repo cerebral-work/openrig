@@ -1206,7 +1206,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     claudeContextProvisioner: claudeAdapter,
     // OPR.0.4.3.28 B3 — echo the resolved activity url+token into the self-attach
     // response env so the caller's shell can produce activity signal.
-    activityEnv: { url: resolvedActivityHookUrl },
+    activityEnv: { url: resolvedActivityHookUrl, home: OPENRIG_HOME },
   });
   const rigLifecycleService = new RigLifecycleService({
     db, rigRepo, sessionRegistry, discoveryRepo, eventBus, queueRepo: queueRepoInstance, tmuxAdapter,

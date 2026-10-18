@@ -240,7 +240,8 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    * Fail-safe: skips + warns when the relay asset is missing — never writes a hook that
    * points at a nonexistent script. Verified-firsthand (Codex 0.139, dev1-qa AC-2 proof):
    * on the OpenRig-managed launch path — managed inline hooks + trusted + the relay env
-   * delivered into the seat (OPENRIG_URL + OPENRIG_ACTIVITY_HOOK_TOKEN + session/node/runtime)
+   * delivered into the seat (OPENRIG_URL + session/node/runtime; the relay reads the token from the 0600
+   * <OPENRIG_HOME>/activity-endpoint.json, spec 0013 item 9)
    * — all four events, SessionStart included, deliver as runtime_hook activity. Without the
    * relay env the hooks are still trusted/visible but no activity rows land. (A bare/manual
    * codex TUI launch lacks that context and may not deliver SessionStart — not how OpenRig

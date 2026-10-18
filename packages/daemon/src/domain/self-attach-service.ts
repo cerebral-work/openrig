@@ -21,6 +21,7 @@ export type SelfAttachSuccess = {
     // OPR.0.4.3.28 B3 — activity env echoed for the caller's shell to export.
     OPENRIG_RUNTIME?: string;
     OPENRIG_URL?: string;
+    OPENRIG_HOME?: string;
   };
 };
 
@@ -54,7 +55,7 @@ interface SelfAttachServiceDeps {
   // can reach the ingest endpoint. This is a returned env for the caller to
   // export — NOT a mutation of an already-running process. The token is not
   // echoed (spec 0013 item 9); the relay reads it from the endpoint file.
-  activityEnv?: { url?: string };
+  activityEnv?: { url?: string; home?: string };
 }
 
 interface AttachToNodeOptions {
@@ -99,7 +100,7 @@ export class SelfAttachService {
   private tmuxAdapter: TmuxAdapter | null;
   private transcriptStore: TranscriptStore | null;
   private claudeContextProvisioner: SelfAttachServiceDeps["claudeContextProvisioner"] | null;
-  private activityEnv: { url?: string };
+  private activityEnv: { url?: string; home?: string };
 
   constructor(deps: SelfAttachServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SelfAttachService: rigRepo must share the same db handle");
@@ -357,6 +358,8 @@ export class SelfAttachService {
     };
     if (runtime) env.OPENRIG_RUNTIME = runtime;
     if (this.activityEnv.url) env.OPENRIG_URL = this.activityEnv.url;
+    // The relay reads the token from $OPENRIG_HOME/activity-endpoint.json (~/.openrig when unset): name this daemon's home.
+    if (this.activityEnv.home) env.OPENRIG_HOME = this.activityEnv.home;
     return {
       ok: true,
       nodeId,

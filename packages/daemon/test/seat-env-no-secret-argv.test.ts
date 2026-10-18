@@ -11,6 +11,9 @@ import { describe, it, expect } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
 import { buildLaunchSessionEnv } from "../src/domain/launch-session-env.js";
 import { resolveStubActivityEndpoint } from "../src/adapters/stub-runner.js";
+import Database from "better-sqlite3";
+import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
+import { SEAT_ENV_SECRET_NAME } from "../src/domain/seat-launch-env-filter.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -83,6 +86,52 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
     expect(ran.filter((cmd) => cmd.includes(value))).toEqual([]);
     // OPENRIG_SEAT_ENV_KEYS matches the name rule but lists declared variable names: it is never refused.
     expect(await adapter.createSession("dev@rig", "/tmp", { OPENRIG_NODE_ID: "n1", OPENRIG_SEAT_ENV_KEYS: "SHARED,MEMBER_ONLY" })).toMatchObject({ ok: true });
+    // Review r2 LOW: the exemption holds only for a value shaped as a list of names; anything else is refused like any
+    // secret-named variable, without its value in the message.
+    const shaped = await adapter.createSession("dev@rig", "/tmp", { OPENRIG_NODE_ID: "n1", OPENRIG_SEAT_ENV_KEYS: value });
+    expect(shaped).toMatchObject({ ok: false, code: "secret_on_argv_refused" });
+    expect(shaped.ok ? "" : shaped.message).not.toContain(value);
+  });
+
+  // Review r2 R1 on #35: the managed Claude launch forwards session variables by expansion onto /usr/bin/env -i's
+  // argv. `sh -x` traces the exact words env receives after expansion, so this is a deterministic argv record (spec
+  // 0017: /proc sampling can miss a short-lived process). Red first against the base shape, which put the token in
+  // the launch env.
+  it.skipIf(process.platform === "win32").each([
+    ["head: the real builder", false],
+    ["base shape: the token in the launch env", true],
+  ] as const)("the managed launch's env -i argv holds no token and no secret-named value (%s)", async (_label, baseShape) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "managed-argv-"));
+    try {
+      const bin = path.join(root, "bin"); const cwd = path.join(root, "work");
+      for (const dir of [bin, cwd]) fs.mkdirSync(dir);
+      fs.writeFileSync(path.join(bin, "claude"), "#!/bin/sh\nif [ \"$1\" = --help ]; then printf '%s\\n' '--permission-mode <mode> (choices: \"auto\", \"default\")'; exit 0; fi\nexit 0\n", { mode: 0o700 });
+      const db = new Database(":memory:");
+      db.exec(`CREATE TABLE rigs(id TEXT, env_json TEXT); CREATE TABLE nodes(id TEXT, rig_id TEXT, runtime TEXT, cwd TEXT, env_json TEXT);
+        CREATE TABLE bindings(id TEXT, node_id TEXT, tmux_session TEXT, tmux_pane TEXT);
+        CREATE TABLE occupant_tenures(node_id TEXT, generation_uuid TEXT, generation_ordinal INTEGER);
+        INSERT INTO rigs VALUES ('rig', NULL); INSERT INTO nodes VALUES ('node', 'rig', 'claude-code', '${cwd}', NULL);
+        INSERT INTO bindings VALUES ('b', 'node', 'seat@rig', '%1'); INSERT INTO occupant_tenures VALUES ('node', 'gen', 1);`);
+      const token = sentinel();
+      const sessionEnv = { ...launchEnv(token, root), PATH: `${bin}:/usr/bin:/bin`,
+        ...(baseShape ? { OPENRIG_ACTIVITY_HOOK_TOKEN: token } : {}) };
+      const command = (await new ClaudeManagedLaunch(db, sessionEnv, {}).prepare({ nodeId: "node", session: "seat@rig", pane: "%1" }, "auto"))
+        .command(["--permission-mode", "auto"]);
+      db.close();
+      // The pane shell's environment: in the base shape tmux put the token there; at head it never does.
+      const { stderr } = await run("/bin/sh", ["-x", "-c", command], { env: { PATH: "/usr/bin:/bin", ...sessionEnv } }).catch((err: { stderr?: string }) => ({ stderr: err.stderr ?? "" }));
+      const envLine = stderr.split("\n").find((line) => line.includes("/usr/bin/env -i")) ?? "";
+      expect(envLine).not.toBe(""); // control: the trace caught env -i's argv
+      const secretAssignments = (envLine.match(/\b([A-Za-z_][A-Za-z0-9_]*)=/g) ?? []).map((m) => m.slice(0, -1)).filter((name) => SEAT_ENV_SECRET_NAME.test(name));
+      if (baseShape) {
+        expect(envLine).toContain(token);
+      } else {
+        expect(envLine).not.toContain(token);
+        expect(secretAssignments).toEqual([]);
+      }
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it("a seat with no token in its env reads it from the daemon's 0600 activity endpoint file", () => {

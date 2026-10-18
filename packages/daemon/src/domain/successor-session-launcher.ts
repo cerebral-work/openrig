@@ -12,6 +12,7 @@ import { isShellForeground } from "./shell-classifier.js";
 import { resolveReadinessTimeoutMs } from "./readiness-timeout.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
 import { terminatePaneInPlace, type PaneTerminationResult } from "./pane-cutover.js";
+import { secretNamedLaunchVars } from "../adapters/tmux.js";
 
 /**
  * OPR.0.4.3.04 — the explicit successor-creation seam for the seat-handover
@@ -195,6 +196,21 @@ export class SuccessorSessionLauncher {
       OPENRIG_OCCUPANT_GENERATION: input.occupantGeneration ?? undefined,
     });
     const cwd = input.node.cwd ?? undefined;
+
+    // Spec 0013 item 9 (review r2 F1 on #35): respawnPane refuses a secret-named variable, but only after the retiree
+    // has been terminated below, which would leave the seat dead. Refuse the same names here, before anything touches
+    // the pane: the retiree keeps running.
+    const secretNamed = secretNamedLaunchVars(env);
+    if (secretNamed.length > 0) {
+      return {
+        ok: false,
+        code: "secret_on_argv_refused",
+        step: "create_successor",
+        replacementStarted: false,
+        message: `the successor env holds secret-named ${secretNamed.join(", ")}, and a secret value is never put on a tmux argv; `
+          + "the retiree is still running. Remove it from the seat env or the provider-auth allow-list (a channel that carries it without argv is a follow-up).",
+      };
+    }
 
     // 1. Resolve the DEPARTING session's active pane — the retiree's pane we take over. A probe throw or
     //    an empty result is a structured resolve_pane failure BEFORE any respawn, so the seat is wholly

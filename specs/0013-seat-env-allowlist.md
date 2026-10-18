@@ -101,11 +101,14 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
    - **The token leaves the launch env.** The daemon no longer puts `OPENRIG_ACTIVITY_HOOK_TOKEN` in a seat's launch environment.
      - Seats read the token from `<OPENRIG_HOME>/activity-endpoint.json` (mode 0600), which the daemon writes at startup.
      - Every reader already falls back to that file: the activity relay, the stub and Pi runners, `rig startup-proof`, and session transport's prerequisite check (which counts the file as the token).
-   - **Self-attach** no longer returns the token in its response env. `rig attach --self --json` printed that response.
+   - **Self-attach** no longer returns the token in its response env. `rig attach --self --json` printed that response. It returns the daemon's `OPENRIG_HOME` instead, so a caller under a non-default home reads that daemon's endpoint file (review r2 I4 on #35).
    - **The guard.**
      - `createSession` and `respawnPane` refuse a launch env holding a secret-named variable, before any tmux command runs. Secret-named uses the `KEY|TOKEN|SECRET|PASSWORD|CRED|PASSPHRASE|PRIVATE` rule, case-insensitive.
      - The refusal is `secret_on_argv_refused`, naming the variable, never its value. A session refused at creation is never created. This applies in both modes.
-     - One OpenRig name matches the rule but is not a secret: `OPENRIG_SEAT_ENV_KEYS`, whose value lists the seat's declared variable names. It is exempt by name.
+     - One OpenRig name matches the rule but is not a secret: `OPENRIG_SEAT_ENV_KEYS`, whose value lists the seat's declared variable names. It is exempt by name, and only while its value has that shape (`NAME,NAME`); any other value is refused like any secret-named variable.
+     - **A handover refuses before the cutover.** `respawnPane`'s refusal comes after the handover has ended the retiree, which would leave the seat dead (review r2 F1 on #35).
+       - So the successor launcher checks the exact env it would pass to `respawnPane` before touching the pane, and refuses with `secret_on_argv_refused`, naming the variable.
+       - The retiree keeps running. The guidance says to remove the variable and retry, never to relaunch, because a relaunch is refused the same way.
      - So a rig spec, or the provider-auth allow-list, that names a secret-named seat variable is refused at launch until the follow-up below.
    - **Not in this change (follow-up):** a channel that delivers a secret-named seat value without argv. The same follow-up covers the managed Claude launch, which forwards session variables by name onto `/usr/bin/env -i`'s argv (`"NAME=${NAME-}"`, so the value is on `env`'s argv while it runs). With the token gone from the launch env, nothing secret-named is forwarded that way unless a provider-auth name is configured, and a fresh launch with one is refused at `new-session`.
      - The verified candidate: `tmux source-file` of a 0600 file holding `set-environment` lines, removed after, then a pane restart.
@@ -138,6 +141,8 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 - REQ-0013-17: If a launch environment passed to tmux holds a secret-named variable, then the tmux adapter shall refuse the launch before running any tmux command and name the variable without its value.
 - REQ-0013-18: The self-attach response shall not include the activity-hook token.
 - REQ-0013-19: When a seat's activity reader has no token in its environment, it shall read the token from the daemon's activity endpoint file.
+- REQ-0013-20: If a handover successor's env holds a secret-named variable, then the successor launcher shall refuse the handover before ending the retiree.
+- REQ-0013-21: The self-attach response shall include the daemon's `OPENRIG_HOME`.
 
 ## Plan
 
@@ -155,7 +160,10 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 **Item 9** (`seat-env-no-secret-argv.test.ts`):
 - **The sentinel test.** It starts a tmux server and a seat on a private socket the way the daemon does: the launch env comes from the daemon's own builder, with a sentinel token, and the adapter's command starts the server. It records every argv the adapter runs, then scans `/proc/*/cmdline` of every tmux process. The sentinel must appear in neither. Red first: before the change, the server's argv held it.
 - **The guard:** a secret-named variable in `createSession`'s or `respawnPane`'s env is refused with `secret_on_argv_refused`, naming the variable. No tmux command runs, and the message carries no value.
-- **Self-attach:** its response env holds no token.
+- **Self-attach:** its response env holds no token, and names the daemon's `OPENRIG_HOME`.
+- **The handover, real tmux:** a successor env with a secret-named seat variable (`TOKENIZERS_PARALLELISM`) is refused before the cutover. The retiree keeps its pid with `pane_dead 0`, and the cutover hook never fires; the control (`SAFE_SETTING`) respawns. The handover's guidance never names a relaunch.
+- **The managed launch's `env -i` argv,** recorded deterministically with `sh -x`: no token and no secret-named value at head. With the base shape (the token in the launch env), the trace holds it.
+- **The exemption's shape:** `OPENRIG_SEAT_ENV_KEYS` with a value that isn't a name list is refused.
 - **The file fallback:** a seat whose env lacks the token resolves it from the endpoint file.
 - **Break-once:** each rule, broken on purpose, turns its test red.
 
