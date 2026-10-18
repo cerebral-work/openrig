@@ -48,6 +48,8 @@ interface SeatStatusResponse {
   previous_occupant: string | null;
   handover_at: string | null;
   restore_outcome: string;
+  /** Spec 0005: a committed runtime change whose occupant declaration is pending, or null. */
+  pending_declaration?: { change_id: string; kind: "change" | "revert"; operator: string; committed_at: string } | null;
 }
 
 interface SeatStatusError {
@@ -210,6 +212,10 @@ function printHuman(status: SeatStatusResponse): void {
   console.log(`Continuity outcome: ${display(status.continuity_outcome, "unverified")}`);
   console.log(`Handover result: ${display(status.handover_result)}`);
   console.log(`Previous occupant: ${display(status.previous_occupant)}`);
+  const pending = status.pending_declaration;
+  if (pending) {
+    console.log(`Declaration pending: run rig seat runtime-declare ${status.seat_ref} (runtime ${pending.kind} ${pending.change_id}, committed by ${pending.operator})`);
+  }
   console.log(`Handover at: ${display(status.handover_at)}`);
 }
 

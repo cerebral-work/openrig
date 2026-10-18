@@ -18,6 +18,8 @@ import { createDb } from "../src/db/connection.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { SeatActivityService } from "../src/domain/seat-activity-service.js";
+import { SeatStatusService } from "../src/domain/seat-status-service.js";
+import { getNodeInventory } from "../src/domain/node-inventory.js";
 import { runtimeRungInventory } from "../src/domain/activity-taxonomy.js";
 
 // Review r2 F2: a revert reads the revert slot inside the node's lifecycle lease, and its commit refuses unless the
@@ -314,6 +316,36 @@ describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error
       "If the pane shows seat_env_refused, fix the seat env policy first (rig config set seat_env.mode filter rolls it back), then relaunch.");
     expect(f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id))
       .toEqual({ failure: "successor_create_failed at create-successor:start_agent:successor_not_ready" });
+  });
+
+  // cw.4.3: a pending declaration is visible where an operator looks, not only in the ledger.
+  const visible = (f: ReturnType<typeof fixture>) => {
+    const status = new SeatStatusService({ rigRepo: new RigRepository(f.db) }).getStatus(SEAT);
+    if (!status.ok) throw new Error("no status");
+    const entry = getNodeInventory(f.db, status.status.rig_id).find((e) => e.nodeId === f.node.id)!;
+    return { status: status.status.pending_declaration, inventory: entry.pendingDeclaration };
+  };
+
+  it("a pending declaration shows in seat status and the node inventory, and is gone after runtime-declare", async () => {
+    const { f } = await undeclared();
+    const row = f.db.prepare("SELECT id, created_at FROM node_runtime_changes WHERE node_id = ?").get(f.node.id) as { id: string; created_at: string };
+    expect(visible(f)).toEqual({
+      status: { change_id: row.id, kind: "change", operator: "operator-agent@kernel", committed_at: row.created_at },
+      inventory: { changeId: row.id, kind: "change", operator: "operator-agent@kernel", committedAt: row.created_at },
+    });
+    expect((await f.service.declareRuntimeOccupant({ seatRef: SEAT, caller: OPERATOR })).ok).toBe(true);
+    expect(visible(f)).toEqual({ status: null, inventory: undefined });
+  });
+
+  it("a declared change, and an undeclared one a later handover replaced, show no pending declaration", async () => {
+    const declared = fixture();
+    expect((await declared.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: declared.change("claude-code", "claude-opus-5-5") })).ok).toBe(true);
+    expect(visible(declared)).toEqual({ status: null, inventory: undefined });
+
+    const { f } = await undeclared();
+    expect((await f.service.handover({ seatRef: SEAT, reason: "later", source: "fresh", caller: OPERATOR })).ok).toBe(true);
+    expect(visible(f)).toEqual({ status: null, inventory: undefined }); // runtime-declare refuses here too
   });
 
   it("a committed change whose declaration succeeds is marked declared at commit, by its operator", async () => {

@@ -569,6 +569,36 @@ describe("OPR.0.4.0.25 — rig ps token-safe defaults", () => {
     } finally { node.latestError = previous; }
   });
 
+  it.each(["compact", "full"])("names a pending runtime-change declaration after the %s node table", async mode => {
+    const node = RIG_A_NODES[0]! as (typeof RIG_A_NODES)[number] & { pendingDeclaration?: unknown };
+    node.pendingDeclaration = { changeId: "c-1", kind: "change", operator: "operator-agent@kernel", committedAt: "2026-10-18T14:00:00.000Z" };
+    try {
+      const { logs } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", ...(mode === "full" ? ["--full"] : [])]);
+      });
+      const output = logs.join("\n");
+      expect(output).toContain(`Declaration pending (${node.canonicalSessionName}): run rig seat runtime-declare ${node.canonicalSessionName}`);
+      expect(output.match(/Declaration pending/g)).toHaveLength(1);
+    } finally { delete node.pendingDeclaration; }
+  });
+
+  it("the default compact --json carries pendingDeclaration only when pending, and --fields accepts it (review r2 F1)", async () => {
+    const node = RIG_A_NODES[0]! as (typeof RIG_A_NODES)[number] & { pendingDeclaration?: unknown };
+    const pending = { changeId: "c-1", kind: "change", operator: "operator-agent@kernel", committedAt: "2026-10-18T14:00:00.000Z" };
+    node.pendingDeclaration = pending;
+    try {
+      const run = async (...extra: string[]) => JSON.parse((await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A", "--json", ...extra]);
+      })).logs.join("")) as Array<Record<string, unknown>>;
+      const compact = await run();
+      expect(compact.find((e) => e.canonicalSessionName === node.canonicalSessionName)?.pendingDeclaration).toEqual(pending);
+      expect(compact.filter((e) => "pendingDeclaration" in e)).toHaveLength(1);
+      // --fields answers in its envelope, { entries: [...] }.
+      const fields = (await run("--fields", "logicalId,pendingDeclaration") as unknown as { entries: Array<Record<string, unknown>> }).entries;
+      expect(fields.filter((e) => "pendingDeclaration" in e)).toEqual([{ logicalId: node.logicalId, pendingDeclaration: pending }]);
+    } finally { delete node.pendingDeclaration; }
+  });
+
   it("compact default human table uses compact columns and omits full-only columns", async () => {
     const { logs } = await captureLogs(async () => {
       await makeCmd().parseAsync(["node", "rig", "ps", "--nodes", "-A"]);

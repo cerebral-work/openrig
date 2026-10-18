@@ -238,6 +238,18 @@ describe("rig seat status", () => {
     });
   });
 
+  it("shows a pending declaration with the command that finishes it, and nothing when none is pending", async () => {
+    const status = (pending: unknown) => makeDeps({ status: 200, data: { ...STATUS, pending_declaration: pending } }, []);
+    const run = async (pending: unknown) => (await captureLogs(async () => {
+      await makeCommand(status(pending)).parseAsync(["node", "rig", "seat", "status", "dev-impl@seat-rig"]);
+    })).logs.join("\n");
+    expect(await run({ change_id: "c-1", kind: "change", operator: "operator-agent@kernel", committed_at: "2026-10-18T14:00:00.000Z" }))
+      .toContain("Declaration pending: run rig seat runtime-declare dev-impl@seat-rig (runtime change c-1, committed by operator-agent@kernel)");
+    expect(await run({ change_id: "c-2", kind: "revert", operator: "advisor-lead@kernel", committed_at: "2026-10-18T14:05:00.000Z" }))
+      .toContain("Declaration pending: run rig seat runtime-declare dev-impl@seat-rig (runtime revert c-2, committed by advisor-lead@kernel)");
+    expect(await run(null)).not.toContain("Declaration pending");
+  });
+
   it("prints concise human output without claiming a handover happened", async () => {
     const deps = makeDeps({ status: 200, data: STATUS }, []);
 

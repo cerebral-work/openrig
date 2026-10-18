@@ -53,6 +53,14 @@ export function envFingerprint(env: SeatEnv | null): Array<{ name: string; sha25
   return Object.keys(env).sort().map((name) => ({ name, sha256: createHash("sha256").update(env[name]!).digest("hex") }));
 }
 
+/** A committed runtime change or revert whose occupant declaration is pending (spec 0005, migration 116). */
+export interface PendingDeclaration {
+  changeId: string;
+  kind: "change" | "revert";
+  operator: string;
+  committedAt: string;
+}
+
 export class NodeRuntimeChangeLedger {
   constructor(private readonly db: Database.Database) {}
 
@@ -84,6 +92,25 @@ export class NodeRuntimeChangeLedger {
         declared_by: string | null } | undefined;
     return row ? { id: row.id, kind: row.kind, operator: row.operator, generationUuid: row.generation_uuid, declaredAt: row.declared_at,
       declaredBy: row.declared_by } : null;
+  }
+
+  /** Every node's pending declaration (migration 116), keyed by node id: its latest committed change is undeclared and
+   *  its occupant generation is still the node's current one, the same test rig seat runtime-declare applies. One read
+   *  per inventory projection. A database without the runtime-change tables (an older fixture) has none. */
+  pendingDeclarations(): Map<string, PendingDeclaration> {
+    let rows: Array<{ node_id: string; id: string; kind: "change" | "revert"; operator: string; created_at: string }>;
+    try {
+      rows = this.db.prepare(`SELECT c.node_id, c.id, c.kind, c.operator, c.created_at FROM node_runtime_changes c
+        WHERE c.outcome = 'committed' AND c.declared_at IS NULL
+          AND c.id = (SELECT l.id FROM node_runtime_changes l WHERE l.node_id = c.node_id AND l.outcome = 'committed'
+            ORDER BY l.created_at DESC, l.rowid DESC LIMIT 1)
+          AND c.generation_uuid = (SELECT t.generation_uuid FROM occupant_tenures t WHERE t.node_id = c.node_id
+            ORDER BY t.generation_ordinal DESC LIMIT 1)`).all() as typeof rows;
+    } catch (err) {
+      if (/no such (table|column)/.test((err as Error).message)) return new Map();
+      throw err;
+    }
+    return new Map(rows.map((r) => [r.node_id, { changeId: r.id, kind: r.kind, operator: r.operator, committedAt: r.created_at }]));
   }
 
   /** The committed change's occupant swap was declared to the activity oracle. Set once; a declared row is untouched. */

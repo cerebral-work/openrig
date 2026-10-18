@@ -679,6 +679,8 @@ export interface NodeInventoryEntry {
   // OPR.0.4.3.06 — challenge-verified orientation, surfaced beside (never
   // folded into) startupStatus.
   oriented: NodeOriented;
+  /** Spec 0005: a committed runtime change whose occupant declaration is pending; run rig seat runtime-declare. */
+  pendingDeclaration?: import("./node-runtime-changes.js").PendingDeclaration;
   lifecycleState: NodeLifecycleState;
   occupantLifecycle: OccupantLifecycle;
   continuityOutcome: ContinuityOutcome | null;

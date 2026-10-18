@@ -59,6 +59,8 @@ interface NodeEntry {
   intentionallyStopped?: boolean;
   startupStatus: "pending" | "ready" | "attention_required" | "failed" | null;
   restoreOutcome: string;
+  /** Spec 0005: a committed runtime change whose occupant declaration is pending. */
+  pendingDeclaration?: { changeId: string; kind: "change" | "revert"; operator: string; committedAt: string };
   // OPR.0.4.3.06 — challenge-verified orientation, distinct from startupStatus.
   oriented?: string;
   lifecycleState?: "running" | "detached" | "recoverable" | "attention_required";
@@ -222,6 +224,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "agentActivity",
   "contextUsage",
   "heldReason",
+  "pendingDeclaration",
 ]);
 
 interface PsCliOptions {
@@ -677,6 +680,8 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
     if (n.intentionallyStopped !== undefined) compact.intentionallyStopped = n.intentionallyStopped;
     // held/attention reason (short) when present.
     if (n.heldReason) compact.heldReason = n.heldReason;
+    // Spec 0005: a pending runtime-change declaration (run rig seat runtime-declare), when present.
+    if (n.pendingDeclaration) compact.pendingDeclaration = n.pendingDeclaration;
     if (attention && n.latestError) {
       compact.latestError = n.latestError;
     }
@@ -834,7 +839,7 @@ podNamespace, hostSelfId, canonicalSessionName, nodeKind, runtime, model, sessio
 intentionallyStopped, startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
 resumeCommand, latestError, terminalActive, hasAssignedWork,
 assignedWorkCount, pendingWorkCount, inProgressWorkCount, blockedWorkCount,
-agentActivity, contextUsage, heldReason.
+agentActivity, contextUsage, heldReason, pendingDeclaration.
 
 --host runs on a remote host declared in ~/.openrig/hosts.yaml (no current-rig
 default applied; the remote host's rigs are shown).
@@ -1270,6 +1275,11 @@ async function handleNodes(
   for (const n of humanList as NodeEntry[]) {
     if (n.startupStatus === "attention_required" && n.latestError?.includes("rig seat continue ")) {
       console.log(`Startup details (${n.canonicalSessionName ?? n.logicalId}): ${n.latestError}`);
+    }
+    // Spec 0005: a committed runtime change whose occupant declaration is pending, with the command that finishes it.
+    if (n.pendingDeclaration) {
+      const seat = n.canonicalSessionName ?? `${n.logicalId}@${n.rigName}`;
+      console.log(`Declaration pending (${seat}): run rig seat runtime-declare ${seat}`);
     }
   }
   if (humanTruncated) {

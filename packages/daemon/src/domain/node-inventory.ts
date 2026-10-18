@@ -20,6 +20,7 @@ import { resolveNodeWorkspace } from "./workspace/workspace-resolver.js";
 import { deriveCanonicalSessionName } from "./session-name.js";
 import { buildNativeResumeCommand, buildCodexResumeCore } from "./native-resume-probe.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
+import { NodeRuntimeChangeLedger, type PendingDeclaration } from "./node-runtime-changes.js";
 import { tmuxAttachCommand } from "../adapters/tmux-server.js";
 
 // -- Row types for SQL results --
@@ -524,11 +525,12 @@ export function getNodeInventory(db: Database.Database, rigId: string): NodeInve
   const restoreOutcomes = buildRestoreOutcomeMap(db, rigId);
   const orienteds = buildOrientedMap(db);
   const codexDaemonOptOuts = new AppliedLaunchObservationStore(db).readCurrentDaemonOptOuts();
+  const pendingDeclarations = new NodeRuntimeChangeLedger(db).pendingDeclarations();
 
   const rows = queryInventoryRows(db, rigId);
 
   return rows.map((row) =>
-    buildInventoryEntry(db, row, { usableSnapshot, workspaceSpec, identityVerdicts, restoreOutcomes, orienteds, codexDaemonOptOuts }),
+    buildInventoryEntry(db, row, { usableSnapshot, workspaceSpec, identityVerdicts, restoreOutcomes, orienteds, codexDaemonOptOuts, pendingDeclarations }),
   );
 }
 
@@ -635,6 +637,8 @@ interface InventoryBuildContext {
   orienteds: Map<string, NodeOriented>;
   /** Each node's current recorded Codex daemon choice (one read per projection); absent = not recorded. */
   codexDaemonOptOuts: Map<string, boolean>;
+  /** Spec 0005: each node's pending runtime-change declaration (one read per projection); absent = none. */
+  pendingDeclarations: Map<string, PendingDeclaration>;
 }
 
 /**
@@ -647,7 +651,8 @@ function buildInventoryEntry(
   row: InventoryRow,
   ctx: InventoryBuildContext,
 ): NodeInventoryEntry {
-  const { usableSnapshot, workspaceSpec, identityVerdicts, restoreOutcomes, orienteds, codexDaemonOptOuts } = ctx;
+  const { usableSnapshot, workspaceSpec, identityVerdicts, restoreOutcomes, orienteds, codexDaemonOptOuts, pendingDeclarations } = ctx;
+  const pendingDeclaration = pendingDeclarations.get(row.node_id);
   // FS-1 W1.3 S1 — O(1) lookup into the once-per-rig restore-outcome map
   // (byte-identical to the prior per-node deriveRestoreOutcome; "n-a" when a node
   // is referenced by no restore event, matching the prior fall-through).
@@ -708,6 +713,7 @@ function buildInventoryEntry(
     // (byte-identical to the prior per-node deriveOriented; "n-a" when a node has
     // no proof events, matching deriveOriented's no-challenge branch).
     oriented: orienteds.get(row.node_id) ?? "n-a",
+    ...(pendingDeclaration ? { pendingDeclaration } : {}),
     lifecycleState,
     occupantLifecycle: deriveOccupantLifecycle(row, identityVerdict),
     continuityOutcome: deriveContinuityOutcome(row, restore),
@@ -790,6 +796,7 @@ function buildInventoryMapFromRows(db: Database.Database, rows: InventoryRow[]):
   const restoreOutcomes = buildRestoreOutcomeMap(db); // one fleet restore-outcome scan
   const orienteds = buildOrientedMap(db);             // one fleet startup-orientation scan
   const codexDaemonOptOuts = new AppliedLaunchObservationStore(db).readCurrentDaemonOptOuts(); // one launch-fact read
+  const pendingDeclarations = new NodeRuntimeChangeLedger(db).pendingDeclarations(); // one runtime-change ledger read
   const out = new Map<string, NodeInventoryEntry[]>();
   for (const row of rows) {
     const entry = buildInventoryEntry(db, row, {
@@ -799,6 +806,7 @@ function buildInventoryMapFromRows(db: Database.Database, rows: InventoryRow[]):
       restoreOutcomes,
       orienteds,
       codexDaemonOptOuts,
+      pendingDeclarations,
     });
     let list = out.get(row.rig_id);
     if (!list) { list = []; out.set(row.rig_id, list); }
