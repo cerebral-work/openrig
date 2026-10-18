@@ -139,7 +139,7 @@ The identity axis exists to catch a pane that something other than the seat's ru
   - That includes a shell started under Claude (an editor shell escape). It reads `attention_required` until it exits, which is intended and is today's behaviour.
 - **While observations of that seat fail**, the seat reads `tmux_unavailable` from the first failed sweep, never a stale `verified`. That verdict is unverified but not down-ranked: 0015's fail-open rule for Claude and terminal seats, unchanged.
 - **The stated bound:** such a takeover is flagged within one sweep of the first successful observation after it.
-- **Known limitations, which predate this spec** (follow-ups, not changed here):
+- **Known limitations** (follow-ups, not changed here). All but the last predate this spec:
   - **The lenient label path.** The native observation runs only when the pane's foreground label is a shell, or for Codex (`seat-identity-reconciler.ts:216`, `:337-338`).
     - Any other label, such as `python3`, `vim`, `sleep` or a shell's running job, goes to `classifyPaneRuntimeMatch`. That returns `match` for anything that isn't a shell or another agent (`:47-63`), and the verdict is `verified` with no process proof (`:358`).
     - The bound above therefore covers the shell-label and agent-label paths only.
@@ -150,6 +150,10 @@ The identity axis exists to catch a pane that something other than the seat's ru
     - The seat reads `mismatch` and `attention_required` for the length of that run, and clears itself at the next sweep after it.
     - That is today's behaviour too; this spec doesn't change it.
   - **Not an integrity monitor.** An attacker who can break the daemon's tmux or `ps` access for every read already controls the host, and a same-user process can already copy a seat's argv. The identity axis is not a host-integrity monitor.
+  - **Short-lived Claude-named processes** (review r2 on the code; introduced by item 1's precedence).
+    - "A Claude-like process exited before its executable was read: unavailable" is checked before "no runtime under the pane: contrary".
+    - So a same-user squatter that keeps spawning short-lived processes named `claude` can turn a contrary reading into unavailable when both samples catch one.
+    - That is probabilistic, and no stronger than the lenient label path above.
 
 ### 4. Codex: keep upstream's rule in the fork; take the hold upstream
 
