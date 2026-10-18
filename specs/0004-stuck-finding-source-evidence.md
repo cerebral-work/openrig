@@ -15,7 +15,7 @@ Retro spec for fork PR #4 (merged 2026-10-17 into `cerebral` after cw.3, shipped
 
 ## Design
 
-1. **Resolution needs source evidence.** An open `undelivered-wake` finding closes only when its source row is claimed in progress, its last wake result is `verified`, or a human notification was posted in the current episode. An `unclaimed-obligation` finding on a still-pending, unclaimed source closes only on that human post. A missing source row is not evidence.
+1. **Resolution needs source evidence.** While its source row is pending, in progress or blocked, an open `undelivered-wake` finding closes only when that row is claimed in progress, its last wake result is `verified`, or a human notification was posted in the current episode. An `unclaimed-obligation` finding on a still-pending, unclaimed source closes only on that human post. A source in a terminal state closes its finding (`queue-stuck-sweep.ts:644`). A missing source row is not evidence.
 2. **Attribution.** Sweep closures are made by `stuck-sweep@system`, with `no-follow-on` and a transition note that records the source state, claim, wake result and human post.
 3. **Suppression lease.** A retry or escalation marker suppresses new findings for at most 30 minutes (`STUCK_SWEEP_LADDER_MAX_AGE_MINUTES`). Expiry only restores reporting: it never retries transport, drives a prompt or changes ladder scheduling. Invalid or future timestamps do not suppress.
 

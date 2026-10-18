@@ -1,5 +1,5 @@
 ---
-status: complete
+status: in-progress
 created: 2026-10-18
 priority: high
 scope: daemon, launcher, tmux
@@ -20,6 +20,7 @@ Retro spec for fork PR #3 (CER-2889, merged 2026-10-17, shipped in `0.6.10-cw.3`
 3. **Production only.** The handshake is a `TmuxAdapter` option that `createDaemon` sets at its one production construction site (`packages/daemon/src/startup.ts`, `{ handshake: true }`). A bare adapter keeps upstream's one-paste, one-Enter contract (`e5ce2ce2`).
 4. **Launch readiness codes.** The Claude and Codex adapters distinguish `launch_not_executed` (the staged script was never consumed), `awaiting_runtime` (a wrapper is still busy) and `returned_to_shell` (proven return to an idle shell). The runtime invocation itself is never retried.
 5. **Scope.** Existing and adopted seats keep their input behaviour. Prompt guards and permissions are unchanged.
+6. **Pane modes** (fork PR #8). A failing cosmetic tmux hook (session-created or client-attached) can leave the fresh pane in view-mode, and while a read-only client is attached, keys sent to a pane in a mode fail. Before each handshake write, `waitForFreshShell` reads `#{pane_in_mode}` and leaves any mode with `copy-mode -q`. The pane was created for this launch, so no user state is lost.
 
 ## Requirements
 
@@ -30,15 +31,17 @@ Retro spec for fork PR #3 (CER-2889, merged 2026-10-17, shipped in `0.6.10-cw.3`
 - REQ-0003-05: Where a `TmuxAdapter` is constructed without the handshake option, the adapter shall send one paste and one Enter per command.
 - REQ-0003-06: If a staged launch script is never consumed, then the Claude and Codex adapters shall report `launch_not_executed`.
 - REQ-0003-07: When a runtime returns to an idle shell, the Claude and Codex adapters shall report `returned_to_shell` without retrying the runtime invocation.
+- REQ-0003-08: If a fresh pane is in a tmux mode before a handshake write, the production daemon shall leave that mode before writing.
 
 ## Plan
 
-Implemented in fork PR #3 (`917f2ddf` in cw.3; `6c5fc49f` after the cw.4 rebase), narrow backports of upstream `c336df24` (#1364), `3053354c` (#1373) and the readiness part of `a2a37b16` (#1395). cw.4 gated the handshake to production startup in `e5ce2ce2`.
+Implemented in fork PR #3 (`917f2ddf` in cw.3; `6c5fc49f` after the cw.4 rebase), narrow backports of upstream `c336df24` (#1364), `3053354c` (#1373) and the readiness part of `a2a37b16` (#1395). cw.4 gated the handshake to production startup in `e5ce2ce2`. REQ-0003-08 is fork PR #8 (`fix/pane-mode-readiness`, cw.4.1); this spec is `in-progress` until it lands.
 
 ## Test
 
 ```bash
 cd packages/daemon && npx vitest run test/fresh-shell-launch.test.ts test/startup-wiring-pins.test.ts
+cd packages/daemon && npx vitest run test/fresh-shell-pane-mode.test.ts   # REQ-0003-08, with PR #8
 ```
 
-At `6d746c2a` the two suites pass 48 cases (5 todo). `startup-wiring-pins.test.ts` fails if production stops enabling the handshake. Stub-agent scenarios do not use staged Claude or Codex launches, so the first end-to-end proof is a real seat launch after install.
+At `6d746c2a` the two suites pass 48 cases (5 todo). `startup-wiring-pins.test.ts` fails if production stops enabling the handshake. Stub-agent scenarios do not use staged Claude or Codex launches, so the first end-to-end proof is a real seat launch after install. `fresh-shell-pane-mode.test.ts` runs a private tmux server where a failing session-created hook leaves the new pane in view-mode and a read-only client is attached; without REQ-0003-08 the launch ends in `shell_not_ready`.

@@ -2,6 +2,8 @@
 
 Estate rules for agents working on this fork. They add to upstream's contributor guidance (`.claude/skills/developing-openrig/SKILL.md`, `CONTRIBUTING.md`) and to [FORK.md](FORK.md); they do not replace it.
 
+A Codex or agy seat rooted in this checkout gets `<!-- BEGIN OpenRig MANAGED BLOCK: ... -->` sections merged into this file at launch; never commit them.
+
 ## Spec first (LeanSpec)
 
 - A feat or fix creates or updates a spec in `specs/` before any code changes.
