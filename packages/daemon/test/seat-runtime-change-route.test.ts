@@ -9,10 +9,11 @@ import type { TmuxAdapter } from "../src/adapters/tmux.js";
 describe("spec 0005: runtime-change routes", () => {
   let db: Database.Database;
   let app: ReturnType<typeof createTestApp>["app"];
+  let setup: ReturnType<typeof createTestApp>;
 
   beforeEach(() => {
     db = createFullTestDb();
-    const setup = createTestApp(db, { tmux: {} as unknown as TmuxAdapter });
+    setup = createTestApp(db, { tmux: {} as unknown as TmuxAdapter });
     app = setup.app;
     const kernel = setup.rigRepo.createRig("kernel");
     setup.rigRepo.addNode(kernel.id, "operator.agent", { runtime: "codex" });
@@ -42,6 +43,20 @@ describe("spec 0005: runtime-change routes", () => {
     const res = await post("/api/seat/handover/dev-impl%40seat-rig", change, "operator-agent@kernel");
     expect(res.status).toBe(400);
     expect(await res.json()).toMatchObject({ code: "runtime_change_invalid" });
+  });
+
+  it("F1: a discovered source is refused with --to-runtime, whatever its hint, before any change", async () => {
+    for (const runtimeHint of ["unknown", "claude-code"] as const) {
+      const discovered = setup.discoveryRepo.upsertDiscoveredSession({ tmuxSession: `succ-${runtimeHint}`, tmuxPane: "%9", runtimeHint, confidence: "high" });
+      const body = { ...change, source: `discovered:${discovered.id}`, runtimeChange: { ...change.runtimeChange, approval: "go" } };
+      const res = await post("/api/seat/handover/dev-impl%40seat-rig", body, "operator-agent@kernel");
+      expect(res.status, runtimeHint).toBe(400);
+      const json = await res.json() as { code: string; guidance: string };
+      expect(json.code).toBe("runtime_change_invalid");
+      expect(json.guidance).toContain("--source fresh");
+    }
+    expect(db.prepare("SELECT runtime FROM nodes WHERE logical_id = 'dev.impl'").get()).toEqual({ runtime: "codex" });
+    expect(db.prepare("SELECT COUNT(*) AS n FROM node_runtime_changes").get()).toEqual({ n: 0 });
   });
 
   it("runtime-revert: 409 with nothing to revert for the operator, 403 without its identity", async () => {

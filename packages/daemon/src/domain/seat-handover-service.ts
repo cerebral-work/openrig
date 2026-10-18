@@ -1199,7 +1199,11 @@ export class SeatHandoverService {
     if (typeof operator !== "string") return operator;
     const r = input.request;
     const node = input.node;
-    if (input.sourceMode === "fork") return invalid("A native fork cannot cross runtimes.", "Use --source fresh or --source rebuild with --to-runtime.");
+    // A fork cannot cross harnesses, and a discovered successor gets no target startup or readiness check from the
+    // handover; both are refused, so every runtime change runs its target's startup before it commits.
+    if (input.sourceMode === "fork" || input.sourceMode === "discovered") {
+      return invalid(`A ${input.sourceMode} source cannot carry a runtime change.`, "Use --source fresh or --source rebuild with --to-runtime.");
+    }
     const approval = r.approval?.trim();
     if (!approval) return invalid("A runtime change needs --approval <ref>, recorded as attribution.", "Pass --approval with the reference of the go for this change.");
     const toRuntime = r.toRuntime?.trim() ?? "";

@@ -38,7 +38,7 @@ rig seat handover <seat> --source fresh|rebuild --to-runtime codex|claude-code -
 rig seat runtime-revert <seat> --approval <ref> --reason <text> [--resume-predecessor] [--dry-run] [--json]
 ```
 
-A runtime changes only when a new occupant starts, and handover already owns that cutover, so the change rides on it rather than on a new verb. `fork` refuses a runtime change; `discovered` accepts one only when the discovered runtime hint equals the target. The CLI sends the spec's absolute path and content; the runtime-change options are refused without `--to-runtime`.
+A runtime changes only when a new occupant starts, and handover already owns that cutover, so the change rides on it rather than on a new verb. Only `fresh` and `rebuild` carry a runtime change: a `fork` cannot cross harnesses, and a `discovered` successor gets no target startup or readiness check from the handover, so both are refused (review r2, F1). The CLI sends the spec's absolute path and content; the runtime-change options are refused without `--to-runtime`.
 
 ### Authority (D3) and attribution
 
@@ -105,7 +105,7 @@ The successor starts fresh: no native history crosses harnesses. The recap resol
 - REQ-0005-11: When a runtime change builds its recap, the handover shall resolve the predecessor record with the predecessor's runtime.
 - REQ-0005-12: If the target startup, the successor launch or its verification fails, then the daemon shall leave the node, its startup context and the predecessor session unchanged and record the attempt as failed.
 - REQ-0005-13: If a fork source is given with `--to-runtime`, then the handover shall refuse and name `--source fresh` or `--source rebuild`.
-- REQ-0005-14: Where a discovered successor's runtime hint equals `--to-runtime`, the handover shall accept it as the declared transition.
+- REQ-0005-14: If a discovered source is given with `--to-runtime`, whatever its runtime hint, then the handover shall refuse and name `--source fresh` or `--source rebuild`.
 - REQ-0005-15: When `--dry-run` is given with `--to-runtime`, the handover shall print the transition, including what `inherit` resolves to, and change nothing.
 - REQ-0005-16: The daemon shall commit a runtime change only after the target member's startup ran and the target adapter reports the successor ready.
 - REQ-0005-17: If the `--spec` member does not declare `--to-runtime`, or on a non-kernel rig does not declare every value the change carries, then the handover shall refuse before any change.
