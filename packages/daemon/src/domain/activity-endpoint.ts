@@ -33,7 +33,7 @@ const DEFAULT_DAEMON_PORT = "7433";
  *  host, so the URL MUST use it — a hardcoded 127.0.0.1 would be unreachable.
  *  Wildcard/bind-all hosts (0.0.0.0 / ::) are not connectable addresses and the
  *  daemon also binds loopback there, so they map to 127.0.0.1. An absent host
- *  (the default loopback+tailscale multi-bind) also uses loopback. */
+ *  (the default bind; loopback only on the cerebral-work fork) also uses loopback. */
 export function deriveActivityUrl(host: string | undefined, port: string | undefined): string {
   const p = port && port.trim().length > 0 ? port.trim() : DEFAULT_DAEMON_PORT;
   const h = host?.trim();

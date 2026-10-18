@@ -28,9 +28,9 @@ describe("published-daemon procedure — module/runbook parity", () => {
     expect(RUNBOOK).toContain(GUARDED_PROBE_PATH);
   });
 
-  it("publishArg is unqualified (Apple resets on the loopback-qualified form) and refuses ephemeral 0", () => {
-    expect(publishArg(L3_HOST_PORT)).toBe(`${L3_HOST_PORT}:${CONTAINER_PORT}`);
-    expect(publishArg(L3_HOST_PORT)).not.toContain("127.0.0.1");
+  it("publishArg is loopback-qualified on Linux (fork, CER-2924), unqualified elsewhere (Apple resets on it), and refuses ephemeral 0", () => {
+    expect(publishArg(L3_HOST_PORT, CONTAINER_PORT, "linux")).toBe(`127.0.0.1:${L3_HOST_PORT}:${CONTAINER_PORT}`);
+    expect(publishArg(L3_HOST_PORT, CONTAINER_PORT, "darwin")).toBe(`${L3_HOST_PORT}:${CONTAINER_PORT}`);
     expect(() => publishArg(0)).toThrow(/explicit positive integer/);
   });
 

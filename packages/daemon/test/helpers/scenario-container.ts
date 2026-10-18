@@ -104,7 +104,7 @@ export async function spawnContainerDaemon(
   const startProc = async () => {
     const start = await docker([
       "exec",
-      // Explicit bind (OPENRIG_HOST=0.0.0.0) + the bearer the bind demands — a published port is
+      // Explicit bind (OPENRIG_BIND_HOST=0.0.0.0) + the bearer the bind demands — a published port is
       // unreachable on the default 127.0.0.1 bind, and the daemon REFUSES a non-loopback bind without
       // the bearer (assertBindAuthInvariant). Satisfy the guard; never weaken it.
       ...publishedDaemonEnvFlags(bearerToken),

@@ -5,7 +5,7 @@ import {
   type DockerResult,
 } from "./helpers/scenario-container.js";
 import { HermeticEnvError, type HermeticScaffold } from "./helpers/hermetic-env.js";
-import { L3_HOST_PORT, BIND_ENV, BIND_VALUE, BEARER_ENV } from "./helpers/testbed-published-daemon.js";
+import { L3_HOST_PORT, BIND_ENV, BIND_VALUE, BEARER_ENV, publishArg } from "./helpers/testbed-published-daemon.js";
 
 // 51-04 step-3 — the CONTAINER-mode daemon adapter. It is the ScenarioDaemon-shaped
 // sibling of spawnScenarioDaemon: instead of spawning a scenario-local daemon on the
@@ -60,11 +60,10 @@ describe("spawnContainerDaemon — docker-run the testbed image by identity", ()
     });
     const runCall = calls.find((c) => c[0] === "run");
     expect(runCall).toBeDefined();
-    // Detached, publishing 127.0.0.1:<hostPort>:<containerPort>, for the NAMED image.
+    // Detached, publishing <hostPort>:<containerPort> for the NAMED image, through the one
+    // publishArg (loopback-qualified on Linux; unqualified where Apple container 1.2.0 resets on it).
     expect(runCall).toContain("-d");
-    // UNQUALIFIED publish `P:C` — NO 127.0.0.1 prefix (Apple container 1.2.0 resets on the qualified form).
-    expect(runCall).toContain("34567:7433");
-    expect(runCall).not.toContain("127.0.0.1:34567:7433");
+    expect(runCall).toContain(publishArg(34567, 7433));
     expect(runCall).toContain(IMAGE);
     // The image ref must appear AFTER the flags (docker positional-arg order).
     expect(runCall!.indexOf(IMAGE)).toBeGreaterThan(runCall!.indexOf("-d"));
@@ -79,7 +78,7 @@ describe("spawnContainerDaemon — docker-run the testbed image by identity", ()
     // the -e env flags appear BEFORE the container id (docker exec -e … <id> …).
     const idIdx = startExec.indexOf(CONTAINER_ID);
     const envPart = startExec.slice(0, idIdx);
-    expect(envPart).toContain(`${BIND_ENV}=${BIND_VALUE}`);        // OPENRIG_HOST=0.0.0.0
+    expect(envPart).toContain(`${BIND_ENV}=${BIND_VALUE}`);        // OPENRIG_BIND_HOST=0.0.0.0
     expect(envPart).toContain(`${BEARER_ENV}=tok-abc123`);         // OPENRIG_AUTH_BEARER_TOKEN=<token>
     expect(envPart.filter((a) => a === "-e").length).toBe(2);
     // host-side reads carry the TERMINAL token (same value) so they authenticate to the guarded routes.
@@ -129,19 +128,18 @@ describe("spawnContainerDaemon — docker-run the testbed image by identity", ()
     expect(daemon.readEnv.HOME).toBe("/scratch/root/home");
   });
 
-  it("defaults the container port to 7433 when unspecified (unqualified publish)", async () => {
+  it("defaults the container port to 7433 when unspecified", async () => {
     const { docker, calls } = fakeDocker();
     await spawnContainerDaemon(fakeScaffold(), { image: IMAGE, docker, hostPort: 40000 });
     const runCall = calls.find((c) => c[0] === "run");
-    expect(runCall).toContain("40000:7433");
-    expect(runCall).not.toContain("127.0.0.1:40000:7433");
+    expect(runCall).toContain(publishArg(40000, 7433));
   });
 
   it("defaults the host port to the EXPLICIT L3_HOST_PORT (never an ephemeral free port)", async () => {
     const { docker, calls } = fakeDocker();
     const daemon = await spawnContainerDaemon(fakeScaffold(), { image: IMAGE, docker });
     expect(daemon.port).toBe(L3_HOST_PORT); // 19433, explicit + deterministic
-    expect(calls.find((c) => c[0] === "run")).toContain(`${L3_HOST_PORT}:7433`);
+    expect(calls.find((c) => c[0] === "run")).toContain(publishArg(L3_HOST_PORT, 7433));
   });
 
   it("refuses an ephemeral host port (0) — publishArg throws, so it cannot sneak back", async () => {

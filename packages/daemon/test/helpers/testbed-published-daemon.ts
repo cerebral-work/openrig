@@ -4,9 +4,11 @@
 // mechanics are coupled and must be identical everywhere they appear, or the
 // runbooks and the container adapter drift and each "proves" a different thing:
 //
-//   1. EXPLICIT BIND. `packages/daemon/src/index.ts:148` reads OPENRIG_HOST;
-//      unset defaults to 127.0.0.1 (:167) — loopback is unreachable through a
-//      published port, which is exactly how the first A/B failed on BOTH arms.
+//   1. EXPLICIT BIND. Bind intent reaches the daemon only through OPENRIG_BIND_HOST
+//      (domain/bind-plan.ts); OPENRIG_HOST is client routing and has been ignored for
+//      the bind since S20. Unset, the daemon binds 127.0.0.1 (loopback only on the
+//      cerebral-work fork, CER-2924) — loopback is unreachable through a published
+//      port, which is exactly how the first A/B failed on BOTH arms.
 //   2. BEARER, because the bind demands it. `assertBindAuthInvariant`
 //      (middleware/auth-bearer-token.ts:240-264) REFUSES to start a
 //      non-loopback bind without OPENRIG_AUTH_BEARER_TOKEN. The procedure
@@ -14,7 +16,9 @@
 //   3. EXPLICIT HOST PORT. Apple `container` 1.2.0 rejects the ephemeral
 //      publish form (`invalid publish host port range: 0`) where Docker accepts
 //      it, and it RESETS on the loopback-qualified form (`127.0.0.1:P:C`) while
-//      the unqualified form works. Both arms therefore publish `P:C`, explicit.
+//      the unqualified form works. cerebral-work fork (CER-2924): Linux publishes
+//      `127.0.0.1:P:C`, so the host's other interfaces never reach the daemon;
+//      other platforms keep the unqualified `P:C`. The host port is explicit.
 //
 // PROBE SPLIT (do not collapse these — collapsing them fabricates a green):
 //   • /healthz is UNAUTHENTICATED (registered directly at server.ts:574; there
@@ -37,8 +41,8 @@ export const CONTAINER_PORT = 7433;
 /** Published host port for the L3 single-container leg. EXPLICIT, never 0. */
 export const L3_HOST_PORT = 19433;
 
-/** Env that forces the explicit bind (index.ts:148). */
-export const BIND_ENV = "OPENRIG_HOST";
+/** Env that forces the explicit bind (domain/bind-plan.ts). */
+export const BIND_ENV = "OPENRIG_BIND_HOST";
 export const BIND_VALUE = "0.0.0.0";
 
 /** Env carrying the bearer the bind guard requires (auth-bearer-token.ts:240). */
@@ -75,18 +79,22 @@ export const HEALTH_PATH = "/healthz";
 export const GUARDED_PROBE_PATH = "/api/transport/send";
 
 /**
- * The publish argument. UNQUALIFIED by design: Apple 1.2.0 resets on the
- * loopback-qualified form, so both arms use the same unqualified string —
- * identical input, not an Apple-only concession.
+ * The publish argument. cerebral-work fork (CER-2924): loopback-qualified on Linux, so
+ * the published daemon is reachable from this host only. UNQUALIFIED elsewhere, because
+ * Apple 1.2.0 resets on the loopback-qualified form.
  */
-export function publishArg(hostPort: number, containerPort: number = CONTAINER_PORT): string {
+export function publishArg(
+  hostPort: number,
+  containerPort: number = CONTAINER_PORT,
+  platform: NodeJS.Platform = process.platform,
+): string {
   if (!Number.isInteger(hostPort) || hostPort <= 0) {
     throw new Error(
       `testbed publish: host port must be an explicit positive integer (got ${hostPort}). ` +
         `Ephemeral port 0 is rejected by Apple container 1.2.0 — allocate explicitly.`,
     );
   }
-  return `${hostPort}:${containerPort}`;
+  return platform === "linux" ? `127.0.0.1:${hostPort}:${containerPort}` : `${hostPort}:${containerPort}`;
 }
 
 /** The daemon env every published-daemon container needs. */

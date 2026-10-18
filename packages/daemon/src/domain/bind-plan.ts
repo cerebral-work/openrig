@@ -34,7 +34,10 @@ export function resolveBindPlan(input: BindPlanInput): BindPlan {
   if (bindHost) {
     return { mode: "explicit", hosts: [bindHost], tailscaleDetected };
   }
-  const hosts = input.tailscaleIp ? ["127.0.0.1", input.tailscaleIp] : ["127.0.0.1"];
+  // cerebral-work fork (CER-2924): the default binds loopback only until the daemon
+  // authenticates its API. Upstream also binds the tailscale IP here; on the fork that is
+  // an explicit OPENRIG_BIND_HOST opt-in. tailscaleDetected is still reported.
+  const hosts = ["127.0.0.1"];
   return {
     mode: "default",
     hosts,

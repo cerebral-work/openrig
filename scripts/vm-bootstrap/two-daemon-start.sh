@@ -16,8 +16,10 @@
 #
 # Pre-conditions (operator install before running this):
 #   - `rig` CLI on PATH
-#   - Tailscale daemon active OR explicit LAN bind via OPENRIG_HOST (see
-#     auth-bearer-tailscale-trust slice for the bind rules)
+#   - An explicit bind via OPENRIG_BIND_HOST for the browser tabs below: the
+#     VM's tailnet IP, or a LAN address with OPENRIG_AUTH_BEARER_TOKEN set. The
+#     cerebral-work fork binds loopback only by default (CER-2924), and
+#     OPENRIG_HOST is client routing, ignored for the bind since S20.
 #
 # Architecture note (forward-fix #1): the CLI's parent-process module-
 # level constants (OPENRIG_DIR / STATE_FILE / LOG_FILE in

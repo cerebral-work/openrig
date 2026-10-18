@@ -6,6 +6,10 @@ comes from a web page, only when that page is the OpenRig UI or a page you allow
 
 ### What works with no setup
 
+On the cerebral-work fork, the daemon listens on `127.0.0.1` only unless `OPENRIG_BIND_HOST` opts
+it in to another address (CER-2924). Access from other machines, described below, needs that opt-in
+first.
+
 - The CLI, the TUI and agents on this machine, addressing the daemon by `localhost` or an IP
   address.
 - Other OpenRig hosts and clients that reach this daemon by its IP address, its own hostname, or

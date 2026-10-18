@@ -68,16 +68,15 @@ describe("S20 — the restored listener gate: adoption fails loudly on a dropped
   const probeUp = (up: Set<string>) => async (url: string) =>
     [...up].some((h) => url.includes(h)) ? ("healthy" as const) : ("unhealthy" as const);
 
-  it("0.5.3 REGRESSION SHAPE: default mode with tailscale detected but only loopback bound → LOUD failure naming the missing listener", async () => {
+  // cerebral-work fork (CER-2924): the default bind is loopback only, so a default daemon on a
+  // tailscale host reporting only loopback is the expected shape, not upstream's dropped listener.
+  it("fork default: tailscale detected, only loopback bound → pass, loopback verified by its own healthz", async () => {
     const r = await verifyRequiredListeners({
       bind: { mode: "default", hosts: ["127.0.0.1"], tailscaleDetected: true },
       port: 7433,
       probe: probeUp(new Set(["127.0.0.1"])),
     });
-    expect(r.ok).toBe(false);
-    if (r.ok) return;
-    expect(r.reason).toMatch(/listener/i);
-    expect(r.reason).toMatch(/tailscale/i);
+    expect(r).toEqual({ ok: true, verified: ["127.0.0.1"] });
   });
 
   it("default mode, both listeners bound and probed → pass with each verified by its own healthz", async () => {

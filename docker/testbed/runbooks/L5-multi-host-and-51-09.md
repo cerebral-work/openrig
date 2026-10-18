@@ -24,7 +24,7 @@ only ECHOES it for `docker logs`; nothing in the daemon reads it. Do not reintro
 
 **BIND + BEARER, carried from L3 verbatim.** L5 needs cross-container HTTP, so each daemon must be
 reachable off-loopback — the same three coupled parts L3 proved, for the same reasons, with the same
-never-weaken-the-guard rail: explicit `OPENRIG_HOST=0.0.0.0`, `OPENRIG_AUTH_BEARER_TOKEN` set (the
+never-weaken-the-guard rail: explicit `OPENRIG_BIND_HOST=0.0.0.0`, `OPENRIG_AUTH_BEARER_TOKEN` set (the
 guard at `packages/daemon/src/middleware/auth-bearer-token.ts:240-264` REFUSES a non-loopback bind
 without it), and an explicit published port when a host-side probe is used. Registry rows carry a
 bearer POINTER (`--bearer-env` NAME), never a token value.
@@ -36,7 +36,7 @@ TESTBEARER="l5-testbed-$(date +%s)"   # throwaway, container-scoped, never a rea
 
 for h in H_A H_B; do
   docker run -d -t --name "$h" --hostname "$h" --network "${NET}" \
-    -e OPENRIG_HOST=0.0.0.0 \
+    -e OPENRIG_BIND_HOST=0.0.0.0 \
     -e OPENRIG_AUTH_BEARER_TOKEN="${TESTBEARER}" \
     -e OPENRIG_TESTBED_BEARER_ENV=OPENRIG_AUTH_BEARER_TOKEN \
     "${IMAGE}"

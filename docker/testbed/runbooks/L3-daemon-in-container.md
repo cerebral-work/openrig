@@ -12,10 +12,11 @@ port — unreachable by construction, so the probe failed on BOTH runtimes (oper
 56). A control arm that cannot pass cannot judge the variable arm. The four coupled mechanics
 below are the fix; all four are grounded at source and all four apply to BOTH arms verbatim.
 
-**(a) BIND ADDRESS — explicit, never the default.** `packages/daemon/src/index.ts:148` reads
-`OPENRIG_HOST` (alias `RIGGED_HOST`); when set, `:163` binds exactly that host; when UNSET, `:167`
-defaults to `127.0.0.1` (+ tailscale when detected). A container reached through published ports
-MUST set `OPENRIG_HOST=0.0.0.0`.
+**(a) BIND ADDRESS — explicit, never the default.** Bind intent reaches the daemon only through
+`OPENRIG_BIND_HOST` (`packages/daemon/src/domain/bind-plan.ts`); when set, the daemon binds exactly
+that host. `OPENRIG_HOST` is client routing and has been ignored for the bind since S20. When UNSET,
+the daemon binds `127.0.0.1` only (the cerebral-work fork's default, CER-2924). A container reached
+through published ports MUST set `OPENRIG_BIND_HOST=0.0.0.0`.
 
 **(b) BEARER — required for the daemon to START on this bind, and separately PROVEN.**
 `assertBindAuthInvariant` (`packages/daemon/src/middleware/auth-bearer-token.ts:240-264`)
@@ -51,8 +52,8 @@ HOSTPORT=19433                      # (c) EXPLICIT — never 0 (Apple 1.2.0 reje
 TESTBEARER="l3-testbed-$(date +%s)" # (b) throwaway, container-scoped, never a real credential
 RUNTIME=docker                      # the Apple arm substitutes its CLI here; ALL ELSE IDENTICAL
 "${RUNTIME}" run -d -t --name "${NAME}" \
-  -p "${HOSTPORT}:7433" \
-  -e OPENRIG_HOST=0.0.0.0 \
+  -p "127.0.0.1:${HOSTPORT}:7433" \
+  -e OPENRIG_BIND_HOST=0.0.0.0 \
   -e OPENRIG_AUTH_BEARER_TOKEN="${TESTBEARER}" \
   -e OPENRIG_SELF_HOST_ID=testbed-l3 \
   "${IMAGE}"
@@ -60,8 +61,9 @@ RUNTIME=docker                      # the Apple arm substitutes its CLI here; AL
 
 *Apple-arm note (captured, not a workaround): the loopback-qualified publish form
 (`127.0.0.1:PORT:7433`) resets on Apple 1.2.0 while the unqualified `PORT:7433` works. The
-unqualified form is therefore the procedure's single published form on BOTH arms — identical
-input, not an Apple-only concession.*
+Apple arm therefore publishes `-p "${HOSTPORT}:7433"`. On Linux the publish stays
+loopback-qualified (cerebral-work fork, CER-2924), so the host's other interfaces never reach
+the daemon; this matches `publishArg`.*
 
 ## L3.1 — daemon boots vs a container-local sqlite + BOTH probes answer
 

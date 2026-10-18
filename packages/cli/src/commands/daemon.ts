@@ -196,9 +196,9 @@ export function daemonCommand(depsOverride?: LifecycleDeps): Command {
           throw new Error(`Invalid --port: must be an integer in [0, 65535], got "${opts.port}"`);
         }
         // bug-fix slice auth-bearer-tailscale-trust: distinguish
-        // user-explicit from default-fallback so the daemon can
-        // multi-bind (loopback + tailscale auto-detect) when the operator
-        // never opted in to a specific host.
+        // user-explicit from default-fallback so the daemon takes its
+        // default bind (loopback only on the cerebral-work fork, CER-2924)
+        // when the operator never opted in to a specific host.
         const hostResolution = configStore.resolveWithSource("daemon.host");
         // S20 — bind intent comes ONLY from the dedicated surfaces: the --host flag,
         // a FILE-sourced daemon.host, or OPENRIG_BIND_HOST. An env-sourced daemon.host

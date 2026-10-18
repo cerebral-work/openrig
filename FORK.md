@@ -25,6 +25,10 @@ Resolve conflicts toward upstream unless the estate change is intentionally kept
 
 cw.4 is based on untagged upstream `main` at `f41740137f3d3ab807f5f24e559b9845632ed908`, not on a release tag.
 
+## Estate changes
+
+- **The default bind is loopback only until the fork has auth** (CER-2924). With no `OPENRIG_BIND_HOST`, the daemon binds `127.0.0.1`; upstream also binds the tailscale IP, and upstream's default is unchanged. Tailnet exposure is opt-in: `OPENRIG_BIND_HOST=<address>` binds exactly that address. Following upstream's explicit behaviour, loopback is then not also bound, and a bind that is neither loopback nor tailnet needs `OPENRIG_AUTH_BEARER_TOKEN`.
+
 ## Releases
 
 Tag the `cerebral` commit `cw-v<version>` (for example `cw-v0.6.10-cw.4`). The `cw-v*` prefix is disjoint from upstream `v*` tags, so tag syncs never cross-fire release workflows.

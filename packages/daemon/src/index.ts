@@ -264,8 +264,9 @@ export async function startServer(port?: number) {
   // operator opt-in" from "default" by treating an undefined env as
   // default. When explicit, the operator takes responsibility (and the
   // bearer invariant applies to their chosen host). When default, the
-  // daemon always binds loopback and ALSO binds the active tailscale
-  // interface (if present) — both accepted paths in the invariant.
+  // daemon binds loopback only (cerebral-work fork, CER-2924; upstream also
+  // binds the active tailscale interface). Tailnet exposure is an explicit
+  // OPENRIG_BIND_HOST opt-in.
   // OPR.0.5.5.20 — bind intent rides ONLY the dedicated OPENRIG_BIND_HOST surface.
   // The overloaded routing env (OPENRIG_HOST/RIGGED_HOST) is observed for the
   // provenance line below and NEVER selects the bind branch: a managed environment's
@@ -301,7 +302,7 @@ export async function startServer(port?: number) {
     }
     bindHosts = [explicitHost];
   } else {
-    // Default path — the plan already computed loopback + tailscale-when-active.
+    // Default path — the plan already computed the hosts (loopback only on the fork).
     bindHosts = bindPlan.hosts;
   }
 

@@ -457,7 +457,7 @@ export function buildDaemonEnv(
     /**
      * Operator-explicit bind host. When undefined the CLI is signaling
      * "no operator opt-in" so the daemon's index.ts can fall through to
-     * the default loopback+tailscale-auto multi-bind path (bug-fix slice
+     * the default bind path (loopback only on the cerebral-work fork; bug-fix slice
      * auth-bearer-tailscale-trust). When defined, the daemon takes the
      * explicit-host branch and applies the bearer invariant to it.
      * S20: when undefined, NO env fallback exists — inherited
@@ -541,10 +541,11 @@ export function resolveBindIntent(input: {
 }
 
 /** The restored adoption/upgrade gate: derive the REQUIRED listener set from the
- *  daemon's reported effective bind mode (default ⇒ loopback AND
- *  tailscale-when-detected; explicit ⇒ exactly the declared host) and prove each by
- *  probing its own /healthz — binding evidence, never config echo. A silently dropped
- *  listener (the 0.5.3-receipt regression shape) fails LOUDLY. */
+ *  daemon's reported effective bind mode (default ⇒ loopback plus every reported host;
+ *  explicit ⇒ exactly the declared host) and prove each by probing its own /healthz —
+ *  binding evidence, never config echo. A reported listener that does not answer fails
+ *  LOUDLY. cerebral-work fork (CER-2924): the default binds loopback only, so a default
+ *  daemon on a tailscale host reporting only loopback is expected, not a dropped listener. */
 export async function verifyRequiredListeners(input: {
   bind: { mode: "explicit" | "default"; hosts: string[]; tailscaleDetected: boolean };
   port: number;
@@ -562,15 +563,6 @@ export async function verifyRequiredListeners(input: {
   if (input.bind.mode === "explicit") {
     required.clear();
     for (const h of input.bind.hosts) required.add(h);
-  } else if (input.bind.tailscaleDetected && input.bind.hosts.length < 2) {
-    // The 0.5.3-receipt regression shape: default mode, tailscale present, but the
-    // daemon reports only one listener — the tailscale listener was silently dropped.
-    return {
-      ok: false,
-      missing: ["<tailscale interface>"],
-      reason:
-        `required listener missing: default bind mode with a tailscale interface detected must bind loopback AND tailscale, but the daemon reports only [${input.bind.hosts.join(", ")}] — a silently dropped listener (the 0.5.3 receipt regression shape).`,
-    };
   }
   const missing: string[] = [];
   const verified: string[] = [];
@@ -629,8 +621,8 @@ async function startOwnedDaemon(opts: StartOptions, deps: LifecycleDeps, lock: D
   // user-explicit-vs-default distinction. `opts.host` is undefined when
   // the operator never opted in; in that case healthz probes still use
   // the loopback default, but buildDaemonEnv must NOT export
-  // OPENRIG_HOST so the daemon falls through to the multi-bind default
-  // (loopback + tailscale auto-detect).
+  // OPENRIG_HOST so the daemon falls through to its default bind
+  // (loopback only on the cerebral-work fork, CER-2924).
   const explicitHost = opts.host;
   const probeHost = explicitHost ?? DEFAULT_HOST;
 

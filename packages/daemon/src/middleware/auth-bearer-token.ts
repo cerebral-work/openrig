@@ -191,8 +191,9 @@ export function findTailscaleIpInInterfaces(
 /**
  * Probe the host's network interfaces and return the first tailscale-IP
  * address found (CGNAT IPv4 or tailnet ULA IPv6), or null when no tailnet
- * interface is currently active. Used at daemon startup to decide whether
- * to multi-bind (loopback + tailnet) or loopback-only. Detection is
+ * interface is currently active. Used at daemon startup to report
+ * tailscaleDetected (upstream also multi-binds the tailnet by default; the
+ * cerebral-work fork binds loopback only, CER-2924). Detection is
  * IP-based, not interface-name-based, so it survives platform differences
  * in how tailscale names its tun device.
  */
