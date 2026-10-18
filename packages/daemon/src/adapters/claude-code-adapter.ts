@@ -116,7 +116,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.claudeHooksManifestPath = deps.claudeHooksManifestPath ?? null;
     this.recordProjection = deps.recordProjection ?? (() => {});
     this.claudeConfigDir = deps.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR
-      ?? nodePath.join(deps.fsOps.homedir ?? os.homedir(), ".claude");
+      ?? nodePath.join(deps.fsOps?.homedir ?? os.homedir(), ".claude");
   }
 
   async listInstalled(binding: NodeBinding): Promise<InstalledResource[]> {
