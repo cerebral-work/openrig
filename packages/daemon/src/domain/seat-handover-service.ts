@@ -116,6 +116,8 @@ interface PreparedRuntimeChange {
   before: RevertBefore;
   resumeToken: string | null;
   leftovers: string[];
+  /** How far this attempt got, so a thrown failure is still recorded; recorded is set once a ledger row exists. */
+  progress: { step: string; replacementStarted: boolean; recorded: boolean };
 }
 
 export interface SeatHandoverInput {
@@ -442,7 +444,7 @@ export class SeatHandoverService {
       }
     }
 
-    return this.handoverWith(input, null);
+    return this.recordingThrows(null, (attempt) => this.handoverWith(input, null, attempt));
   }
 
   /**
@@ -518,6 +520,7 @@ export class SeatHandoverService {
     const current = this.captureRuntimeState(node.id, null);
     const change: PreparedRuntimeChange = {
       kind: "revert", nodeId: node.id, seatRef: input.seatRef, revertsChangeId: slot.changeId,
+      progress: { step: "prepare", replacementStarted: false, recorded: false },
       from: runtimeSideOf(current), to: runtimeSideOf(before),
       toAuthoredEffort: before.effort, toEffortChoice: before.effortChoice, toCodexProfile: before.codexConfigProfile,
       toPermissionRow: before.permission, launchOverride, adapter,
@@ -530,10 +533,11 @@ export class SeatHandoverService {
       if (!planned.ok) return { ok: false, code: "runtime_change_invalid", message: "The handover plan could not be built.", guidance: "Inspect the seat with: rig seat status <seat>" };
       return { ok: true, plan: { ...planned.plan, runtimeChange: this.summarizeRuntimeChange(change) } };
     }
-    return this.handoverWith({ seatRef: input.seatRef, reason, source: "fresh", operator }, change);
+    return this.recordingThrows(change, (attempt) => this.handoverWith({ seatRef: input.seatRef, reason, source: "fresh", operator }, change, attempt));
   }
 
-  private async handoverWith(input: SeatHandoverInput, revert: PreparedRuntimeChange | null): Promise<SeatHandoverResult> {
+  private async handoverWith(input: SeatHandoverInput, revert: PreparedRuntimeChange | null,
+    attempt: { change: PreparedRuntimeChange | null }): Promise<SeatHandoverResult> {
     const reason = input.reason?.trim() ?? "";
     if (!reason) {
       return {
@@ -577,7 +581,7 @@ export class SeatHandoverService {
     const node = this.lookupNode(statusResult.status);
     const guard = this.tmuxAdapter.deliveryGuard;
     if (guard && !guard.ownsLifecycle(node.id)) {
-      return guard.lifecycle([node.id], () => this.handoverWith(input, revert));
+      return guard.lifecycle([node.id], () => this.handoverWith(input, revert, attempt));
     }
     const latestSession = this.lookupLatestSession(node.id);
     if (!latestSession) {
@@ -600,6 +604,7 @@ export class SeatHandoverService {
       });
       if ("ok" in prepared) return prepared;
       change = prepared;
+      attempt.change = change;
     }
     if (change && input.dryRun) {
       const planned = this.planner.plan({ ...input, dryRun: true });
@@ -706,6 +711,7 @@ export class SeatHandoverService {
     // Spec 0005: the target member's startup (skills, projection, pre-launch files) runs into the target cwd before
     // the successor launches. Nothing about the node changes here, and the predecessor still runs.
     if (change) {
+      change.progress.step = "target-startup";
       const started = await this.startTargetMember(change, node.id, latestSession.session_name);
       if (!started.ok) {
         return this.failChange(change, { ok: false, code: "runtime_change_target_startup_failed", message: started.message,
@@ -716,6 +722,7 @@ export class SeatHandoverService {
     // ledger row; commit consumes it, while every failed pre-commit branch remains unregistered.
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
     const corePluginDir = seatCorePluginDir(change ? { id: node.id, runtime: change.to.runtime } : node, this.db, undefined, this.pluginsDir);
+    if (change) change.progress.step = "create-successor";
     const launch = await this.successorLauncher.createSuccessor({
       // Seam B: the successor is the SAME seat continuing — persisted policy posture carries.
       // 0.5.2-07 model fidelity: carry the seat's SPEC-pinned model so the successor launch reads the
@@ -731,9 +738,10 @@ export class SeatHandoverService {
       // resolved id — it carries the incumbent context from its first byte.
       ...(forkSource ? { forkSource } : {}),
       ...(change?.resumeToken ? { resumeToken: change.resumeToken } : {}),
-      ...(predecessorGeneration
-        ? { onReplacementStarted: () => { this.appliedLaunchObservations.invalidateGeneration(predecessorGeneration); } }
-        : {}),
+      onReplacementStarted: () => {
+        if (change) change.progress.replacementStarted = true;
+        if (predecessorGeneration) this.appliedLaunchObservations.invalidateGeneration(predecessorGeneration);
+      },
     });
     if (!launch.ok) {
       return this.failChange(change, {
@@ -749,6 +757,7 @@ export class SeatHandoverService {
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
+    if (change) change.progress.step = "deliver-startup-files";
     if (change?.startup.kind === "member" && change.startup.postLaunchFiles.length > 0) {
       const binding = this.targetBinding(change, node.id, launch.tmuxSession, launch.tmuxPane);
       let failedFiles: string[];
@@ -767,6 +776,7 @@ export class SeatHandoverService {
     // 3. fresh: deliver the captured restore packet to the live successor BEFORE
     //    continuity verify (a blank occupant is a relaunch, not a handover).
     //    discovered is operator-prepared and needs no delivery.
+    if (change) change.progress.step = "deliver-context";
     let contextDelivered = false;
     // OPR.0.5.3.5 mini-req 7 — the authored recap pointer leg, resolved through the injected
     // reader; every outcome labeled (present with chain depth / named absence / omitted when
@@ -877,6 +887,7 @@ export class SeatHandoverService {
     }
 
     // 4. Verify continuity + rebind via the EXISTING discovered->commit path.
+    if (change) change.progress.step = "verify-and-commit";
     //    On any failure, unwind the created successor (no binding to unwind).
     return this.finalizeWithDiscovered({
       seatRef: input.seatRef,
@@ -1350,6 +1361,7 @@ export class SeatHandoverService {
     }
     return {
       kind: "change", nodeId: node.id, seatRef: input.status.seat_ref, revertsChangeId: null,
+      progress: { step: "prepare", replacementStarted: false, recorded: false },
       from: runtimeSideOf(before),
       to: { runtime: toRuntime, model: toModel, cwd: targetCwd, effort: effortChoice ?? authoredEffort, permission: toSelection?.mode ?? null, env: targetEnv },
       toAuthoredEffort: authoredEffort, toEffortChoice: effortChoice, toCodexProfile: codexProfile,
@@ -1448,15 +1460,33 @@ export class SeatHandoverService {
           : `The seat was not changed: the failure came at ${step}, before the in-place respawn, and its predecessor still runs. `
             + "No recovery is needed; fix the cause and retry." } as SeatHandoverResult;
     }
-    if (change && !result.ok) {
-      const failure = `${result.code} at ${step}`;
-      this.runtimeLedger.record({
-        nodeId: change.nodeId, kind: change.kind, revertsChangeId: change.revertsChangeId, outcome: "failed", failure,
-        from: change.from, to: change.to, specPath: change.specPath, specSha256: change.specSha256,
-        approval: change.approval, reason: "", operator: change.operator,
-      });
-    }
+    if (change && !result.ok) this.recordFailed(change, `${result.code} at ${step}`);
     return result;
+  }
+
+  /** One failed ledger row per attempt, holding a code and a step only (F3), and none once the change committed. */
+  private recordFailed(change: PreparedRuntimeChange, failure: string): void {
+    if (change.progress.recorded) return;
+    change.progress.recorded = true;
+    this.runtimeLedger.record({
+      nodeId: change.nodeId, kind: change.kind, revertsChangeId: change.revertsChangeId, outcome: "failed", failure,
+      from: change.from, to: change.to, specPath: change.specPath, specSha256: change.specSha256,
+      approval: change.approval, reason: "", operator: change.operator,
+    });
+  }
+
+  /** Spec 0005: a runtime change that throws, rather than returning a failure, still leaves a failed ledger row naming
+   *  its step and whether the respawn ran, never the error. The throw itself propagates unchanged. */
+  private async recordingThrows(change: PreparedRuntimeChange | null,
+    run: (attempt: { change: PreparedRuntimeChange | null }) => Promise<SeatHandoverResult>): Promise<SeatHandoverResult> {
+    const attempt = { change };
+    try {
+      return await run(attempt);
+    } catch (err) {
+      const thrown = attempt.change;
+      if (thrown) this.recordFailed(thrown, `${thrown.progress.replacementStarted ? "threw_after_respawn" : "threw_before_respawn"} at ${thrown.progress.step}`);
+      throw err;
+    }
   }
 
   /** Inside the commit transaction: the node's runtime-bound state becomes the target's. A revert first checks that the
@@ -1666,6 +1696,7 @@ export class SeatHandoverService {
       runtimeRecord: { changeId: string; event: PersistedEvent } | null };
     try {
       committed = tx();
+      if (input.change) input.change.progress.recorded = true;
       // S19 ruling 01530 — the SOLE narrow call: after the commit lands, the activity
       // oracle sees the swap as its own event, keyed by the durable node id, identified
       // by the successor tenure (never the retiree's). In-memory, post-commit, optional.

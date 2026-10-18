@@ -30,7 +30,7 @@ afterEach(() => {
 const OPERATOR = { session: "operator-agent@kernel", provenance: "transport:v1" };
 const ADVISOR = { session: "advisor-lead@kernel", provenance: "transport:v1" };
 
-function fixture(opts: { guard?: boolean } = {}) {
+function fixture(opts: { guard?: boolean; authoredRecapResolver?: (seatRef: string) => never; activityOracle?: { declareOccupantSwap: () => void } } = {}) {
   const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-rtc-race-")));
   tmpDirs.push(root);
   const rigRoot = nodePath.join(root, "rig");
@@ -101,6 +101,7 @@ function fixture(opts: { guard?: boolean } = {}) {
   const service = new SeatHandoverService({
     db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus, tmuxAdapter: tmux,
     runtimeAdapters: adapters, memberStartup, readinessTimeoutMs: 50, sleep: async () => {},
+    authoredRecapResolver: opts.authoredRecapResolver, activityOracle: opts.activityOracle,
   });
   const change = (runtime: string, model: string): RuntimeChangeRequest => ({
     toRuntime: runtime, toModel: model, toPermissions: "floor", spec: spec(runtime, model), approval: "go",
@@ -200,5 +201,22 @@ describe("review r2 F2: runtime-revert races", () => {
     const respawn = await failureOf((f) => { f.tmux.respawnPane.mockResolvedValue({ ok: false, code: "respawn_failed", message: "tmux said no" }); });
     expect(retiree).toBe("successor_create_failed at create-successor:create_successor:retiree_not_terminated");
     expect(respawn).toBe("successor_create_failed at create-successor:create_successor:respawn_failed");
+  });
+
+  it("a throw after the respawn is still recorded as failed: code and step, never the error", async () => {
+    const f = fixture({ authoredRecapResolver: () => { throw new Error("recap store down SENTINEL-7c1e"); } });
+    await expect(f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") })).rejects.toThrow("SENTINEL-7c1e");
+    expect(f.tmux.respawnPane).toHaveBeenCalled();
+    const rows = f.db.prepare("SELECT outcome, failure FROM node_runtime_changes WHERE node_id = ?").all(f.node.id);
+    expect(rows).toEqual([{ outcome: "failed", failure: "threw_after_respawn at deliver-context" }]);
+  });
+
+  it("a failure returned after the commit landed adds no failed row beside the committed one", async () => {
+    const f = fixture({ activityOracle: { declareOccupantSwap: () => { throw new Error("oracle down"); } } });
+    const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") });
+    expect(result.ok).toBe(false);
+    expect(f.ledger()).toEqual([{ kind: "change", outcome: "committed" }]);
   });
 });
