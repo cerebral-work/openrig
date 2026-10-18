@@ -7,6 +7,7 @@
  */
 
 import { isSecretSeatEnvName } from "./seat-launch-env-filter.js";
+import { isProviderAuthEnvName } from "./provider-auth-env.js";
 
 export type SeatEnv = Record<string, string>;
 
@@ -19,6 +20,22 @@ export const SEAT_ENV_SECRET_NAME_CODE = "seat_env_secret_name";
 export function seatEnvSecretNameError(name: string): string | null {
   if (!isSecretSeatEnvName(name)) return null;
   return `${SEAT_ENV_SECRET_NAME_CODE}: "${name}" is secret-named, and seat env is for non-secret settings (it is stored in plaintext). Give a seat credentials through the provider-auth allow-list (recovery.provider_auth_env_allowlist), not seat env`;
+}
+
+/** REQ-0017-20: the refusal code for a known provider name that is not secret-named (a routing name). */
+export const SEAT_ENV_PROVIDER_AUTH_NAME_CODE = "seat_env_provider_auth_name";
+
+/** REQ-0017-20: why a provider routing name is refused as seat env, or null. A secret-named provider name (a key) is
+ *  refused by seatEnvSecretNameError instead; together they cover the whole known set. Names only, never values. */
+export function seatEnvProviderNameError(name: string): string | null {
+  if (isSecretSeatEnvName(name) || !isProviderAuthEnvName(name)) return null;
+  return `${SEAT_ENV_PROVIDER_AUTH_NAME_CODE}: "${name}" is a provider routing name. Provider routing and credentials come only from the daemon's provider-auth allow-list (recovery.provider_auth_env_allowlist), never seat env`;
+}
+
+/** REQ-0017-20: the provider routing names in a request's envOverride mapping, sorted; names only. */
+export function providerSeatEnvOverrideNames(raw: unknown): string[] {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return [];
+  return Object.keys(raw).filter((name) => seatEnvProviderNameError(name) !== null).sort();
 }
 
 /** Spec 0017 item 4: the secret-named names in a request's envOverride mapping, sorted; names only. */
@@ -54,7 +71,7 @@ export function validateSeatEnv(raw: unknown, path: string): string[] {
   }
   const errors: string[] = [];
   for (const [name, value] of Object.entries(raw as Record<string, unknown>)) {
-    const nameError = validateSeatEnvName(name) ?? seatEnvSecretNameError(name);
+    const nameError = validateSeatEnvName(name) ?? seatEnvSecretNameError(name) ?? seatEnvProviderNameError(name);
     if (nameError) errors.push(`${path}.${name}: ${nameError}`);
     if (typeof value !== "string") {
       errors.push(`${path}.${name}: value must be a string (quote numbers and booleans, e.g. "1")`);

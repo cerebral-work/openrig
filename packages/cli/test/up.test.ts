@@ -652,6 +652,20 @@ describe("Up CLI", () => {
     });
   });
 
+  it("up --env with a provider routing name stops before contacting the daemon, naming the rule (REQ-0017-20)", async () => {
+    await withListener(() => ({ status: 500, body: {} }), async (upCalls) => {
+      const { logs, exitCode } = await captureLogs(async () => {
+        await makeCmd().parseAsync(["node", "rig", "up", "/tmp/rig.yaml", "--env", "OPENAI_BASE_URL=https://sentinel.example"]);
+      });
+      expect(upCalls()).toBe(0);
+      expect(exitCode).toBe(1);
+      const out = logs.join("\n");
+      expect(out).toContain("seat_env_provider_auth_name");
+      expect(out).toContain("OPENAI_BASE_URL");
+      expect(out).not.toContain("sentinel.example");
+    });
+  });
+
   it.each([
     ["a rig name", ["up", "my-rig", "--env", "DEBUG=1"]],
     ["a rig name with --existing", ["up", "my-rig", "--existing", "--env", "DEBUG=1"]],

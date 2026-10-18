@@ -6,7 +6,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { isSecretSeatEnvName, SEAT_ENV_DEFAULT_BASE, SEAT_ENV_SECRET_NAME, SEAT_ENV_SECRET_NAME_EXEMPTIONS, seatEnvKeeps, seatEnvScrubScript, type SeatEnvPolicy } from "../src/domain/seat-launch-env-filter.js";
 import { execFileSync } from "node:child_process";
-import { secretSeatEnvOverrideNames, validateSeatEnv } from "../src/domain/seat-env.js";
+import { providerSeatEnvOverrideNames, secretSeatEnvOverrideNames, validateSeatEnv } from "../src/domain/seat-env.js";
+import { isProviderAuthEnvName } from "../src/domain/provider-auth-env.js";
+import { OMP_PROVIDER_ENV_VARS, OMP_PROVIDER_EXTRA_ENV_VARS } from "../src/adapters/pi-runner-protocol.js";
 import { secretNamedLaunchVars } from "../src/adapters/tmux.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -99,6 +101,37 @@ describe("seat env refuses a secret-named name (REQ-0017-13)", () => {
   });
 });
 
+describe("seat env refuses a provider routing name (REQ-0017-20, the lead's D2 ruling)", () => {
+  it("knows the whole provider set: keys and routing names, the OMP names included", () => {
+    for (const name of ["ANTHROPIC_API_KEY", "ANTHROPIC_BASE_URL", "OPENAI_BASE_URL", "OPENAI_ORG_ID", "OPENAI_PROJECT_ID"]) {
+      expect(isProviderAuthEnvName(name), name).toBe(true);
+    }
+    for (const name of [...Object.values(OMP_PROVIDER_ENV_VARS), ...Object.values(OMP_PROVIDER_EXTRA_ENV_VARS).flat()]) {
+      expect(isProviderAuthEnvName(name), name).toBe(true);
+    }
+    expect(isProviderAuthEnvName("DEBUG")).toBe(false);
+  });
+
+  it("a spec's env: refuses ANTHROPIC_BASE_URL with seat_env_provider_auth_name, naming it and the rule, never the value", () => {
+    const errors = validateSeatEnv({ ANTHROPIC_BASE_URL: "https://sentinel.example", DEBUG: "1" }, "env");
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toContain("env.ANTHROPIC_BASE_URL");
+    expect(errors[0]).toContain("seat_env_provider_auth_name");
+    expect(errors[0]).toMatch(/provider-auth allow-list/);
+    expect(errors[0]).not.toContain("sentinel.example");
+  });
+
+  it("a provider key keeps seat_env_secret_name (REQ-0017-13); the two codes together cover the set", () => {
+    const [key] = validateSeatEnv({ ANTHROPIC_API_KEY: "x" }, "env");
+    expect(key).toContain("seat_env_secret_name");
+    expect(key).not.toContain("seat_env_provider_auth_name");
+  });
+
+  it("names a request override's routing names, never values", () => {
+    expect(providerSeatEnvOverrideNames({ OPENAI_BASE_URL: "x", ANTHROPIC_API_KEY: "y", DEBUG: "1" })).toEqual(["OPENAI_BASE_URL"]);
+  });
+});
+
 describe("stored seat env with a secret-named name is refused at the next launch (REQ-0017-15)", () => {
   const dbs: Array<{ close(): void }> = [];
   afterEach(() => { for (const db of dbs.splice(0)) db.close(); });
@@ -126,6 +159,17 @@ describe("stored seat env with a secret-named name is refused at the next launch
     expect(message).toContain("GITHUB_TOKEN");
     expect(message).toContain(field);
     expect(message).not.toContain("sentinel-stored");
+    expect(f.createSession).not.toHaveBeenCalled();
+  });
+
+  it("a stored provider routing name is refused too, with seat_env_provider_auth_name (REQ-0017-20)", async () => {
+    const f = fixture();
+    const rig = f.rigRepo.createRig("r01");
+    f.rigRepo.addNode(rig.id, "dev1-impl", { role: "worker", runtime: "codex", env: { OPENAI_BASE_URL: "https://sentinel.example" } });
+    const result = await f.launcher.launchNode(rig.id, "dev1-impl");
+    expect(result).toMatchObject({ ok: false, code: "seat_env_provider_auth_name" });
+    expect((result as { message: string }).message).toContain("OPENAI_BASE_URL (env: of member dev1-impl)");
+    expect((result as { message: string }).message).not.toContain("sentinel.example");
     expect(f.createSession).not.toHaveBeenCalled();
   });
 

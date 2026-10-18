@@ -1,5 +1,5 @@
 import nodePath from "node:path";
-import { readSeatEnvOverride, SEAT_ENV_SECRET_NAME_CODE, secretSeatEnvOverrideMessage, secretSeatEnvOverrideNames } from "../domain/seat-env.js";
+import { providerSeatEnvOverrideNames, readSeatEnvOverride, SEAT_ENV_PROVIDER_AUTH_NAME_CODE, SEAT_ENV_SECRET_NAME_CODE, secretSeatEnvOverrideMessage, secretSeatEnvOverrideNames } from "../domain/seat-env.js";
 import { Hono } from "hono";
 import { bootstrapFailureResponse } from "./bootstrap-failure-response.js";
 import type { BootstrapOrchestrator } from "../domain/bootstrap-orchestrator.js";
@@ -218,6 +218,10 @@ upRoutes.post("/", async (c) => {
   const secretOverride = secretSeatEnvOverrideNames(body["envOverride"]);
   if (secretOverride.length > 0) {
     return c.json({ code: SEAT_ENV_SECRET_NAME_CODE, error: secretSeatEnvOverrideMessage(secretOverride) }, 400);
+  }
+  const providerOverride = providerSeatEnvOverrideNames(body["envOverride"]);
+  if (providerOverride.length > 0) {
+    return c.json({ code: SEAT_ENV_PROVIDER_AUTH_NAME_CODE, error: `envOverride ${providerOverride.join(", ")}: ${SEAT_ENV_PROVIDER_AUTH_NAME_CODE}: provider routing and credentials come only from the daemon's provider-auth allow-list (recovery.provider_auth_env_allowlist), never --env.` }, 400);
   }
   // `rig up --env KEY=VALUE`: environment for this launch only. It is not saved with the rig.
   const envOverride = readSeatEnvOverride(body["envOverride"]);

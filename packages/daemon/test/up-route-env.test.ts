@@ -109,6 +109,22 @@ describe("a secret-named envOverride is refused (spec 0017 item 4)", () => {
     db.close();
   });
 
+  it.each(["/api/up", "/api/bundles/install"])("%s answers 400 seat_env_provider_auth_name for a provider routing name (REQ-0017-20)", async (route) => {
+    const { db, app, specPath, post } = setup();
+    const bootstrap = vi.spyOn(app.bootstrapOrchestrator, "bootstrap");
+    const body = route === "/api/up"
+      ? { sourceRef: specPath, envOverride: { ANTHROPIC_BASE_URL: "https://sentinel.example" } }
+      : { bundlePath: path.join(tmpDirs[0]!, "absent.rigbundle"), plan: true, envOverride: { ANTHROPIC_BASE_URL: "https://sentinel.example" } };
+    const res = await post(route, body);
+    expect(res.status).toBe(400);
+    const text = await res.text();
+    expect(JSON.parse(text)).toMatchObject({ code: "seat_env_provider_auth_name" });
+    expect(text).toContain("ANTHROPIC_BASE_URL");
+    expect(text).not.toContain("sentinel.example");
+    expect(bootstrap).not.toHaveBeenCalled();
+    db.close();
+  });
+
   it("an exempt name (TOKENIZERS_PARALLELISM) reaches the launch (control)", async () => {
     const { db, app, specPath, post } = setup();
     const bootstrap = vi.spyOn(app.bootstrapOrchestrator, "bootstrap").mockResolvedValue({

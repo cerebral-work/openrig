@@ -14,7 +14,7 @@ import type { TmuxOptionDefaultsApplier } from "./tmux-option-defaults.js";
 import { observeSolePane, paneObservationVerdict } from "./pane-binding-observation.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import type { OccupantKind } from "./session-registry.js";
-import { mergeSeatEnv, SEAT_ENV_SECRET_NAME_CODE, seatEnvLaunchVars, type SeatEnv } from "./seat-env.js";
+import { mergeSeatEnv, SEAT_ENV_PROVIDER_AUTH_NAME_CODE, SEAT_ENV_SECRET_NAME_CODE, seatEnvLaunchVars, type SeatEnv } from "./seat-env.js";
 import { SEAT_PROJECT_DIR_ENV, seatCorePluginDir, withCorePlugin } from "./claude-core-plugin-env.js";
 
 import type { Session, Binding } from "./types.js";
@@ -135,6 +135,17 @@ export class NodeLauncher {
       return { ok: false, code: "already_bound", message: `Node ${logicalId} is already bound` };
     }
 
+    // REQ-0017-20: stored seat env that names a provider routing name is refused before anything launches.
+    const providerFields = this.rigRepo.providerSeatEnvFields(node.id);
+    if (providerFields.length > 0) {
+      return {
+        ok: false,
+        code: SEAT_ENV_PROVIDER_AUTH_NAME_CODE,
+        message: `The stored seat env names ${providerFields.join(", ")}: provider routing and credentials come only from the `
+          + "daemon's provider-auth allow-list (recovery.provider_auth_env_allowlist), never seat env. Remove it from the rig "
+          + "spec and launch again. This refusal does not delete the stored copy.",
+      };
+    }
     // Spec 0017 item 4: stored seat env that names a secret-named variable is refused before anything launches.
     const secretFields = this.rigRepo.secretSeatEnvFields(node.id);
     if (secretFields.length > 0) {

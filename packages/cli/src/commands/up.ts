@@ -13,7 +13,7 @@ import type { StartOptions } from "../daemon-lifecycle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 import { formatThreePart, type ThreePartRejection } from "./workflow-errors.js";
-import { isSecretSeatEnvName } from "@openrig/daemon/seat-env-secret-name";
+import { isProviderAuthEnvName, isSecretSeatEnvName } from "@openrig/daemon/seat-env-secret-name";
 
 const LONG_RUNNING_UP_TIMEOUT_MS = 120_000;
 
@@ -51,6 +51,11 @@ function checkEnvAssignment(assignment: string): string | null {
   const name = assignment.slice(0, eq);
   if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) return `"${name}" is not a valid name; names match ^[A-Z_][A-Z0-9_]*$`;
   if (name.startsWith("OPENRIG_")) return `"${name}" is reserved; OPENRIG_* names belong to OpenRig`;
+  // REQ-0017-20: a provider routing name comes only from the daemon, like the keys.
+  if (!isSecretSeatEnvName(name) && isProviderAuthEnvName(name)) {
+    return `${name}: seat_env_provider_auth_name: provider routing and credentials come only from the daemon's provider-auth `
+      + "allow-list (recovery.provider_auth_env_allowlist), never --env.";
+  }
   // Spec 0017 item 4: refused, and the refusal can't undo what already happened to the value.
   if (isSecretSeatEnvName(name)) {
     return `${name}: seat_env_secret_name: secret-named, and --env is for non-secret settings. The value is already on this `

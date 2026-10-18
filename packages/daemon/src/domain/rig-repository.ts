@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import { ulid } from "ulid";
 import { deriveComposeProjectName } from "./compose-project-name.js";
 import type { ClaudeManagedBlockFile } from "./managed-blocks.js";
-import { mergeSeatEnv, parseStoredSeatEnv, type SeatEnv } from "./seat-env.js";
+import { seatEnvProviderNameError, mergeSeatEnv, parseStoredSeatEnv, type SeatEnv } from "./seat-env.js";
 import type {
   Rig,
   Node,
@@ -242,17 +242,26 @@ export class RigRepository {
     return mergeSeatEnv(this.getRigEnv(row.rig_id), parseStoredSeatEnv(row.env_json));
   }
 
+  /** REQ-0017-20: the node's stored seat env names that are provider routing names, each with its rig spec field. */
+  providerSeatEnvFields(nodeId: string): string[] {
+    return this.storedSeatEnvFields(nodeId, (name) => seatEnvProviderNameError(name) !== null);
+  }
+
   /** Spec 0017 item 4: the node's stored seat env names that are secret-named, each with the rig spec field that
    *  declares it. Names only, never values. */
   secretSeatEnvFields(nodeId: string): string[] {
+    return this.storedSeatEnvFields(nodeId, isSecretSeatEnvName);
+  }
+
+  private storedSeatEnvFields(nodeId: string, matches: (name: string) => boolean): string[] {
     if (!this.hasNodeColumn("env_json")) return [];
     const row = this.db.prepare("SELECT rig_id, logical_id, env_json FROM nodes WHERE id = ?")
       .get(nodeId) as { rig_id: string; logical_id: string; env_json: string | null } | undefined;
     if (!row) return [];
-    const secret = (env: SeatEnv | null) => Object.keys(env ?? {}).filter(isSecretSeatEnvName).sort();
+    const names = (env: SeatEnv | null) => Object.keys(env ?? {}).filter(matches).sort();
     return [
-      ...secret(this.getRigEnv(row.rig_id)).map((name) => `${name} (rig-level env:)`),
-      ...secret(parseStoredSeatEnv(row.env_json)).map((name) => `${name} (env: of member ${row.logical_id})`),
+      ...names(this.getRigEnv(row.rig_id)).map((name) => `${name} (rig-level env:)`),
+      ...names(parseStoredSeatEnv(row.env_json)).map((name) => `${name} (env: of member ${row.logical_id})`),
     ];
   }
 
