@@ -125,22 +125,24 @@ export function resolveStuckSweepIntervalSeconds(): number {
   }
 }
 
-function resolvePositiveSetting(key: string, fallback: number): number {
+/** Queue churn R1 (cerebral-work fork): a churn window in minutes, where 0 means that fix is off. Shared by the
+ *  sweep and the startup wiring of C and D. An unreadable setting falls back to the given default. */
+export function resolveQueueMinutesSetting(key: string, fallback: number): number {
   try {
     const v = new SettingsStore().resolveOne(key as never).value;
     const n = typeof v === "number" ? v : Number(v);
-    return Number.isFinite(n) && n > 0 ? n : fallback;
+    return Number.isFinite(n) && n >= 0 ? n : fallback;
   } catch {
     return fallback;
   }
 }
 
 export function resolveStuckSweepUndeliveredGraceMinutes(): number {
-  return resolvePositiveSetting(STUCK_SWEEP_UNDELIVERED_GRACE_KEY, DEFAULT_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES);
+  return resolveQueueMinutesSetting(STUCK_SWEEP_UNDELIVERED_GRACE_KEY, DEFAULT_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES);
 }
 
 export function resolveStuckSweepOwnerActiveMinutes(): number {
-  return resolvePositiveSetting(STUCK_SWEEP_OWNER_ACTIVE_KEY, DEFAULT_STUCK_SWEEP_OWNER_ACTIVE_MINUTES);
+  return resolveQueueMinutesSetting(STUCK_SWEEP_OWNER_ACTIVE_KEY, DEFAULT_STUCK_SWEEP_OWNER_ACTIVE_MINUTES);
 }
 
 /** The finding kinds created without a wake. An unreadable setting falls back to the default list. */

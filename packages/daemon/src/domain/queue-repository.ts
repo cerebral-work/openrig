@@ -1392,8 +1392,13 @@ export class QueueRepository {
     const tally = { delivered: 0, indeterminate: 0, failed: 0, retained: 0 };
     if (!this.outbox || !this.transport) return tally;
     const BATCH = 200;
+    // Queue churn C (cerebral-work fork): an intent held for its owner's resume window stays pending, so each
+    // round pages past the ones already held in this drain; a full batch of held intents can't hide later ones.
+    const held = new Set<string>();
     for (;;) {
-      const pending = this.outbox.listPending(WAKE_INTENT_PREFIX, BATCH);
+      const limit = BATCH + held.size;
+      const listed = this.outbox.listPending(WAKE_INTENT_PREFIX, limit);
+      const pending = listed.filter((intent) => !held.has(intent.outboxId));
       if (pending.length === 0) break;
       let progressed = 0;
       for (const intent of pending) {
@@ -1402,11 +1407,12 @@ export class QueueRepository {
         else if (outcome === "indeterminate") { tally.indeterminate++; progressed++; }
         else if (outcome === "failed") { tally.failed++; progressed++; }
         else if (outcome === "retained") { tally.retained++; progressed++; }
+        else if (this.outbox.getById(intent.outboxId)?.deliveryState === "pending") { held.add(intent.outboxId); progressed++; }
       }
       // Nothing left pending changed state this round (e.g. transport gone
       // mid-sweep) — stop rather than spin; the next daemon start retries.
       if (progressed === 0) break;
-      if (pending.length < BATCH) break; // served short batch ⇒ drained
+      if (listed.length < limit) break; // served short batch ⇒ drained
     }
     return tally;
   }

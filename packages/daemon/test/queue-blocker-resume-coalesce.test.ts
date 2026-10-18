@@ -134,6 +134,40 @@ describe("churn C — blocker-resolved notices coalesce per owner across blocker
     await vi.waitFor(() => expect(toWorker()).toHaveLength(2));
   });
 
+  it("window 0 turns coalescing off: a second notice inside the old window is sent at once", async () => {
+    build(0);
+    const a = await parked();
+    const b = await parked();
+    resolve(a.blocker);
+    await vi.waitFor(() => expect(toWorker()).toHaveLength(1));
+    offsetMs = 60_000;
+    resolve(b.blocker);
+    await vi.waitFor(() => expect(toWorker()).toHaveLength(2));
+    expect(flushes).toHaveLength(0);
+  });
+
+  it("the startup drain reaches a pending notice behind a full batch of held ones", async () => {
+    const first = await parked();
+    resolve(first.blocker);
+    await vi.waitFor(() => expect(toWorker()).toHaveLength(1));
+    offsetMs = 60_000;
+    for (let i = 0; i < 200; i++) resolve((await parked()).blocker);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(toWorker()).toHaveLength(1);
+    // Another owner's notice, staged while no transport is attached, waits behind the 200 held ones.
+    const staging = new QueueRepository(db, new EventBus(db));
+    staging.attachOutbox(new OutboxHandler(db));
+    const gate = await staging.create({ sourceSession: "orch@rig", destinationSession: "gate@rig", body: "work", nudge: false });
+    const row = await staging.create({ sourceSession: "orch@rig", destinationSession: "other@rig", body: "work", nudge: false });
+    staging.update({ qitemId: row.qitemId, actorSession: "other@rig", state: "blocked", blockedOn: gate.qitemId,
+      transitionNote: "continuation: resume after the gate" });
+    staging.update({ qitemId: gate.qitemId, actorSession: "gate@rig", state: "done", closureReason: "no-follow-on", transitionNote: "gate cleared" });
+    await new Promise((r) => setTimeout(r, 20));
+    await repo.drainPendingWakeIntents();
+    expect(sent.filter((call) => call.session === "other@rig")).toHaveLength(1);
+    expect(toWorker()).toHaveLength(1);
+  });
+
   it("a held notice is still pending, so the startup drain delivers it after the window", async () => {
     const a = await parked();
     const b = await parked();

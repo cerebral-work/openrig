@@ -862,6 +862,17 @@ function stuckSweepKindsConstraint(raw: string): void {
   }
 }
 
+// Queue churn R1/L1 (cerebral-work fork): a churn window in whole minutes. 0 turns that fix off; the cap of a day
+// keeps every window far below setTimeout's ceiling (about 35 791 minutes), where Node fires after 1 ms.
+const QUEUE_MINUTES_MAX = 1440;
+function queueMinutesConstraint(key: string) {
+  return (raw: string, coerced: string | number | boolean): void => {
+    if (!/^\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 0 || coerced > QUEUE_MINUTES_MAX) {
+      throw new Error(`Invalid value for ${key}: must be an integer from 0 (off) to ${QUEUE_MINUTES_MAX} minutes, got "${raw}"`);
+    }
+  };
+}
+
 function positiveIntegerConstraint(key: string) {
   return (raw: string, coerced: string | number | boolean): void => {
     if (!/^\d+$/.test((raw ?? "").trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced <= 0) {
@@ -1020,11 +1031,11 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "queue.pickup_stall_threshold_minutes": positiveIntegerConstraint("queue.pickup_stall_threshold_minutes"),
   "queue.stuck_sweep_interval_seconds": positiveIntegerConstraint("queue.stuck_sweep_interval_seconds"),
   "queue.stuck_sweep_unclaimed_age_minutes": positiveIntegerConstraint("queue.stuck_sweep_unclaimed_age_minutes"),
-  "queue.stuck_sweep_undelivered_grace_minutes": positiveIntegerConstraint("queue.stuck_sweep_undelivered_grace_minutes"),
-  "queue.stuck_sweep_owner_active_minutes": positiveIntegerConstraint("queue.stuck_sweep_owner_active_minutes"),
+  "queue.stuck_sweep_undelivered_grace_minutes": queueMinutesConstraint("queue.stuck_sweep_undelivered_grace_minutes"),
+  "queue.stuck_sweep_owner_active_minutes": queueMinutesConstraint("queue.stuck_sweep_owner_active_minutes"),
   "queue.stuck_sweep_quiet_kinds": stuckSweepKindsConstraint,
-  "queue.blocker_resume_coalesce_minutes": positiveIntegerConstraint("queue.blocker_resume_coalesce_minutes"),
-  "queue.parked_owner_wake_grace_minutes": positiveIntegerConstraint("queue.parked_owner_wake_grace_minutes"),
+  "queue.blocker_resume_coalesce_minutes": queueMinutesConstraint("queue.blocker_resume_coalesce_minutes"),
+  "queue.parked_owner_wake_grace_minutes": queueMinutesConstraint("queue.parked_owner_wake_grace_minutes"),
   // S01 — wake-or-escalate ladder knobs (same positive-integer contract).
   "queue.wake_retry_interval_seconds": positiveIntegerConstraint("queue.wake_retry_interval_seconds"),
   "queue.wake_retry_cap": positiveIntegerConstraint("queue.wake_retry_cap"),

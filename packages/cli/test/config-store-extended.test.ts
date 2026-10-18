@@ -221,6 +221,32 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     expect(store.resolveWithSource("agents.advisor_session")).toMatchObject({ value: "advisor-lead@kernel", source: "default" });
   });
 
+  // Queue churn R1/L1 (cerebral-work fork): the CLI twin of the daemon store's 0-to-1440 minute keys.
+  const CHURN_MINUTE_KEYS = [
+    ["queue.stuck_sweep_undelivered_grace_minutes", "OPENRIG_QUEUE_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES"],
+    ["queue.stuck_sweep_owner_active_minutes", "OPENRIG_QUEUE_STUCK_SWEEP_OWNER_ACTIVE_MINUTES"],
+    ["queue.blocker_resume_coalesce_minutes", "OPENRIG_QUEUE_BLOCKER_RESUME_COALESCE_MINUTES"],
+    ["queue.parked_owner_wake_grace_minutes", "OPENRIG_QUEUE_PARKED_OWNER_WAKE_GRACE_MINUTES"],
+  ] as const;
+  it("accepts 0 (off) to 1440 for the churn minute keys, from the file and the environment", () => {
+    const store = new ConfigStore(configPath);
+    for (const [key, envName] of CHURN_MINUTE_KEYS) {
+      store.set(key, "0");
+      expect(store.resolveWithSource(key)).toMatchObject({ value: 0, source: "file" });
+      store.set(key, "1440");
+      expect(store.resolveWithSource(key)).toMatchObject({ value: 1440, source: "file" });
+      for (const raw of ["1441", "-1", "2.5", "10junk"]) {
+        expect(() => store.set(key, raw)).toThrow(new RegExp(key.replace(/\./g, "\\.")));
+      }
+      process.env[envName] = "0";
+      try {
+        expect(store.resolveWithSource(key)).toMatchObject({ value: 0, source: "env" });
+      } finally {
+        delete process.env[envName];
+      }
+    }
+  });
+
   it("resolves context.system_world with visible default, file, and env provenance", () => {
     const store = new ConfigStore(configPath);
     expect(store.resolveWithSource("context.system_world")).toMatchObject({ value: "default", source: "default" });

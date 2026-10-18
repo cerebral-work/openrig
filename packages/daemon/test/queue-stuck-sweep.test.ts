@@ -483,6 +483,42 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       await runSweep({ undeliveredGraceMinutes: 1 });
       expect(await findingsFor(row.qitemId)).toHaveLength(1);
     });
+
+    // R1: 0 turns each leg off, restoring the behaviour before churn A.
+    it("grace 0 turns the hold off: a fresh prompt refusal is found at once", async () => {
+      const row = await mkRow();
+      setNudgeResult(row.qitemId, PROMPT_REFUSAL, minutesAgo(2));
+      await runSweep({ undeliveredGraceMinutes: 0 });
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it("activity window 0 turns the activity leg off: an active destination's fresh failed wake is found", async () => {
+      const row = await mkRow();
+      failNudge(row.qitemId);
+      destinationWroteAt(minutesAgo(2));
+      await runSweep({ ownerActiveMinutes: 0 });
+      expect(await findingsFor(row.qitemId)).toHaveLength(1);
+    });
+
+    it("the churn minute settings resolve 0 (off) from the environment; an out-of-range value is dropped for the key's default", async () => {
+      const { resolveQueueMinutesSetting } = await sweepMod();
+      const keys = [
+        ["queue.stuck_sweep_undelivered_grace_minutes", "OPENRIG_QUEUE_STUCK_SWEEP_UNDELIVERED_GRACE_MINUTES", 10],
+        ["queue.stuck_sweep_owner_active_minutes", "OPENRIG_QUEUE_STUCK_SWEEP_OWNER_ACTIVE_MINUTES", 5],
+        ["queue.blocker_resume_coalesce_minutes", "OPENRIG_QUEUE_BLOCKER_RESUME_COALESCE_MINUTES", 10],
+        ["queue.parked_owner_wake_grace_minutes", "OPENRIG_QUEUE_PARKED_OWNER_WAKE_GRACE_MINUTES", 10],
+      ] as const;
+      for (const [key, envName, keyDefault] of keys) {
+        try {
+          process.env[envName] = "0";
+          expect(resolveQueueMinutesSetting(key, 7)).toBe(0);
+          process.env[envName] = "1441";
+          expect(resolveQueueMinutesSetting(key, 7)).toBe(keyDefault);
+        } finally {
+          delete process.env[envName];
+        }
+      }
+    });
   });
 
   // Queue churn B, ruling B2 (cerebral-work fork): finding rows stay (coordination-primitive.md and the

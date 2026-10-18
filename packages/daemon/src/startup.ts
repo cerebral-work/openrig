@@ -109,6 +109,7 @@ import { SlowOpRecorder, type SlowOperationInstrumentation } from "./domain/slow
 import { configureSyncSiteRecorder } from "./domain/sync-site-wrap.js";
 import { RequestPhaseObserver } from "./domain/request-phase-observer.js";
 import { DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES, QueueRepository, isBlockerLive } from "./domain/queue-repository.js";
+import { resolveQueueMinutesSetting } from "./domain/queue-stuck-sweep.js";
 import { createWorkflowFrontierPredicate } from "./domain/workflow-frontier-guard.js";
 import { InboxHandler } from "./domain/inbox-handler.js";
 import { OutboxHandler } from "./domain/outbox-handler.js";
@@ -451,14 +452,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // (same injected-predicate layering — the queue never imports the session domain).
     resolveOccupantGeneration: (sessionName) => sessionRegistry.currentOccupantGenerationForSession(sessionName),
     // Queue churn C (cerebral-work fork): the per-owner blocker-resume window, read fresh per notice.
-    blockerResumeCoalesceMinutes: () => {
-      try {
-        const n = Number(new ContextPackSettingsStore().resolveOne("queue.blocker_resume_coalesce_minutes" as never).value);
-        return Number.isFinite(n) && n > 0 ? n : DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES;
-      } catch {
-        return DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES;
-      }
-    },
+    blockerResumeCoalesceMinutes: () =>
+      resolveQueueMinutesSetting("queue.blocker_resume_coalesce_minutes", DEFAULT_BLOCKER_RESUME_COALESCE_MINUTES),
   });
   // W1 (transactional closure): ONE OutboxHandler shared between the deps slot
   // (sender-side audit surface) and the queue repo's durable wake-intent
@@ -2196,14 +2191,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
           // Queue churn D (cerebral-work fork): wait out the grace after the seat's own last queue write.
           lastSeatWriteAt: (sessionName) =>
             (db.prepare("SELECT MAX(ts) AS ts FROM queue_transitions WHERE actor_session = ?").get(sessionName) as { ts: string | null } | undefined)?.ts ?? null,
-          wakeGraceMinutes: () => {
-            try {
-              const n = Number(new ContextPackSettingsStore().resolveOne("queue.parked_owner_wake_grace_minutes" as never).value);
-              return Number.isFinite(n) && n > 0 ? n : DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES;
-            } catch {
-              return DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES;
-            }
-          },
+          wakeGraceMinutes: () =>
+            resolveQueueMinutesSetting("queue.parked_owner_wake_grace_minutes", DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES),
         }),
         // OPR.0.5.6.1 AM-F1 — the delivery engine's two timing legs on THIS
         // substrate. The gateway dispatch binds late (the subsystem is built
