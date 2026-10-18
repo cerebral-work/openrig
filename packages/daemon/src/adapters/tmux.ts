@@ -1154,14 +1154,21 @@ export class TmuxAdapter {
   }
 
   /** Spec 0015: the pane's pid, or why there is none. `absent` only when tmux itself reports the pane gone ("can't find
-   *  pane", on its stderr); any other failure, a timeout or an unreadable reply is `unavailable`, never absence. */
+   *  pane", on its stderr); any other failure, a timeout or an unreadable reply is `unavailable`, never absence.
+   *  tmux 3.4 answers display-message on a gone pane with exit 0 and an empty reply, so an empty reply is confirmed with
+   *  `list-panes -t <pane>`, which reports the absence (review r1 on #18). */
   async observePanePid(paneId: string): Promise<PanePidObservation> {
     const target = exactTarget(paneId, "pane");
     try {
       const output = await this.run(["tmux", "display-message", "-p", "-t", target, "#{pane_pid}"],
         `tmux display-message -p -t ${shellQuote(target)} "#{pane_pid}"`);
       const parsed = parseInt(output.trim(), 10);
-      return Number.isFinite(parsed) && parsed > 0 ? { kind: "pid", pid: parsed } : { kind: "unavailable" };
+      if (Number.isFinite(parsed) && parsed > 0) return { kind: "pid", pid: parsed };
+      // Only a pane id can be confirmed gone; a session target's absence is "can't find session", never a pane's.
+      if (output.trim() !== "" || !target.startsWith("%")) return { kind: "unavailable" };
+      await this.run(["tmux", "list-panes", "-t", target, "-F", "#{pane_id}"],
+        `tmux list-panes -t ${shellQuote(target)} -F "#{pane_id}"`);
+      return { kind: "unavailable" }; // listed, but its pid can't be read
     } catch (error) {
       return isPaneAbsenceError(tmuxReportedError(error)) ? { kind: "absent" } : { kind: "unavailable" };
     }

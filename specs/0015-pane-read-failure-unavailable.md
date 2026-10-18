@@ -33,10 +33,18 @@ Two more writers turned a failed tmux read into a down-rank:
    - `TmuxAdapter.observePanePid` returns:
      - `{ kind: "pid" }`;
      - `{ kind: "absent" }`, only when tmux's own stderr says it can't find the pane (`isPaneAbsenceError` on `tmuxReportedError`, so pane output on stdout never classifies);
+       - tmux 3.4, the version on ceres, answers `display-message -p -t <gone pane>` with **exit 0 and an empty reply**, on both the argv and control-mode transports.
+       - An empty reply for a pane-id target (`%N`) is therefore confirmed with `list-panes -t <pane> -F '#{pane_id}'`, which reports "can't find pane" for a gone pane.
+       - A session target (`=name:`, which `getPanePid`'s other callers pass) is never confirmed. Its absence reads "can't find session", which is never a pane's, so those callers make no extra call.
+       - Absent only on that report. A pane it still lists, or any other failure of that read, is `unavailable` (review r1 F1 on #18; orch-lead ruling, r1's option (b)).
      - `{ kind: "unavailable" }` for anything else, including a timeout, another exit or an unreadable reply.
    - `getPanePid` delegates to it and keeps its `number | null` meaning for its other callers.
    - `readPanePid` reads through `observePanePid` when an adapter has it. An adapter without it keeps its own meaning (null = gone); in production only `TmuxAdapter` implements pane reads.
-2. **`pane_missing` needs positive evidence.** In the fleet sweep, a pane is gone only when tmux reports it gone, or when its session is absent from the successful `listSessions`. A failed read of a pane in a live session gives the unavailable verdict.
+2. **`pane_missing` needs positive evidence.** In the fleet sweep, a pane is gone only in one of two cases:
+   - tmux reports it gone: "can't find pane" from `display-message`, or, on tmux 3.4, from the confirming `list-panes -t`. That covers a killed pane in a live session, and a stale pane id after a session was recreated under the same name.
+   - its session is absent from the successful `listSessions`.
+
+   A failed read of a pane in a live session gives the unavailable verdict.
    - A failed batch read lists nothing, so each pane is decided by its own read; the selection cache marks a failed read `unavailable`.
    - The tokenless sole-pane recheck gives the unavailable verdict when its `listPanes` or pid read fails.
    - The rebind proof reports "tmux pane identity lookup failed" and records no verdict when the pid of the pane its listing showed can't be read.
@@ -56,6 +64,7 @@ Two more writers turned a failed tmux read into a down-rank:
    - **Acting consumers:**
      - **`rig archive`** refused without `--force` only while the rig was `running`/`degraded`, read from that projection. A flap therefore let it archive a rig with live seats without `--force`. **Fixed here:** the guard reads stored liveness. A stored-running seat counts as `attention_required` only on a confirmed `session_missing`, stored startup attention, or restore attention/failed, never on a pane-read verdict (orch-lead ruling (b), 2026-10-18). Upstream's "healthy plus confirmed-missing archives without force" stays.
      - **Workflow role resolution** (`workflow-role-resolver.ts:122`) disqualifies a seat that is not `running` (`not_live(lifecycleState=attention_required)`), so routing to a role skips a down-ranked seat. **Unchanged, by ruling:** skipping an identity-unverified seat for routing is defensible.
+   - **The attention gate:** `seat-attention-reconciler`'s `getActiveIdentityVerdict` raises the pane-identity attention class only on `mismatch` or `pane_missing` (`:607-617`). Clearing that attention runs the rebind (`:343-353`). It is a projection gate, not an automatic action. This is why a gone pane must still read `pane_missing`: otherwise nothing prompts the rebind.
    - **Projections and reports, no action:**
      - `rig ps` (`node-inventory`), `graph-projection`, `ps-projection`, `seat-status-service`;
      - the provider read model (`provider-collect`, which hides non-running Claude seats);
@@ -81,7 +90,7 @@ Two more writers turned a failed tmux read into a down-rank:
 ## Test
 
 ```bash
-cd packages/daemon && npx vitest run test/tmux-pane-pid-failure.test.ts
+cd packages/daemon && npx vitest run test/tmux-pane-pid-failure.test.ts test/tmux-pane-pid-native.test.ts
 cd packages/daemon && npx vitest run test/rigs-routes.test.ts -t "force|archive"
 ```
 
@@ -98,16 +107,24 @@ cd packages/daemon && npx vitest run test/rigs-routes.test.ts -t "force|archive"
   - Codex keeps upstream's `mismatch` / `tmux_unavailable`.
 - **Recheck:** a failed `listPanes` or pid read is unavailable, not `process_identity_ambiguous`.
 - **Rebind:** a failed read writes no `pane_missing`; tmux's "can't find pane" still does.
+- **Native, real tmux** (`tmux-pane-pid-native.test.ts`): a private `TMUX_TMPDIR` server (never the user's), over the argv and control-mode transports.
+  - `observePanePid` gives a pid for a live pane, and `absent` for a killed pane, a stale id and a never-existing pane.
+  - The fleet sweep gives `pane_missing` / `pane_pid_gone` for a killed pane in a live session (terminal and Claude) and for a stale pane id; a healthy seat is `verified`.
+  - Base 071dca1d: the sweep gives `pane_missing` (green). 46a45a8b: red (`tmux_unavailable`). With the fix: green.
+- **The scripted tmux in the unit tests models tmux 3.4:** an empty `display-message` reply for a gone pane, and `list-panes -t` reporting the absence. It no longer throws on `display-message`, which hid F1.
 - **Archive** (`rigs-routes.test.ts`): running seats down-ranked by `pane_missing`/`pane_pid_gone`, `mismatch`/`process_identity_ambiguous`, or Codex `mismatch`/`tmux_unavailable` are refused without `--force` (409) and archive with it. The upstream healthy-plus-confirmed-missing case still archives without `--force`.
 - **Red first:** every new case except the 3 controls fails on its base:
   - 12 of 15 on b6847523;
   - the managed-seat case on 79e11a4f (`pane_pid_gone`);
   - the 3 archive cases (200 instead of 409).
-- **Break-once:** each of 8 guards was broken and shown red:
+- **Break-once:** each of 11 guards was broken and shown red:
   - failures taken as absent;
   - classifying on stdout;
   - the verdict guard;
   - the cache mark;
   - both recheck guards;
   - the rebind guard;
-  - the archive guard reading the projected lifecycle again.
+  - the archive guard reading the projected lifecycle again;
+  - no confirming read;
+  - an empty reply taken as absent unconfirmed;
+  - any failure of the confirming read taken as absent.

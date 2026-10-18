@@ -18,17 +18,27 @@ const timeout = () => Object.assign(new Error("Command failed: tmux (timed out)"
 const exitError = () => Object.assign(new Error("Command failed: tmux\nserver exited unexpectedly"), { code: 1, execStderr: "server exited unexpectedly\n" });
 const paneGone = (pane: string) => Object.assign(new Error(`Command failed: tmux\ncan't find pane: ${pane}`), { code: 1, execStderr: `can't find pane: ${pane}\n` });
 
-type PaneScript = { pid: number; command: string } | (() => Error);
+// A scripted tmux that answers as tmux 3.4 does (review r1 on #18): display-message on a gone pane exits 0 with an EMPTY
+// reply; `list-panes -t <pane>` then reports "can't find pane". A pane with no script is gone. `{ empty }` is a pane
+// whose display-message reply is empty while list-panes still lists it (or, with `confirm`, fails otherwise).
+type PaneScript = { pid: number; command: string } | (() => Error) | { empty: true; confirm?: () => Error };
 function scriptedTmux(opts: { listing: Array<[string, number, string]> | (() => Error); panes: Record<string, PaneScript> }) {
   const exec = vi.fn(async (cmd: string) => {
     if (cmd.startsWith("tmux list-panes -a")) {
       if (typeof opts.listing === "function") throw opts.listing();
       return opts.listing.map(([id, pid, command]) => `${id}|${pid}|${command}`).join("\n") + "\n";
     }
+    const lp = cmd.match(/^tmux list-panes -t (\S+) -F ["']#\{pane_id\}["']$/);
+    if (lp) {
+      const pane = lp[1]!.replace(/^'(.*)'$/, "$1"), script = opts.panes[pane];
+      if (!script) throw paneGone(pane);
+      if (typeof script === "object" && "empty" in script && script.confirm) throw script.confirm();
+      return `${pane}\n`;
+    }
     const m = cmd.match(/^tmux display-message -p -t (\S+) ["']#\{(\w+)\}["']$/);
     if (!m) throw new Error(`unexpected: ${cmd}`);
     const pane = m[1]!.replace(/^'(.*)'$/, "$1"), script = opts.panes[pane];
-    if (!script) throw paneGone(pane);
+    if (!script || (typeof script === "object" && "empty" in script)) return "";
     if (typeof script === "function") throw script();
     return m[2] === "pane_pid" ? `${script.pid}\n` : `${script.command}\n`;
   });
@@ -38,8 +48,18 @@ function scriptedTmux(opts: { listing: Array<[string, number, string]> | (() => 
 describe("TmuxAdapter.observePanePid: absence only on tmux's own report", () => {
   const read = (script: PaneScript) => scriptedTmux({ listing: [], panes: { "%1": script } }).observePanePid("%1");
   it("a pid", async () => expect(await read({ pid: 4242, command: "node" })).toEqual({ kind: "pid", pid: 4242 }));
-  it("tmux's \"can't find pane\" is absent", async () => {
+  it("a gone pane is absent: tmux 3.4's empty display-message reply, confirmed by list-panes \"can't find pane\"", async () => {
     expect(await scriptedTmux({ listing: [], panes: {} }).observePanePid("%9")).toEqual({ kind: "absent" });
+  });
+  it("a tmux that reports \"can't find pane\" on display-message itself is absent too", async () => {
+    expect(await read(() => paneGone("%1"))).toEqual({ kind: "absent" });
+  });
+  it("an empty reply for a pane list-panes still lists is unavailable", async () => {
+    expect(await read({ empty: true })).toEqual({ kind: "unavailable" });
+  });
+  it("an empty reply whose confirming list-panes fails otherwise is unavailable", async () => {
+    expect(await read({ empty: true, confirm: exitError })).toEqual({ kind: "unavailable" });
+    expect(await read({ empty: true, confirm: timeout })).toEqual({ kind: "unavailable" });
   });
   it("a timeout is unavailable", async () => expect(await read(timeout)).toEqual({ kind: "unavailable" }));
   it("another non-zero exit is unavailable", async () => expect(await read(exitError)).toEqual({ kind: "unavailable" }));
