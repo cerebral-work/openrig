@@ -430,7 +430,8 @@ Examples:
     --to-cwd ~/kernel/operator --to-env CLAUDE_CONFIG_DIR=$HOME/.claude-operator \\
     --spec <kernel package>/specs/rigs/launch/kernel/rig-claude-only.yaml --approval <go ref> --reason opus-swap --dry-run
 
-If a runtime change fails after the successor started, the node still records the old runtime: relaunch with
+If a runtime change fails before the respawn, the seat was not changed and no recovery is needed. If it fails after
+the successor started, the node still records the old runtime: relaunch with
 rig seat launch <seat> --fresh --stop --reason <why>. After a committed change, undo it with rig seat runtime-revert.`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
 

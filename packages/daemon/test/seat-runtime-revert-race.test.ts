@@ -109,7 +109,7 @@ function fixture(opts: { guard?: boolean } = {}) {
   const ledger = () => db.prepare("SELECT kind, outcome FROM node_runtime_changes WHERE node_id = ? ORDER BY created_at, rowid").all(node.id);
   const slot = () => db.prepare("SELECT change_id FROM node_runtime_revert_slots WHERE node_id = ?").get(node.id) as { change_id: string } | undefined;
   return {
-    db, node, service, change, held, held1, ledger, slot, launches,
+    db, node, service, change, held, held1, ledger, slot, launches, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn> },
     hold: () => { holdNext = true; },
   };
 }
@@ -160,5 +160,17 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(await stale).toMatchObject({ ok: false, code: "runtime_revert_unavailable" });
     expect(f.slot()).toEqual(newerSlot);
     expect(f.db.prepare("SELECT runtime, model FROM nodes WHERE id = ?").get(f.node.id)).toEqual({ runtime: "codex", model: "gpt-5.5-codex-max" });
+  });
+
+  it("N1: a failure before the respawn says the seat was not changed and gives no --fresh --stop advice", async () => {
+    const f = fixture();
+    f.tmux.listPanes.mockResolvedValue([]); // resolve_pane fails before anything in the pane is touched
+    const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(f.tmux.respawnPane).not.toHaveBeenCalled();
+    expect(result.guidance).toContain("resolve_pane");
+    expect(result.guidance).toContain("was not changed");
+    expect(result.guidance).not.toContain("--fresh --stop");
   });
 });

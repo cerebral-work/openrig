@@ -706,7 +706,7 @@ export class SeatHandoverService {
       const started = await this.startTargetMember(change, node.id, latestSession.session_name);
       if (!started.ok) {
         return this.failChange(change, { ok: false, code: "runtime_change_target_startup_failed", message: started.message,
-          guidance: "Nothing about the seat changed and the predecessor still runs. Fix the target member's startup, then retry." }, "target-startup");
+          guidance: "Nothing about the seat changed and the predecessor still runs. Fix the target member's startup, then retry." }, "target-startup", false);
       }
     }
     // The successor must carry its own generation from its first byte. This reservation writes no
@@ -741,7 +741,7 @@ export class SeatHandoverService {
         // retiree wholly untouched; a failure after the in-place respawn leaves the seat re-wakeable from
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
         guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
-      }, `create-successor:${launch.step}`);
+      }, `create-successor:${launch.step}`, launch.replacementStarted);
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
@@ -756,7 +756,7 @@ export class SeatHandoverService {
       if (failedFiles.length > 0) {
         await this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId);
         return this.failChange(change, { ok: false, code: "context_delivery_failed", message: `Handover failed at step "deliver-startup-files": ${failedFiles.join("; ")}`,
-          guidance: "The node is unchanged." }, "deliver-startup-files");
+          guidance: "The node is unchanged." }, "deliver-startup-files", true);
       }
     }
 
@@ -799,7 +799,7 @@ export class SeatHandoverService {
           code: "context_delivery_failed",
           message: `Handover failed at step "deliver-restore-packet": ${delivered.message}`,
           guidance: "The successor candidate was unwound and the seat's binding is unchanged; the seat is re-wakeable from its provider session file. Retry after tmux delivery is healthy.",
-        }, "deliver-restore-packet");
+        }, "deliver-restore-packet", true);
       }
       contextDelivered = true;
     }
@@ -867,7 +867,7 @@ export class SeatHandoverService {
           code: "context_delivery_failed",
           message: `Handover failed at step "deliver-rebuild-priming": ${delivered.message}`,
           guidance: "The successor candidate was unwound and the seat's binding is unchanged; the seat is re-wakeable from its provider session file. Retry after tmux delivery is healthy.",
-        }, "deliver-rebuild-priming");
+        }, "deliver-rebuild-priming", true);
       }
       contextDelivered = true;
     }
@@ -926,7 +926,7 @@ export class SeatHandoverService {
   }): Promise<SeatHandoverResult> {
     const fail = async (result: SeatHandoverResult): Promise<SeatHandoverResult> => {
       if (input.cleanup) await input.cleanup();
-      return this.failChange(input.change, result, "verify-and-commit");
+      return this.failChange(input.change, result, "verify-and-commit", true);
     };
 
     const discovered = this.discoveryRepo.getDiscoveredSession(input.discoveredRef);
@@ -1426,12 +1426,17 @@ export class SeatHandoverService {
 
   /** A failed runtime change or revert is recorded with its code and step only. The message is never stored: a failed
    *  respawn's message can carry the env it was given (review r2 F3). The node is untouched. */
-  private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult, step: string): SeatHandoverResult {
-    // After the in-place respawn the canonical session is live and may hold the target runtime, while the node still
-    // records the old one; a plain --fresh launch refuses a live session, so the recovery names --stop (review r2).
-    if (change && !result.ok && step !== "target-startup" && "guidance" in result) {
-      result = { ...result, guidance: `The node still records ${change.from.runtime ?? "its previous runtime"}. Relaunch the seat under it with: `
-        + `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"` } as SeatHandoverResult;
+  private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult, step: string, replacementStarted: boolean): SeatHandoverResult {
+    // The recovery depends on whether the in-place respawn ran (review r2, N1). Before it, the seat is untouched and
+    // its predecessor still runs, so there is nothing to recover. After it, the canonical session is live and may hold
+    // the target runtime while the node still records the old one; a plain --fresh launch refuses a live session, so
+    // the recovery names --stop.
+    if (change && !result.ok && "guidance" in result) {
+      result = { ...result, guidance: replacementStarted
+        ? `The node still records ${change.from.runtime ?? "its previous runtime"}. Relaunch the seat under it with: `
+          + `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"`
+        : `The seat was not changed: the failure came at ${step}, before the in-place respawn, and its predecessor still runs. `
+          + "No recovery is needed; fix the cause and retry." } as SeatHandoverResult;
     }
     if (change && !result.ok) {
       const failure = `${result.code} at ${step}`;
