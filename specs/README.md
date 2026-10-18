@@ -16,6 +16,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0008](0008-rig-edge-add.md) | `rig edge add`: an edge between existing seats | complete | daemon, cli, topology | feat/factory-expansion-fixes |
 | [0009](0009-workflow-rig-name-resolution.md) | Workflow rig-name resolution: unarchived rigs only | complete | daemon, workflow | feat/factory-expansion-fixes |
 | [0010](0010-workflow-human-gate-targets.md) | Workflow gate targets: forms and hints | complete | daemon, workflow, docs | feat/factory-expansion-fixes |
+| [0012](0012-startup-submission-verification.md) | Startup submission verification: boundary re-look, transcript confirmation, required sends | in-progress | daemon, startup, claude adapter | revenant gap 1 |
 
 ## Requirements Syntax (EARS)
 

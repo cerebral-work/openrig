@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { inspectStartupStagedText, startupOwnCollapsedPaste } from "../src/domain/startup-submission-evidence.js";
+import { composerBoundaryUnrecognized, inspectStartupStagedText, startupOwnCollapsedPaste, startupSubmissionEvidence } from "../src/domain/startup-submission-evidence.js";
 
 // Composer-only crops from Claude Code 2.1.289; no transcript or seat identity.
 const frames = JSON.parse(readFileSync(new URL("./fixtures/claude-startup-paste-2.1.289.json", import.meta.url), "utf8")) as Array<{
@@ -132,5 +132,40 @@ describe("a rule and a mode-bar line inside the prompt text", () => {
     const text = "first\n──────────\n⏸ plan mode on\nlast";
     const frame = `❯ ${text}\n────────────────────\n  -- NORMAL --\n`;
     expect(inspectStartupStagedText(frame, text)).toBe("unverified");
+  });
+});
+
+// Spec 0012: each observation names the footer under the screen's last rule by class, never by text.
+describe("composer footer class and boundary (spec 0012)", () => {
+  it.each([
+    ["⏵⏵ bypass permissions on (shift+tab to cycle)", "mode_bar"],
+    ["⏸ plan mode on", "mode_bar"],
+    ["paste again to expand  ◐ medium · /effort", "paste_hint"],
+    ["? for shortcuts", "shortcuts_hint"],
+    ["-- INSERT -- ⏵⏵ auto mode on (shift+tab to cycle)", "vim_insert"],
+    ["-- INSERT --", "vim_insert"],
+    ["Working… esc to interrupt", "unrecognized"],
+  ])("classifies the footer %j as %s", (footer, footerClass) => {
+    expect(startupSubmissionEvidence(composer("", footer), expected, 200)?.footerClass).toBe(footerClass);
+  });
+
+  it("records no_rule when the capture has no rule, and blank_rule_tail when nothing follows the last rule", () => {
+    expect(startupSubmissionEvidence("❯ \nWorking…\n", expected, 200)?.footerClass).toBe("no_rule");
+    expect(startupSubmissionEvidence("❯ draft\n────────────────────\n\n", expected, 200)?.footerClass).toBe("blank_rule_tail");
+  });
+
+  it("carries no pane text in the observation", () => {
+    const evidence = startupSubmissionEvidence(composer("a private draft", "Working… esc to interrupt"), expected, 200);
+    expect(JSON.stringify(evidence)).not.toMatch(/private draft|Working/);
+  });
+
+  it.each([
+    ["no closing rule under the marker", "❯ \nWorking…\n", true],
+    ["an unrecognized footer under the closing rule", composer("", "Working… esc to interrupt"), true],
+    ["no marker at all", "Working…\n────────────────────\n  ? for shortcuts\n", true],
+    ["a recognized composer", composer("", "? for shortcuts"), false],
+    ["an empty capture", "", false],
+  ])("reports the boundary unrecognized for %s: %s", (_name, pane, unrecognized) => {
+    expect(composerBoundaryUnrecognized(pane, "claude-code")).toBe(unrecognized);
   });
 });

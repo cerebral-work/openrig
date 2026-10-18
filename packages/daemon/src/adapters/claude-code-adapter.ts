@@ -24,6 +24,8 @@ import { observeClaudePermission } from "../domain/permission-drift.js";
 import { unresolvedClaudePermissionModes } from "../domain/native-permission-selection.js";
 import type { ClaudeManagedLaunch } from "../domain/claude-managed-launch.js";
 import { contextUsageDirectory, providerUsageDirectory } from "../domain/telemetry-state-paths.js";
+import { inspectStartupTranscript, type StartupTranscriptConfirmation } from "../domain/startup-transcript-evidence.js";
+import os from "node:os";
 
 export interface ClaudeAdapterFsOps {
   readFile(path: string): string;
@@ -43,6 +45,11 @@ export interface ClaudeAdapterFsOps {
 }
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
+
+/** Claude Code's project directory name for a cwd: every character other than a letter or digit becomes "-". */
+export function encodeClaudeProjectDir(cwd: string): string {
+  return cwd.replace(/[^a-zA-Z0-9]/g, "-");
+}
 
 /**
  * Claude Code runtime adapter. Projects resources to .claude/ targets
@@ -67,6 +74,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
   /** P20 — called after a projected file is written to a target, so the manifest
    *  records what we last wrote (→ operator-vs-stale discrimination). No-op by default. */
   private recordProjection: (targetPath: string, content: string) => void;
+  /** Claude's config directory, whose projects/ holds per-session transcripts (spec 0012). */
+  private claudeConfigDir: string;
 
   constructor(deps: {
     tmux: TmuxAdapter;
@@ -89,6 +98,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     /** P20 — record-at-apply hook (startup wires it to the projection manifest store).
      *  Absent → no-op (the manifest stays empty → discrimination safe-degrades to P17). */
     recordProjection?: (targetPath: string, content: string) => void;
+    /** Default: CLAUDE_CONFIG_DIR, else <home>/.claude. */
+    claudeConfigDir?: string;
   }) {
     this.tmux = deps.tmux;
     this.seatLaunchEnvironment = deps.seatLaunchEnvironment;
@@ -104,6 +115,8 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     this.activityRelayPath = deps.activityRelayPath ?? null;
     this.claudeHooksManifestPath = deps.claudeHooksManifestPath ?? null;
     this.recordProjection = deps.recordProjection ?? (() => {});
+    this.claudeConfigDir = deps.claudeConfigDir ?? process.env.CLAUDE_CONFIG_DIR
+      ?? nodePath.join(deps.fsOps.homedir ?? os.homedir(), ".claude");
   }
 
   async listInstalled(binding: NodeBinding): Promise<InstalledResource[]> {
@@ -174,7 +187,27 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
     return { projected, skipped, failed, ...(warnings.length ? { warnings } : {}) };
   }
 
-  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult> {
+  /**
+   * Spec 0012: confirm a startup send from this launch's own transcript. This narrowly reverses the rule at
+   * launchHarness (nothing is read back from Claude's session files, because a same-name file can belong to an
+   * earlier occupant): only for this check, only the file named by the session id THIS launch passed (the generated
+   * --session-id, the resumed id or the fork id), never found by listing or globbing, and only records after the send.
+   */
+  async confirmStartupText(binding: NodeBinding, text: string, sentAtMs: number): Promise<StartupTranscriptConfirmation> {
+    const sessionId = this.autoLaunches.get(binding.nodeId)?.token;
+    if (!sessionId) return { outcome: "unavailable", reason: "no session id from this launch" };
+    let cwd = binding.cwd;
+    try { cwd = fs.realpathSync.native(binding.cwd); } catch { /* the binding's own path */ }
+    const transcript = nodePath.join(this.claudeConfigDir, "projects", encodeClaudeProjectDir(cwd), `${sessionId}.jsonl`);
+    if (!this.fs.exists(transcript)) return { outcome: "unavailable", reason: "this launch's transcript file is absent" };
+    try {
+      return inspectStartupTranscript(this.fs.readFile(transcript), text, sentAtMs);
+    } catch {
+      return { outcome: "unavailable", reason: "this launch's transcript file is unreadable" };
+    }
+  }
+
+  async deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string, file?: ResolvedStartupFile) => Promise<void>): Promise<StartupDeliveryResult> {
     try { this.ensureManagedBootstrap(binding); } catch (err) {
       console.error(`[openrig] claude bootstrap warning: ${(err as Error).message}`);
     }
@@ -214,7 +247,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           case "send_text": {
             if (binding.tmuxSession) {
               if (sendInteractiveText) {
-                await sendInteractiveText(content);
+                await sendInteractiveText(content, file);
                 break;
               }
               const textResult = await this.tmux.sendText(binding.tmuxSession, content);

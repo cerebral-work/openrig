@@ -166,9 +166,14 @@ export interface RuntimeAdapter {
   /** Project resources from a projection plan to the runtime target locations. */
   project(plan: ProjectionPlan, binding: NodeBinding): Promise<ProjectionResult>;
 
-  /** Deliver startup files. Claude's post-launch path can reuse the orchestrator's checked send.
+  /** Deliver startup files. Claude's post-launch path can reuse the orchestrator's checked send, naming the file it
+   * sends so a required file's submission is checked as required (spec 0012).
    * The adapter still owns file reads, ordering, provisioning and required/optional errors. */
-  deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string) => Promise<void>): Promise<StartupDeliveryResult>;
+  deliverStartup(files: ResolvedStartupFile[], binding: NodeBinding, sendInteractiveText?: (text: string, file?: ResolvedStartupFile) => Promise<void>): Promise<StartupDeliveryResult>;
+
+  /** Spec 0012: confirm a startup send from this launch's own transcript, only from records after `sentAtMs`.
+   * Read-only; the result carries hashes, types and times, never text. Absent = no transcript confirmation. */
+  confirmStartupText?(binding: NodeBinding, text: string, sentAtMs: number): Promise<import("./startup-transcript-evidence.js").StartupTranscriptConfirmation>;
 
   /**
    * Launch the harness (claude/codex/terminal) inside the tmux session.
