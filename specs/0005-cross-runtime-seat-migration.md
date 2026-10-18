@@ -69,6 +69,7 @@ A runtime changes only when a new occupant starts, and handover already owns tha
 | `node_runtime_changes`, `node_runtime_revert_slots` | a committed ledger row; the revert slot holds the state before the change |
 
 - `--to-permissions` is always required: an inherited default is confirmed, never implied (D4). The dry run shows what `inherit` resolves to on the target runtime. Claude-native modes are set afterwards with the existing permissions verb.
+- **Allow-list (review r2):** `--to-env` sets only names in `runtime.change_env_allowlist` (default `CLAUDE_CONFIG_DIR,CODEX_HOME`). With no caller authentication, an open list would let any local process pass `PATH`, `NODE_OPTIONS` or `LD_PRELOAD` to a `full_bypass` seat.
 - **Secrets:** a `--to-env` name matching the estate's secret-name rule (`KEY`, `TOKEN`, `SECRET`, `PASSWORD`, `CRED`, `PASSPHRASE`, `PRIVATE`, any case) is refused before any change. The ledger and the `seat.runtime_changed` event record env names with a sha256 of each value, never a value. `nodes.env_json` and the revert slot hold the values a launch needs.
 
 ### The target member's startup (Q4)
@@ -117,6 +118,7 @@ The successor starts fresh: no native history crosses harnesses. The recap resol
 - REQ-0005-23: If a revert is not issued by the kernel operator or advisor seat under a `transport:v1` identity, then the daemon shall refuse it.
 - REQ-0005-24: If a seat has no recorded runtime change to revert, then `rig seat runtime-revert` shall refuse it.
 - REQ-0005-25: Where `--resume-predecessor` is given, the revert shall resume the predecessor session's recorded token instead of starting a fresh successor.
+- REQ-0005-26: If a `--to-env` name is not in `runtime.change_env_allowlist`, then the handover shall refuse before any change.
 
 ## Plan
 

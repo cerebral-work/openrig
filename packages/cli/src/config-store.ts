@@ -114,6 +114,7 @@ export interface RiggedConfig {
   // Runtime launch settings and the Codex hooks feature flag.
   runtime: {
     readinessTimeoutSeconds: number;
+    changeEnvAllowlist: string;
     codex: {
       hooksEnabled: boolean;
     };
@@ -308,6 +309,7 @@ const DEFAULTS = {
   // Runtime readiness keeps the existing 30-second default; Codex hooks stay on.
   runtime: {
     readinessTimeoutSeconds: 30,
+    changeEnvAllowlist: "CLAUDE_CONFIG_DIR,CODEX_HOME",
     codex: {
       hooksEnabled: true,
     },
@@ -455,6 +457,7 @@ export const VALID_KEYS = [
   // plugin-primitive Phase 3a slice 3.5 — Codex feature flag.
   "runtime.codex.hooks_enabled",
   "runtime.readiness_timeout_seconds",
+  "runtime.change_env_allowlist",
   // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10:
   // 7 ConfigStore keys (lockstep with daemon SETTINGS_VALID_KEYS).
   "policies.claude_compaction.enabled",
@@ -568,6 +571,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   // boundary doctrine (no RIGGED_X legacy on net-new keys).
   "runtime.codex.hooks_enabled": { primary: "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED" },
   "runtime.readiness_timeout_seconds": { primary: "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS" },
+  "runtime.change_env_allowlist": { primary: "OPENRIG_RUNTIME_CHANGE_ENV_ALLOWLIST" },
   // Slice 27 — Claude auto-compaction policy. OPENRIG_X primary only
   // (net-new keys, no legacy).
   "policies.claude_compaction.enabled": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED" },
@@ -661,6 +665,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "feed.subscriptions.audit_log": ["feed", "subscriptions", "auditLog"],
   "runtime.codex.hooks_enabled": ["runtime", "codex", "hooksEnabled"],
   "runtime.readiness_timeout_seconds": ["runtime", "readinessTimeoutSeconds"],
+  "runtime.change_env_allowlist": ["runtime", "changeEnvAllowlist"],
   "policies.claude_compaction.enabled": ["policies", "claudeCompaction", "enabled"],
   "policies.claude_compaction.threshold_percent": ["policies", "claudeCompaction", "thresholdPercent"],
   "policies.claude_compaction.pre_compact_instruction": ["policies", "claudeCompaction", "preCompactInstruction"],
@@ -912,6 +917,15 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
   "transcripts.poll_interval_seconds": (raw, value) => {
     if (!/^\d+$/.test(raw.trim()) || typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 3600) {
       throw new Error("Invalid transcripts.poll_interval_seconds: must be an integer in [1, 3600]");
+    }
+  },
+  // Spec 0005 (cerebral-work fork), review r2: the env names a runtime change's --to-env may set. Each must be a seat env
+  // name; lockstep with the twin store.
+  "runtime.change_env_allowlist": (raw) => {
+    const bad = (raw ?? "").split(",").map((name) => name.trim()).filter(Boolean)
+      .filter((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name) || name.startsWith("OPENRIG_"));
+    if (bad.length > 0) {
+      throw new Error(`Invalid value for runtime.change_env_allowlist: ${bad.join(", ")} must be seat env names (^[A-Z_][A-Z0-9_]*$, not OPENRIG_*)`);
     }
   },
   "runtime.readiness_timeout_seconds": (raw, coerced) => {
@@ -1220,6 +1234,7 @@ export class ConfigStore {
       launch: { nonInterruptive: v("launch.non_interruptive") as boolean },
       runtime: {
         readinessTimeoutSeconds: v("runtime.readiness_timeout_seconds") as number,
+        changeEnvAllowlist: v("runtime.change_env_allowlist") as string,
         codex: {
           hooksEnabled: v("runtime.codex.hooks_enabled") as boolean,
         },

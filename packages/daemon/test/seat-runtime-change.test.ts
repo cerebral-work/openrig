@@ -29,7 +29,7 @@ function adapter(runtime: string): RuntimeAdapter {
   return { runtime, listInstalled: async () => [], project: unused, deliverStartup: unused, launchHarness: unused, checkReady: unused } as never;
 }
 
-function fixture(opts: { rigName?: string; memberRuntime?: string; memberModel?: string | null } = {}) {
+function fixture(opts: { rigName?: string; memberRuntime?: string; memberModel?: string | null; envAllowlist?: string[] } = {}) {
   const rigName = opts.rigName ?? "rt-rig";
   const root = fs.realpathSync(fs.mkdtempSync(nodePath.join(os.tmpdir(), "or-rtc-unit-")));
   tmpDirs.push(root);
@@ -77,6 +77,7 @@ function fixture(opts: { rigName?: string; memberRuntime?: string; memberModel?:
   const service = new SeatHandoverService({
     db, rigRepo, sessionRegistry, discoveryRepo: new DiscoveryRepository(db), eventBus, tmuxAdapter: tmuxAdapter as never,
     runtimeAdapters: adapters, memberStartup,
+    ...(opts.envAllowlist ? { runtimeChangeEnvAllowlist: () => opts.envAllowlist! } : {}),
   });
   const unchanged = () => {
     expect(db.prepare("SELECT runtime, model FROM nodes WHERE id = ?").get(node.id)).toEqual({ runtime: "codex", model: "gpt-5.5-codex" });
@@ -121,13 +122,34 @@ describe("spec 0005: runtime-change refusals and dry run", () => {
     f.unchanged();
   });
 
-  it("refuses a secret-named --to-env before any change", async () => {
-    const f = fixture();
+  it("refuses a secret-named --to-env before any change, even when the allow-list names it", async () => {
+    const f = fixture({ envAllowlist: ["ANTHROPIC_API_KEY", "GH_TOKEN", "DB_PASSWORD", "MY_SECRET", "AWS_CREDS", "SSH_PRIVATE", "GPG_PASSPHRASE"] });
     for (const name of ["ANTHROPIC_API_KEY", "GH_TOKEN", "DB_PASSWORD", "MY_SECRET", "AWS_CREDS", "SSH_PRIVATE", "GPG_PASSPHRASE"]) {
       const result = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", caller: OPERATOR, runtimeChange: f.request({ toEnv: [`${name}=x`] }) });
       expect(result, name).toMatchObject({ ok: false, code: "runtime_change_secret_env" });
     }
     f.unchanged();
+  });
+
+  it("--to-env takes only allow-listed names: the loader and shell variables are refused before any change", async () => {
+    const f = fixture({ rigName: "kernel", memberModel: null });
+    for (const name of ["LD_PRELOAD", "LD_LIBRARY_PATH", "NODE_OPTIONS", "PATH", "BASH_ENV"]) {
+      const result = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", dryRun: true, caller: OPERATOR, runtimeChange: f.request({ toEnv: [`${name}=/tmp/x`] }) });
+      expect(result, name).toMatchObject({ ok: false, code: "runtime_change_env_not_allowed" });
+    }
+    for (const name of ["CLAUDE_CONFIG_DIR", "CODEX_HOME"]) {
+      const result = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", dryRun: true, caller: OPERATOR, runtimeChange: f.request({ toEnv: [`${name}=/tmp/x`] }) });
+      expect(result.ok, `${name}: ${JSON.stringify(result)}`).toBe(true);
+    }
+    f.unchanged();
+  });
+
+  it("the --to-env allow-list is the configured one", async () => {
+    const f = fixture({ rigName: "kernel", memberModel: null, envAllowlist: ["MY_TOOL_HOME"] });
+    const allowed = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", dryRun: true, caller: OPERATOR, runtimeChange: f.request({ toEnv: ["MY_TOOL_HOME=/x"] }) });
+    expect(allowed.ok, JSON.stringify(allowed)).toBe(true);
+    const refused = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", dryRun: true, caller: OPERATOR, runtimeChange: f.request({ toEnv: ["CLAUDE_CONFIG_DIR=/x"] }) });
+    expect(refused).toMatchObject({ ok: false, code: "runtime_change_env_not_allowed" });
   });
 
   it("D2: a non-kernel spec must declare the target runtime and model", async () => {

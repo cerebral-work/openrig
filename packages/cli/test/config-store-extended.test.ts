@@ -152,6 +152,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       // plugin-primitive Phase 3a slice 3.5 — Codex feature flag.
       "runtime.codex.hooks_enabled",
       "runtime.readiness_timeout_seconds",
+      "runtime.change_env_allowlist",
       // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10.
       "policies.claude_compaction.enabled",
       "policies.claude_compaction.threshold_percent",
@@ -214,6 +215,16 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
 
     process.env["OPENRIG_CONTEXT_ROOT"] = join(tmpDir, "context-library");
     expect(store.resolve().context.root).toBe(join(tmpDir, "context-library"));
+  });
+
+  it("runtime.change_env_allowlist defaults to CLAUDE_CONFIG_DIR,CODEX_HOME and takes only seat env names", () => {
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource("runtime.change_env_allowlist")).toMatchObject({ value: "CLAUDE_CONFIG_DIR,CODEX_HOME", source: "default" });
+    store.set("runtime.change_env_allowlist", "CLAUDE_CONFIG_DIR,MY_TOOL_HOME");
+    expect(store.resolveWithSource("runtime.change_env_allowlist")).toMatchObject({ value: "CLAUDE_CONFIG_DIR,MY_TOOL_HOME", source: "file" });
+    for (const raw of ["lower_case", "OPENRIG_SESSION_NAME", "BAD-NAME"]) {
+      expect(() => store.set("runtime.change_env_allowlist", raw), raw).toThrow("runtime.change_env_allowlist");
+    }
   });
 
   it("defaults the advisor session to the kernel's advisor seat", () => {

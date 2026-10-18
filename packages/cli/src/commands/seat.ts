@@ -415,7 +415,7 @@ Examples:
     .option("--to-permissions <mode>", "With --to-runtime: floor, full_bypass or inherit (required; the dry run shows what inherit resolves to)")
     .option("--to-effort <level>", "With --to-runtime: the successor's reasoning effort")
     .option("--to-cwd <path>", "With --to-runtime: the successor's working directory")
-    .option("--to-env <NAME=VALUE>", "With --to-runtime: member env for the successor (repeatable; replaces the member env; secret-named names are refused)",
+    .option("--to-env <NAME=VALUE>", "With --to-runtime: member env for the successor (repeatable; replaces the member env; only names in runtime.change_env_allowlist, default CLAUDE_CONFIG_DIR and CODEX_HOME; secret-named names are refused)",
       (value: string, previous: string[] = []) => [...previous, value])
     .option("--spec <rig.yaml>", "With --to-runtime: the rig spec that declares the target member (on the kernel rig, the packaged variant)")
     .option("--approval <ref>", "With --to-runtime: the go for this change, recorded as attribution")

@@ -37,6 +37,7 @@ import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { findOtherSessionOwner } from "./session-owner.js";
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
+import { SettingsStore } from "./user-settings/settings-store.js";
 import { seatCorePluginDir, withCorePlugin } from "./claude-core-plugin-env.js";
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
@@ -211,7 +212,7 @@ export type SeatHandoverResult =
   | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
   | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
-  | { ok: false; code: "runtime_change_unauthorized" | "runtime_change_invalid" | "runtime_change_secret_env" | "runtime_change_spec_mismatch" | "runtime_change_target_startup_failed" | "runtime_revert_unavailable"; message: string; guidance: string }
+  | { ok: false; code: "runtime_change_unauthorized" | "runtime_change_invalid" | "runtime_change_secret_env" | "runtime_change_env_not_allowed" | "runtime_change_spec_mismatch" | "runtime_change_target_startup_failed" | "runtime_revert_unavailable"; message: string; guidance: string }
   | Extract<SeatStatusResult, { ok: false }>;
 
 interface NodeRow {
@@ -330,6 +331,8 @@ interface SeatHandoverServiceDeps {
   /** Spec 0005 — the member-startup steps (PodRigInstantiator) a runtime change starts its target with. Absent → a
    *  runtime change is refused on this daemon. */
   memberStartup?: MemberStartupResolver;
+  /** Spec 0005 — the env names --to-env may set. Default: runtime.change_env_allowlist, read per request. */
+  runtimeChangeEnvAllowlist?: () => string[];
 }
 
 export class SeatHandoverService {
@@ -347,6 +350,7 @@ export class SeatHandoverService {
   private predecessorRecapResolver: PredecessorRecapResolver | null;
   private memberStartup: MemberStartupResolver | null;
   private runtimeAdapters: Record<string, RuntimeAdapter> | undefined;
+  private runtimeChangeEnvAllowlist: () => string[];
   private runtimeLedger: NodeRuntimeChangeLedger;
   private authoredRecapResolver: SeatHandoverServiceDeps["authoredRecapResolver"] | null;
   private activityOracle: SeatHandoverServiceDeps["activityOracle"] | null;
@@ -367,6 +371,8 @@ export class SeatHandoverService {
     this.rigRepo = deps.rigRepo;
     this.memberStartup = deps.memberStartup ?? null;
     this.runtimeAdapters = deps.runtimeAdapters;
+    this.runtimeChangeEnvAllowlist = deps.runtimeChangeEnvAllowlist ?? (() =>
+      String(new SettingsStore().resolveOne("runtime.change_env_allowlist" as never).value ?? "").split(",").map((name) => name.trim()).filter(Boolean));
     this.runtimeLedger = new NodeRuntimeChangeLedger(deps.db);
     this.sessionRegistry = deps.sessionRegistry;
     this.discoveryRepo = deps.discoveryRepo;
@@ -1238,9 +1244,17 @@ export class SeatHandoverService {
         "An inherited default is confirmed, never implied: the dry run shows what inherit resolves to on the target runtime.");
     }
     let toEnv: SeatEnv | null = null;
+    // Review r2: --to-env sets only allow-listed names. With no caller authentication on a loopback daemon, an open
+    // list would let any local process pass PATH, NODE_OPTIONS or LD_PRELOAD to a full_bypass seat.
+    const envAllowlist = new Set(r.toEnv?.length ? this.runtimeChangeEnvAllowlist() : []);
     for (const assignment of r.toEnv ?? []) {
       const parsedEnv = parseSeatEnvAssignment(assignment);
       if (!parsedEnv.ok) return invalid(`--to-env: ${parsedEnv.error}`, "Use NAME=VALUE.");
+      if (!envAllowlist.has(parsedEnv.name)) {
+        return { ok: false, code: "runtime_change_env_not_allowed",
+          message: `--to-env ${parsedEnv.name} is not in runtime.change_env_allowlist (${[...envAllowlist].join(", ") || "empty"}).`,
+          guidance: "Only allow-listed names may be set on a runtime change. Declare other env in the rig spec, or extend the allow-list deliberately." };
+      }
       if (SECRET_ENV_NAME.test(parsedEnv.name)) {
         return { ok: false, code: "runtime_change_secret_env",
           message: `--to-env ${parsedEnv.name}: a secret-named variable is refused; its value would be stored in the node row and in shell history.`,

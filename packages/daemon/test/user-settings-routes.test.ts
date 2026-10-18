@@ -117,7 +117,8 @@ describe("config routes (User Settings v0)", () => {
     // + 1 transport.verify_input_box (input-box evidence for verified Claude Code and Codex sends; default off).
     // + 5 queue churn A-D keys (cerebral-work fork): stuck-sweep undelivered grace, owner activity window and quiet
     //   kinds; blocker-resume coalesce window; parked-owner wake grace.
-    expect(Object.keys(body.settings).length).toBe(84);
+    // + 1 runtime.change_env_allowlist (spec 0005, cerebral-work fork: the env names a runtime change may set).
+    expect(Object.keys(body.settings).length).toBe(85);
     expect(body.settings["launch.non_interruptive"]).toMatchObject({ value: false, source: "default" });
     expect(body.settings["runtime.readiness_timeout_seconds"]).toMatchObject({ value: 30, source: "default" });
     expect(body.settings["ui.enabled"]).toMatchObject({ value: false, source: "default" });

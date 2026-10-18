@@ -257,7 +257,8 @@ function handoverResponse(c: Context, result: SeatHandoverResult) {
   if (result.code === "runtime_change_unauthorized") {
     return c.json(result, 403);
   }
-  if (result.code === "runtime_change_invalid" || result.code === "runtime_change_secret_env" || result.code === "runtime_change_spec_mismatch") {
+  if (result.code === "runtime_change_invalid" || result.code === "runtime_change_secret_env" || result.code === "runtime_change_env_not_allowed"
+    || result.code === "runtime_change_spec_mismatch") {
     return c.json(result, 400);
   }
   if (result.code === "runtime_revert_unavailable") {
