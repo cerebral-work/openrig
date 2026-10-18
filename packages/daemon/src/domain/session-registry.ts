@@ -116,6 +116,7 @@ export interface WatchdogRegistrationObserver {
 export class SessionRegistry {
   readonly db: Database.Database;
   private watchdogRegistrationObserver?: WatchdogRegistrationObserver;
+  private tenureRuntimeColumn?: boolean;
   constructor(db: Database.Database, watchdogRegistrationObserver?: WatchdogRegistrationObserver) {
     this.db = db;
     this.watchdogRegistrationObserver = watchdogRegistrationObserver;
@@ -287,6 +288,12 @@ export class SessionRegistry {
         "INSERT INTO occupant_tenures (id, node_id, generation_ordinal, generation_uuid, kind, native_session_id_at_boot) VALUES (?, ?, ?, ?, ?, ?)"
       )
       .run(id, nodeId, nextOrdinal, generationUuid, kind, nativeSessionIdAtBoot ?? null);
+    // Spec 0005: each generation records the runtime it runs (the node's, at mint). Absent on older schemas.
+    this.tenureRuntimeColumn ??= (this.db.prepare("PRAGMA table_info(occupant_tenures)").all() as Array<{ name: string }>)
+      .some((column) => column.name === "runtime");
+    if (this.tenureRuntimeColumn) {
+      this.db.prepare("UPDATE occupant_tenures SET runtime = (SELECT runtime FROM nodes WHERE id = ?) WHERE id = ?").run(nodeId, id);
+    }
     return this.rowToTenure(
       this.db.prepare("SELECT * FROM occupant_tenures WHERE id = ?").get(id) as OccupantTenureRow
     );
