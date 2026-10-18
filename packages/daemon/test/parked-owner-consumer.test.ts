@@ -722,5 +722,7 @@ describe("churn D — parked-owner wake grace", () => {
   it("grace 0 turns the skip off: a seat that wrote a minute ago is woken", async () => {
     const store = new RowStore();
     expect((await makeParkedOwnerConsumerPolicy(graceDeps(store, minutesBefore(1), NOW, 0)).evaluate(makeJob())).action).toBe("send");
+    // A backward clock step puts the write ahead of now; 0 is still off.
+    expect((await makeParkedOwnerConsumerPolicy(graceDeps(new RowStore(), minutesBefore(-2), NOW, 0)).evaluate(makeJob())).action).toBe("send");
   });
 });

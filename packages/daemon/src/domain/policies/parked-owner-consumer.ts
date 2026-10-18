@@ -354,7 +354,8 @@ export function makeParkedOwnerConsumerPolicy(deps: ParkedOwnerConsumerDeps): Po
         if (lastWrite) {
           const graceMs = (deps.wakeGraceMinutes?.() ?? DEFAULT_PARKED_OWNER_WAKE_GRACE_MINUTES) * 60_000;
           const wroteAt = Date.parse(lastWrite);
-          if (!Number.isNaN(wroteAt) && (deps.now?.() ?? new Date()).getTime() - wroteAt < graceMs) {
+          // A grace of 0 is off, unconditionally (a write ahead of a stepped-back clock must not skip).
+          if (graceMs > 0 && !Number.isNaN(wroteAt) && (deps.now?.() ?? new Date()).getTime() - wroteAt < graceMs) {
             skipped.push({ seat: seat.sessionName, why: "seat-wrote-within-grace" });
             continue;
           }

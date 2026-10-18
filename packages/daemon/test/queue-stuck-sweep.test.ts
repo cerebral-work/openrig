@@ -500,6 +500,18 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       expect(await findingsFor(row.qitemId)).toHaveLength(1);
     });
 
+    it("0 is off even when a time is ahead of the clock (a backward clock step)", async () => {
+      const refused = await mkRow();
+      setNudgeResult(refused.qitemId, PROMPT_REFUSAL, minutesAgo(-2));
+      await runSweep({ undeliveredGraceMinutes: 0 });
+      expect(await findingsFor(refused.qitemId)).toHaveLength(1);
+      const active = await mkRow();
+      failNudge(active.qitemId);
+      destinationWroteAt(minutesAgo(-2));
+      await runSweep({ ownerActiveMinutes: 0 });
+      expect(await findingsFor(active.qitemId)).toHaveLength(1);
+    });
+
     it("the churn minute settings resolve 0 (off) from the environment; an out-of-range value is dropped for the key's default", async () => {
       const { resolveQueueMinutesSetting } = await sweepMod();
       const keys = [

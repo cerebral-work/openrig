@@ -491,9 +491,10 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
       if (hasLiveLadder(deps.db, row.qitemId, now)) continue;
       // Churn A: a destination refused at an interactive prompt, or one that wrote a queue transition within the
       // activity window, is not stuck yet. The wait lasts only until the failed wake is older than the grace.
-      if (withinMs(row.lastNudgeAttempt ?? row.tsUpdated, now, undeliveredGraceMs)
+      // A window of 0 is off, unconditionally (a time ahead of a stepped-back clock must not hold anything).
+      if (undeliveredGraceMs > 0 && withinMs(row.lastNudgeAttempt ?? row.tsUpdated, now, undeliveredGraceMs)
         && (refusedAtInteractivePrompt(row.lastNudgeResult)
-          || withinMs(lastTransitionBy(deps.db, row.destinationSession), now, ownerActiveMs))) continue;
+          || (ownerActiveMs > 0 && withinMs(lastTransitionBy(deps.db, row.destinationSession), now, ownerActiveMs)))) continue;
       candidates.push({
         kind: "undelivered-wake",
         row,

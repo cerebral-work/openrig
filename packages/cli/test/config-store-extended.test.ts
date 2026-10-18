@@ -236,7 +236,7 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
       store.set(key, "1440");
       expect(store.resolveWithSource(key)).toMatchObject({ value: 1440, source: "file" });
       for (const raw of ["1441", "-1", "2.5", "10junk"]) {
-        expect(() => store.set(key, raw)).toThrow(new RegExp(key.replace(/\./g, "\\.")));
+        expect(() => store.set(key, raw)).toThrow(key);
       }
       process.env[envName] = "0";
       try {

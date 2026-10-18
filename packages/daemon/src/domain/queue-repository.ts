@@ -1114,7 +1114,9 @@ export class QueueRepository {
       return false; // no wake ledger (older schema): deliver as before
     }
     if (!last) return false;
-    const remaining = Date.parse(last) + this.blockerResumeCoalesceMinutes() * 60_000 - this.now().getTime();
+    const windowMinutes = this.blockerResumeCoalesceMinutes();
+    if (!(windowMinutes > 0)) return false; // 0 is off, whatever the clock says
+    const remaining = Date.parse(last) + windowMinutes * 60_000 - this.now().getTime();
     if (!(remaining > 0)) return false;
     const outboxId = entry.outboxId;
     this.scheduleCoalesceFlush(() => {

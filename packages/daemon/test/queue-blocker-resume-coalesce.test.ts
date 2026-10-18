@@ -146,6 +146,18 @@ describe("churn C — blocker-resolved notices coalesce per owner across blocker
     expect(flushes).toHaveLength(0);
   });
 
+  it("window 0 stays off after a backward clock step", async () => {
+    build(0);
+    const a = await parked();
+    const b = await parked();
+    resolve(a.blocker);
+    await vi.waitFor(() => expect(toWorker()).toHaveLength(1));
+    offsetMs = -60_000;
+    resolve(b.blocker);
+    await vi.waitFor(() => expect(toWorker()).toHaveLength(2));
+    expect(flushes).toHaveLength(0);
+  });
+
   it("the startup drain reaches a pending notice behind a full batch of held ones", async () => {
     const first = await parked();
     resolve(first.blocker);
