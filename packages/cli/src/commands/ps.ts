@@ -224,6 +224,7 @@ const ALLOWED_NODE_FIELDS = new Set([
   "agentActivity",
   "contextUsage",
   "heldReason",
+  "pendingDeclaration",
 ]);
 
 interface PsCliOptions {
@@ -679,6 +680,8 @@ export function compactNodeProjection(nodes: NodeEntry[]): Array<Record<string, 
     if (n.intentionallyStopped !== undefined) compact.intentionallyStopped = n.intentionallyStopped;
     // held/attention reason (short) when present.
     if (n.heldReason) compact.heldReason = n.heldReason;
+    // Spec 0005: a pending runtime-change declaration (run rig seat runtime-declare), when present.
+    if (n.pendingDeclaration) compact.pendingDeclaration = n.pendingDeclaration;
     if (attention && n.latestError) {
       compact.latestError = n.latestError;
     }
@@ -836,7 +839,7 @@ podNamespace, hostSelfId, canonicalSessionName, nodeKind, runtime, model, sessio
 intentionallyStopped, startupStatus, restoreOutcome, lifecycleState, tmuxAttachCommand,
 resumeCommand, latestError, terminalActive, hasAssignedWork,
 assignedWorkCount, pendingWorkCount, inProgressWorkCount, blockedWorkCount,
-agentActivity, contextUsage, heldReason.
+agentActivity, contextUsage, heldReason, pendingDeclaration.
 
 --host runs on a remote host declared in ~/.openrig/hosts.yaml (no current-rig
 default applied; the remote host's rigs are shown).

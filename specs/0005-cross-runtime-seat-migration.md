@@ -100,7 +100,7 @@ The successor starts fresh: no native history crosses harnesses. The recap resol
 - **Any other error after the commit** of a runtime change or revert is logged and returned as `handover_committed_with_error`, never as a failed handover.
 - **Visibility (cw.4.3):** a pending declaration shows where an operator looks, by the same test `rig seat runtime-declare` applies (the latest committed change is undeclared and its occupant generation is still current), so a change a later handover replaced shows nothing. The display is read-only and never offers a revert.
   - `rig seat status <seat>`: the `--json` field `pending_declaration` (`{ change_id, kind, operator, committed_at }`, or null), and the human line `Declaration pending: run rig seat runtime-declare <seat> (runtime change|revert <change_id>, committed by <operator>)`.
-  - `rig ps --nodes`: the node entry's `pendingDeclaration` (`{ changeId, kind, operator, committedAt }`, absent when none), and after the table the line `Declaration pending (<session>): run rig seat runtime-declare <seat>`.
+  - `rig ps --nodes`: `--json` carries the node's `pendingDeclaration` (`{ changeId, kind, operator, committedAt }`, absent when none) in the default compact projection and in `--full`, and `--fields` accepts `pendingDeclaration`. The human table is followed by the line `Declaration pending (<session>): run rig seat runtime-declare <seat>`, for the nodes the table shows.
 - **Plain handovers** (no runtime change) have no ledger row: they get neither the command nor `handover_committed_with_error`, and their `handover_committed_swap_undeclared` guidance still says to report it (Not in this spec).
 
 | Result code | HTTP | When | Ledger | Guidance, verbatim prefix |
