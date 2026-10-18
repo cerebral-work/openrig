@@ -1223,8 +1223,9 @@ describe("rig queue CLI", () => {
     block?.outputHelp();
     expect(help).toContain("fold:<what>, auth:<what> or external:<what>");
     expect(help).toContain("an existing custom row id");
-    expect(help).toContain("name@host");
-    expect(help).toContain("Bare free text, an unknown <word>: prefix and a row that is not live are refused.");
+    expect(help).toContain("member@rig on this daemon, or member@rig@host for a remote seat");
+    expect(help).toContain("Only a live row lifts a park by itself: a typed gate or a seat address needs --wake-after or --wake-watchdog.");
+    expect(help).toContain("Bare free text, an unknown <word>: prefix, an unknown seat and a row that is not live are refused.");
     expect(help).toContain("rig queue block <qitemId> --on external:<what> --wake-after 2h --continuation");
   });
 

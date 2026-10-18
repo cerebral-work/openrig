@@ -222,8 +222,9 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
       body: JSON.stringify(body),
     });
     const gate = gateKind === "human" ? "human-review@kernel" : "external:old-gate";
+    // Spec 0011: on the CLI path a typed gate carries a wake (nothing on the daemon lifts it).
     expect((await post("update", { state: "blocked", blockedOn: gate,
-      ...(gateKind === "human" ? { summary: "await review", evidenceRef: "owned-evidence" } : {}) })).status).toBe(200);
+      ...(gateKind === "human" ? { summary: "await review", evidenceRef: "owned-evidence" } : { wakeAfterSeconds: 3600 }) })).status).toBe(200);
     expect((await post("claim", {})).status).toBe(200);
     if (cleared) expect((await post("update", { state: "in-progress", transitionNote: "gate cleared" })).status).toBe(200);
     const member = await baton();

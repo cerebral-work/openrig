@@ -109,13 +109,16 @@ export type ParkBlocker =
   | { kind: "missing-row" }
   | { kind: "typed-gate"; prefix: string }
   | { kind: "malformed-gate"; prefix: string }
-  | { kind: "address" }
+  | { kind: "address"; remote: boolean }
   | { kind: "unknown-prefix"; prefix: string }
   | { kind: "name" };
 
-/** The blocker forms a park accepts, for refusal messages. */
+/** The blocker forms a park from the CLI accepts, for refusal messages (spec 0011). */
 export const PARK_BLOCKER_FORMS =
-  `a live queue row (a qitem- id or an existing custom row id), a typed gate (${TYPED_GATE_BLOCKER_PREFIXES.map((p) => `${p}<what>`).join(", ")}), or a seat or human address (name@host)`;
+  "a live queue row (a qitem- id or an existing custom row id), which lifts the park when it resolves; "
+  + `or, with a wake (--wake-after <duration> or --wake-watchdog <jobId>), a typed gate (${TYPED_GATE_BLOCKER_PREFIXES.map((p) => `${p}<what>`).join(", ")}) `
+  + "or a seat address (member@rig on this daemon, or member@rig@host for a remote seat); "
+  + "or a human seat (human-<name>@kernel) with --summary and --evidence-ref";
 
 export function resolveParkBlocker(value: string, getById: (id: string) => QueueItem | null): ParkBlocker {
   const item = getById(value);
@@ -123,7 +126,11 @@ export function resolveParkBlocker(value: string, getById: (id: string) => Queue
   if (value.startsWith("qitem-")) return { kind: "missing-row" };
   const typed = typedGateBlockerPrefix(value);
   if (typed) return isTypedGateBlocker(value) ? { kind: "typed-gate", prefix: typed } : { kind: "malformed-gate", prefix: typed };
-  if (/^[^\s@]+@[^\s@]+$/.test(value)) return { kind: "address" };
+  // An address is what the session-name parser reads as a seat: member@rig, member@rig@host (the rig part then
+  // carries the host: a remote seat) or a <local>@external ref.
+  const parsed = parseSessionName(value);
+  if (parsed.kind === "canonical") return { kind: "address", remote: parsed.rig.includes("@") };
+  if (parsed.kind === "external") return { kind: "address", remote: false };
   const word = /^[A-Za-z][A-Za-z0-9_-]*:/.exec(value)?.[0];
   return word ? { kind: "unknown-prefix", prefix: word } : { kind: "name" };
 }
@@ -2860,16 +2867,21 @@ export class QueueRepository {
     // 0.5.1-53 Atom 1b(ii) + 1a, resolved by row lookup (spec 0011) — blocker validation at the park moment:
     //   a queue row (a qitem- id or a custom row id) → must be LIVE (1b-ii); a dead blocker never lifts.
     //   a typed gate (fold:/auth:/external:)      → first-class (1a); a bare prefix with no body is malformed.
-    //   a name@host address (a seat or a human)   → accepted as before.
+    //   a seat address                             → member@rig must name a rig on this daemon (validateRig, the
+    //                                                destination check); member@rig@host is a remote seat.
     //   a missing qitem-                          → refused, as before.
     // On the CLI and agent path (strictBlocker, set by the update route) every other form is refused, with the
     // accepted forms: bare free text, an unknown "<word>:" prefix, a custom row that is not live. Closures the
     // daemon writes in-process (workflow, mission control) keep their authored gate names, with a warning.
+    // On the CLI path a park that nothing on this daemon lifts must carry a wake (--wake-after or --wake-watchdog):
+    // only a live row lifts a park itself (propagateBlockerCompletion); fold:, auth:, external: and addresses don't.
     // A row re-parked on the value it already carries keeps it with a warning: existing parks are not rewritten.
     // Human-seat parks (isHumanPark) enforce their own FR-6 contract above.
     if (input.state === "blocked" && !isHumanPark && typeof effectiveBlockedOn === "string") {
       const resolved = resolveParkBlocker(effectiveBlockedOn, (id) => this.getById(id));
-      const kept = qitem.blockedOn === effectiveBlockedOn && !effectiveBlockedOn.startsWith("qitem-");
+      // An existing park is kept, not refused: the request names no blocker (the row's own, or the gate a claim retained,
+      // is restored) or names the one the row already carries.
+      const kept = (input.blockedOn == null || qitem.blockedOn === effectiveBlockedOn) && !effectiveBlockedOn.startsWith("qitem-");
       const refuseOnRequest = (code: string, message: string, details: Record<string, unknown>) => {
         if (kept || input.strictBlocker !== true) {
           console.warn(`[queue] ${qitem.qitemId} parks on '${effectiveBlockedOn}' (${code}); a new park from the CLI would be refused: ${message}`);
@@ -2877,7 +2889,7 @@ export class QueueRepository {
         }
         throw new QueueRepositoryError(code, message, details);
       };
-      const forms = `Accepted forms: ${PARK_BLOCKER_FORMS}. A free-text human wait uses external:<name>.`;
+      const forms = `Accepted forms: ${PARK_BLOCKER_FORMS}. A free-text human wait uses external:<name> with a wake.`;
       if (resolved.kind === "name") {
         refuseOnRequest(
           "blocker_not_found",
@@ -2904,11 +2916,26 @@ export class QueueRepository {
           `blocked_on '${effectiveBlockedOn}' is a bare '${resolved.prefix}' prefix with no gate body. A typed gate blocker must name its gate (e.g. fold:one-home+attestation).`,
           { rejectedBlocker: effectiveBlockedOn },
         );
+      } else if (resolved.kind === "address" && !resolved.remote && !this.validateRig(effectiveBlockedOn)) {
+        refuseOnRequest(
+          "blocker_not_found",
+          `blocked_on '${effectiveBlockedOn}' names no seat on this daemon: no rig here has that name. A seat on another host is member@rig@host. ${forms}`,
+          { rejectedBlocker: effectiveBlockedOn },
+        );
       } else if (resolved.kind === "unknown-prefix") {
         refuseOnRequest(
           "blocker_unknown_prefix",
           `blocked_on '${effectiveBlockedOn}' starts with '${resolved.prefix}', which is not a typed gate prefix, and names no queue row. ${forms}`,
           { rejectedBlocker: effectiveBlockedOn, prefix: resolved.prefix },
+        );
+      }
+      const liftsItself = resolved.kind === "row" && isBlockerLive(resolved.item.state);
+      const hasWake = input.wakeAfterSeconds != null || input.wakeWatchdogId != null;
+      if (input.strictBlocker === true && !kept && !liftsItself && !hasWake && (resolved.kind === "typed-gate" || resolved.kind === "address")) {
+        throw new QueueRepositoryError(
+          "blocker_wake_required",
+          `blocked_on '${effectiveBlockedOn}' has no automatic lift: nothing on this daemon resolves it, so the park needs a wake (--wake-after <duration> or --wake-watchdog <jobId>). ${forms} Example: rig queue block <qitemId> --on external:<what> --wake-after 2h --continuation '<what resumes>'.`,
+          { rejectedBlocker: effectiveBlockedOn },
         );
       }
     }

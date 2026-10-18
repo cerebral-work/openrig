@@ -83,7 +83,7 @@ describe("park blockers resolve by row lookup (spec 0011)", () => {
     repo.update({ qitemId: done.qitemId, actorSession: "dev@r", state: "done", closureReason: "no-follow-on", transitionNote: "closed" });
     const dead = message(() => park(parked.qitemId, "dead-custom-row-20261018", true));
     expect(dead).toMatch(/^blocked_on names a resolved qitem: .*never self-clears\. Accepted forms: /);
-    expect(dead).toContain("A free-text human wait uses external:<name>.");
+    expect(dead).toContain("A free-text human wait uses external:<name> with a wake.");
   });
 
   it("typed gates and name@host addresses are accepted on the CLI path, as before", async () => {
@@ -123,6 +123,65 @@ describe("park blockers resolve by row lookup (spec 0011)", () => {
       message: "resume", owner: "dev@r", actor: "dev@r",
     });
     expect(JSON.parse(job.specYaml).context.queue_wait.blockerTransition).toEqual(expect.any(Number));
+  });
+
+  // #21 fix round (lead ruling 14:06Z). L3: an address parses as a session; a two-part member@rig must name a rig
+  // on this daemon, and a host-qualified member@rig@host is a remote seat.
+  it("CLI path: an address must parse as a session and name a rig here, or be host-qualified (L3)", async () => {
+    const strictRepo = new QueueRepository(db, new EventBus(db), { validateRig: (ref) => /^[^@]+@r$/.test(ref) });
+    const parkOn = async (blockedOn: string) => {
+      const parked = await strictRepo.create({ sourceSession: "lead@r", destinationSession: "dev@r", body: "work", nudge: false });
+      return code(() => strictRepo.update({ qitemId: parked.qitemId, actorSession: "dev@r", state: "blocked", blockedOn,
+        strictBlocker: true, wakeAfterSeconds: 600, transitionNote: "park" }));
+    };
+    expect(await parkOn("waiting@later")).toBe("blocker_not_found");
+    expect(await parkOn("lead@r")).toBeNull();
+    expect(await parkOn("dev-impl@rig@otherhost")).toBeNull();
+    expect(await parkOn("human-x@kernel@otherhost")).toBeNull();
+  });
+
+  // The wake rule: on the CLI path a park that nothing on this daemon lifts must carry a wake. Only a live row
+  // (qitem- or custom) lifts itself; fold:, auth:, external: and addresses don't.
+  it("CLI path: a park with no automatic lift needs --wake-after or --wake-watchdog; a live row does not", async () => {
+    const parkWith = async (blockedOn: string, wake: boolean, strict = true) => {
+      const parked = await row();
+      return code(() => repo.update({ qitemId: parked.qitemId, actorSession: "dev@r", state: "blocked", blockedOn, strictBlocker: strict,
+        ...(wake ? { wakeAfterSeconds: 600 } : {}), transitionNote: "park" }));
+    };
+    for (const gate of ["external:operator-go", "fold:one-home", "auth:token-renewal", "lead@r"]) {
+      expect(await parkWith(gate, false), gate).toBe("blocker_wake_required");
+      expect(await parkWith(gate, true), gate).toBeNull();
+      expect(await parkWith(gate, false, false), `${gate} in-process`).toBeNull();
+    }
+    const live = await row("live blocker");
+    expect(await parkWith(live.qitemId, false)).toBeNull();
+    await row("live custom", "live-custom-row-wake");
+    expect(await parkWith("live-custom-row-wake", false)).toBeNull();
+    let message = "";
+    const parked = await row();
+    try { repo.update({ qitemId: parked.qitemId, actorSession: "dev@r", state: "blocked", blockedOn: "external:x", strictBlocker: true, transitionNote: "park" }); }
+    catch (err) { message = (err as Error).message; }
+    expect(message).toContain("--wake-after");
+    expect(message).toContain("rig queue block <qitemId> --on external:<what> --wake-after 2h");
+  });
+
+  it("a human-seat park is exempt from the wake rule only when it meets FR-6 (summary and evidence_ref)", async () => {
+    const incomplete = await row();
+    expect(code(() => repo.update({ qitemId: incomplete.qitemId, actorSession: "dev@r", state: "blocked", blockedOn: "human-x@kernel",
+      strictBlocker: true, transitionNote: "park" }))).not.toBeNull();
+    const complete = await row();
+    expect(code(() => repo.update({ qitemId: complete.qitemId, actorSession: "dev@r", state: "blocked", blockedOn: "human-x@kernel",
+      strictBlocker: true, summary: "decide the base list", evidenceRef: "docs/plan.md", transitionNote: "park" }))).toBeNull();
+  });
+
+  // L1: parkTimer.serves names only rows whose current park uses the timer, never a row that has resumed.
+  it("rig watchdog list does not name a resumed row as served by a park timer (L1)", async () => {
+    const parked = await row();
+    park(parked.qitemId, "external:operator-go", true);
+    repo.update({ qitemId: parked.qitemId, actorSession: "dev@r", state: "in-progress", transitionNote: "resumed" });
+    const { app } = createTestApp(db, { appDeps: { watchdogJobsRepo: new WatchdogJobsRepository(db) } });
+    const jobs = await (await app.request("/api/watchdog/list?all=1")).json() as Array<{ parkTimer?: { serves: string[] } }>;
+    expect(jobs.flatMap((job) => job.parkTimer?.serves ?? [])).not.toContain(parked.qitemId);
   });
 
   it("rig watchdog list names a park timer's row and that it fires once", async () => {

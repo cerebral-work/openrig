@@ -155,7 +155,7 @@ export function watchdogRoutes(): Hono {
     if (!db) return c.json(jobs);
     const wakes = new QueueWakeRepository(db);
     return c.json(jobs.map((job) => {
-      const rows = wakes.findQitemsByGeneratedTimer(job.jobId);
+      const rows = wakes.findCurrentQitemsByGeneratedTimer(job.jobId);
       return rows.length === 0 ? job : { ...job, parkTimer: { oneShot: !isQueueWait(job.specYaml), serves: rows.map((row) => row.qitemId) } };
     }));
   });

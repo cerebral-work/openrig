@@ -940,7 +940,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
     .option("--closure-reason <reason>", "Required for state=done; also 'superseded' on state=canceled (with --closure-target = the successor) records a supersession, distinct from an abandoned cancel")
     .option("--closure-target <target>", "Required for handed_off_to, blocked_on, escalation, and superseded")
     .option("--resolution <text>", "The outcome, stored on the row and shown by rig queue show. Needs --state done, canceled, denied, failed or handed-off, and non-blank text. Stored when the update closes an open row, after anything the row already has (a fallback line, an earlier outcome); a row that is already closed keeps what it has")
-    .option("--blocked-on <blocker>", "For state=blocked: the blocker — a live queue row (a qitem- id or an existing custom row id), a typed gate (fold:<what>, auth:<what>, external:<what>), or a name@host address; a human seat (FR-6 park) also requires summary + evidence_ref")
+    .option("--blocked-on <blocker>", "For state=blocked: the blocker — a live queue row (a qitem- id or an existing custom row id), or, with --wake-after or --wake-watchdog, a typed gate (fold:<what>, auth:<what>, external:<what>) or a seat address (member@rig, member@rig@host); a human seat (FR-6 park) requires summary + evidence_ref")
     .option("--wake-watchdog <jobId>", "For state=blocked: attach an existing live watchdog id targeting the row owner")
     .option("--wake-after <duration>", "For state=blocked: atomically arm a timer (for example 90s, 15m, 2h)", wakeDurationSeconds)
     .option("--summary <text>", "Summary persisted onto the item (human-seat parks, or standalone summary update without --state)")
@@ -1012,7 +1012,7 @@ export function queueCommand(depsOverride?: QueueDeps): Command {
   cmd
     .command("block <qitemId>")
     .description("Park a qitem as HELD with a continuation and wake. Requires --on <blocker>. Choose --wake-watchdog, --wake-after, or a live blocker qitem for the wake.")
-    .requiredOption("--on <blocker>", "The blocker: a live queue row (a qitem- id or an existing custom row id), a typed gate (fold:<what>, auth:<what>, external:<what>), or a name@host address")
+    .requiredOption("--on <blocker>", "The blocker: a live queue row (a qitem- id or an existing custom row id), or, with --wake-after or --wake-watchdog, a typed gate (fold:<what>, auth:<what>, external:<what>) or a seat address (member@rig, member@rig@host); a human seat needs --summary and --evidence-ref")
     .option("--actor <session>", "(deprecated, ignored) the actor is derived from the seat env (X-OpenRig-Session); the park writes via the same P21 I3 header-deriving update route")
     .option("--summary <text>", "Plain-language summary of the decision owed (required for human-seat parks unless already on the item)")
     .option("--evidence-ref <path>", "Durable artifact the human judges (required for human-seat parks unless already on the item)")
@@ -1031,11 +1031,13 @@ Every deliberate HELD row should name its continuation and one live wake:
 A live blocker qitem supplied with --on also wakes the row when resolved.
 
 Blocker forms (--on):
-  a live queue row   a qitem- id or an existing custom row id; it wakes the row when it resolves
+  a live queue row   a qitem- id or an existing custom row id; it lifts the park when it resolves
   a typed gate       fold:<what>, auth:<what> or external:<what>, naming what the row waits on
-  an address         name@host, a seat or a human
-Bare free text, an unknown <word>: prefix and a row that is not live are refused.
-A free-text human wait uses external:<name>.
+  a seat address     member@rig on this daemon, or member@rig@host for a remote seat
+  a human seat       human-<name>@kernel, with --summary and --evidence-ref
+Only a live row lifts a park by itself: a typed gate or a seat address needs --wake-after or --wake-watchdog.
+Bare free text, an unknown <word>: prefix, an unknown seat and a row that is not live are refused.
+A free-text human wait uses external:<name> with --wake-after.
 
 A time-only park (nothing to resolve it; the timer is the wake):
   rig queue block <qitemId> --on external:<what> --wake-after 2h --continuation '<what resumes>'
