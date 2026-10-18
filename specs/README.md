@@ -23,6 +23,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0014](0014-launch-graph-cycles.md) | Launch-dependency cycles: restore holds, growth refuses | in-progress | daemon, restore, topology growth | CER-2976 |
 | [0015](0015-pane-read-failure-unavailable.md) | A failed tmux pane read is unavailable, never pane_missing | in-progress | daemon, tmux, seat identity | cortex mesh flap, cw.4.2 |
 | [0016](0016-transient-observation-unavailable.md) | A transient or ambiguous native observation is unavailable, never a mismatch | in-progress | daemon, seat identity, native process proof | CER-2982 |
+| [0017](0017-secret-seat-env-channel.md) | A secret-named seat value reaches its runtime without any argv | planned | daemon, tmux, seat launch, managed Claude launch | 0013 item 9 follow-up |
 
 ## Requirements Syntax (EARS)
 
