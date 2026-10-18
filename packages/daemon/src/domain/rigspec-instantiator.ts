@@ -17,6 +17,7 @@ import { LegacyRigSpecSchema as RigSpecSchema } from "./rigspec-schema.js"; // T
 import { LegacyRigSpecCodec as RigSpecCodec } from "./rigspec-codec.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import type { LegacyRigSpec as RigSpec, LegacyRigSpecEdge as RigSpecEdge, InstantiateOutcome, InstantiateResult } from "./types.js"; // TODO: AS-T08b — migrate to pod-aware RigSpec
 import { resolveLaunchCwd } from "./cwd-resolution.js";
+import { describeLaunchEdges, heldByLaunchCycles } from "./launch-graph-cycles.js";
 
 // Only these edge kinds constrain launch order
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
@@ -407,6 +408,8 @@ export type MaterializeOutcome =
   | { ok: false; code: "target_rig_not_found"; message: string }
   | { ok: false; code: "materialize_conflict"; message: string }
   | { ok: false; code: "materialize_error"; message: string }
+  // Spec 0014: growing an existing rig would close a launch-dependency cycle; nothing was written.
+  | { ok: false; code: "cycle_error"; message: string }
   // S5b (OPR.0.5.4.11) — running-name guard refusal on the CREATE branch only
   // (expand/add_member pass targetRigId and are never guarded here).
   | { ok: false; code: "rig_name_running"; message: string; runningRig: { id: string; name: string; runningSessionCount: number } };
@@ -463,6 +466,7 @@ export type AddMemberOutcome =
   | { ok: false; code: "pod_not_found"; message: string }
   | { ok: false; code: "member_conflict"; message: string }
   | { ok: false; code: "edge_unresolved"; message: string }
+  | { ok: false; code: "cycle_error"; message: string }
   | { ok: false; code: "materialize_error"; message: string }
   | { ok: false; code: "validation_failed"; errors: string[] }
   | { ok: false; code: "preflight_failed"; errors: string[]; warnings: string[] };
@@ -649,6 +653,13 @@ export class PodRigInstantiator {
         countRunningSessions: makeRunningSessionCounter(this.db),
       }, rigSpec.name);
       if (!nameGuard.ok) return nameGuard;
+    }
+
+    // Spec 0014: growing an existing rig (expand, add_member, materialize into a target) is checked against the rig's
+    // whole launch-dependency graph, as `rig edge add` is, before anything is written. A cycle is refused, named.
+    if (opts?.targetRigId) {
+      const cycle = this.growthCycle(opts.targetRigId, rigSpec);
+      if (cycle) return { ok: false, code: "cycle_error", message: cycle };
     }
 
     try {
@@ -1112,6 +1123,7 @@ export class PodRigInstantiator {
       if (materialized.code === "materialize_conflict") {
         return { ok: false, code: "member_conflict", message };
       }
+      if (materialized.code === "cycle_error") return { ok: false, code: "cycle_error", message };
       return { ok: false, code: "materialize_error", message };
     }
 
@@ -1726,6 +1738,32 @@ export class PodRigInstantiator {
       ok: true,
       result: { rigId, specName: rigSpec.name, specVersion: rigSpec.version, nodes: resultNodes, warnings: podInstantiateWarnings.length > 0 ? podInstantiateWarnings : undefined },
     };
+  }
+
+  /** Spec 0014: the refusal for growing rig `rigId` by `rigSpec`, when the rig's seats and edges plus the spec's would
+   * form a launch-dependency cycle; null otherwise. Same check as `rig edge add`. An edge naming a seat that is neither
+   * is left to the existing missing-node refusal. */
+  private growthCycle(rigId: string, rigSpec: PodRigSpec): string | null {
+    const rig = this.deps.rigRepo.getRig(rigId);
+    if (!rig) return null;
+    const logicalById = new Map(rig.nodes.map((node) => [node.id, node.logicalId]));
+    const nodes = [...new Set([
+      ...rig.nodes.map((node) => node.logicalId),
+      ...rigSpec.pods.flatMap((pod) => pod.members.map((member) => `${pod.id}.${member.id}`)),
+    ])];
+    const known = new Set(nodes);
+    const edges = [
+      ...rig.edges.map((edge) => ({ from: logicalById.get(edge.sourceId) ?? "", to: logicalById.get(edge.targetId) ?? "", kind: edge.kind })),
+      ...rigSpec.pods.flatMap((pod) => pod.edges.map((edge) => ({ from: `${pod.id}.${edge.from}`, to: `${pod.id}.${edge.to}`, kind: edge.kind }))),
+      ...rigSpec.edges.map((edge) => ({ from: edge.from, to: edge.to, kind: edge.kind })),
+    ].filter((edge) => known.has(edge.from) && known.has(edge.to));
+    try {
+      computeLaunchOrder(nodes.map((id) => ({ id })), edges);
+      return null;
+    } catch (err) {
+      const named = describeLaunchEdges([...heldByLaunchCycles(nodes, edges).values()].flat());
+      return `This change would close a launch-order cycle: ${named}. ${(err as Error).message}. Nothing was written.`;
+    }
   }
 
   private computePodLaunchOrder(rigSpec: PodRigSpec): string[] {

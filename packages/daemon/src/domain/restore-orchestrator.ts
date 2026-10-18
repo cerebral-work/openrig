@@ -43,6 +43,7 @@ import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import { SeatIdentityStore } from "./seat-identity-store.js";
 import { validatePreRestore } from "./restore-preconditions.js";
 import { resolveSnapshotRestoreTopology } from "./restore-topology.js";
+import { describeLaunchEdges, heldByLaunchCycles } from "./launch-graph-cycles.js";
 
 // L3: result shape for runtime-truth reconciliation. A reconciliation that
 // does NOT meet all four evidence preconditions is a no-op with a missing
@@ -393,7 +394,7 @@ export class RestoreOrchestrator {
       }
 
       // 4. Compute restore plan
-      const plan = this.computeRestorePlan(snapshot.data);
+      const { plan, held } = this.computeRestorePlan(snapshot.data);
 
       // 5. Execute restore with compensating pattern per node
       const nodeResults: RestoreNodeResult[] = [];
@@ -403,6 +404,10 @@ export class RestoreOrchestrator {
       for (const entry of plan) {
         const result = await this.restoreNodeWithCompensation(entry, rigId, snapshotId, snapshot.data, opts, restoreWarnings);
         nodeResults.push(result);
+      }
+      // Spec 0014: a seat held by a launch-dependency cycle gets its own outcome; no session was started for it.
+      for (const { node, error } of held) {
+        nodeResults.push({ nodeId: node.id, logicalId: node.logicalId, status: "awaiting-decision", error });
       }
 
       const restoreResult: RestoreResult = {
@@ -756,7 +761,7 @@ export class RestoreOrchestrator {
     }
   }
 
-  private computeRestorePlan(data: SnapshotData): PlanEntry[] {
+  private computeRestorePlan(data: SnapshotData): { plan: PlanEntry[]; held: Array<{ node: PlanEntry["node"]; error: string }> } {
     const nodes = resolveSnapshotRestoreTopology(data).intendedNodes;
     const edges = data.edges;
 
@@ -832,9 +837,22 @@ export class RestoreOrchestrator {
       }
     }
 
-    return order.map((id) => ({
+    // Spec 0014: a seat no launch order can place is held, never dropped, with the cycle edges at or upstream of it.
+    const placed = new Set(order);
+    const logicalOf = (id: string) => nodeById.get(id)!.logicalId;
+    const cycles = heldByLaunchCycles(nodeIds, edges.map((edge) => ({ from: edge.sourceId, to: edge.targetId, kind: edge.kind })));
+    const held = nodeIds.filter((id) => !placed.has(id)).map((id) => ({
       node: nodeById.get(id)!,
+      error: `restore_graph_cycle: ${describeLaunchEdges((cycles.get(id) ?? []).map((edge) => ({ from: logicalOf(edge.from), to: logicalOf(edge.to), kind: edge.kind })))}`
+        + "; no session was started; remove one of these edges, then restore",
     }));
+
+    return {
+      plan: order.map((id) => ({
+        node: nodeById.get(id)!,
+      })),
+      held,
+    };
   }
 
   /**

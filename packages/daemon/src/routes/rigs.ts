@@ -775,6 +775,7 @@ rigsRoutes.post("/:rigId/expand", async (c) => {
         return c.json(result, 409);
       case "validation_failed":
       case "preflight_failed":
+      case "cycle_error":
         return c.json(result, 400);
       default:
         return c.json(result, 500);
@@ -857,6 +858,7 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
       case "member_conflict":
         return c.json(outcome, 409);
       case "edge_unresolved":
+      case "cycle_error":
       case "validation_failed":
       case "preflight_failed":
         return c.json(outcome, 400);

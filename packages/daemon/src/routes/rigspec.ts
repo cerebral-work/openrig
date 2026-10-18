@@ -201,6 +201,7 @@ rigspecImportRoutes.post("/materialize", async (c) => {
       : outcome.code === "preflight_failed" ? 409
       : outcome.code === "target_rig_not_found" ? 404
       : outcome.code === "materialize_conflict" ? 409
+      : outcome.code === "cycle_error" ? 400
       : outcome.code === "rig_name_running" ? 409
       : 500;
     const body = outcome.code === "rig_name_running"
