@@ -19,7 +19,7 @@ concurrency:
 
 jobs:
   xwork:
-    runs-on: ubuntu-latest
+    runs-on: ${{ github.event_name == 'pull_request' && fromJSON('{"group":"ent-parity","labels":["ci-parity"]}') || 'ubuntu-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
