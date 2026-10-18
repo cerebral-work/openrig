@@ -36,6 +36,7 @@ import type { PersistedEvent } from "./types.js";
 import type { AppliedLaunchObservation } from "./permission-drift.js";
 import { AppliedLaunchObservationStore } from "./applied-launch-observation-store.js";
 import { findOtherSessionOwner } from "./session-owner.js";
+import { DeliveryGuardError } from "./seat-delivery-guard.js";
 import { seatCorePluginDir, withCorePlugin } from "./claude-core-plugin-env.js";
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
@@ -126,6 +127,9 @@ export interface SeatHandoverInput {
   /** The caller's transport identity; a runtime change needs the kernel operator's (D3). */
   caller?: HandoverCaller | null;
 }
+
+/** A revert's commit found the revert slot replaced or cleared since the revert was built. */
+class RevertSlotMovedError extends Error {}
 
 function runtimeSideOf(state: RevertBefore): RuntimeSide {
   return {
@@ -458,6 +462,21 @@ export class SeatHandoverService {
     const statusResult = this.statusService.getStatus(input.seatRef);
     if (!statusResult.ok) return statusResult;
     const node = this.lookupNode(statusResult.status);
+    // Review r2 F2: the revert slot is read inside the node's lifecycle lease, so a revert is never built from a slot
+    // that another change or revert is about to replace. A revert queued behind one that changed the occupant is
+    // refused by the guard; that refusal is reported as nothing to revert.
+    const guard = this.tmuxAdapter.deliveryGuard;
+    if (guard && !guard.ownsLifecycle(node.id)) {
+      try {
+        return await guard.lifecycle([node.id], () => this.revertRuntimeChange(input));
+      } catch (err) {
+        if (err instanceof DeliveryGuardError && err.code === "guard_target_changed") {
+          return { ok: false, code: "runtime_revert_unavailable", message: `Seat "${input.seatRef}" changed while this revert waited; nothing was reverted.`,
+            guidance: "Inspect the seat and its runtime-change ledger before reverting again." };
+        }
+        throw err;
+      }
+    }
     const slot = this.runtimeLedger.revertSlot(node.id);
     if (!slot) {
       return { ok: false, code: "runtime_revert_unavailable", message: `Seat "${input.seatRef}" has no recorded runtime change to revert.`,
@@ -1403,8 +1422,12 @@ export class SeatHandoverService {
     return result;
   }
 
-  /** Inside the commit transaction: the node's runtime-bound state becomes the target's. */
+  /** Inside the commit transaction: the node's runtime-bound state becomes the target's. A revert first checks that the
+   *  revert slot still names the change it reverts (review r2 F2); if not, the whole commit rolls back. */
   private applyRuntimeChange(change: PreparedRuntimeChange, reason: string): void {
+    if (change.kind === "revert" && this.runtimeLedger.revertSlot(change.nodeId)?.changeId !== change.revertsChangeId) {
+      throw new RevertSlotMovedError();
+    }
     const to = change.to;
     this.db.prepare("UPDATE nodes SET runtime = ?, model = ?, cwd = ?, effort = ?, effort_choice = ?, codex_config_profile = ?, env_json = ? WHERE id = ?")
       .run(to.runtime, to.model, to.cwd, change.toAuthoredEffort, change.toEffortChoice, change.toCodexProfile,
@@ -1611,6 +1634,10 @@ export class SeatHandoverService {
       // by the successor tenure (never the retiree's). In-memory, post-commit, optional.
       this.activityOracle?.declareOccupantSwap(input.node.id, committed.newSessionId);
     } catch (err) {
+      if (err instanceof RevertSlotMovedError) {
+        return { ok: false, code: "runtime_revert_unavailable", message: "The change this revert was built from is no longer the seat's latest; nothing was reverted.",
+          guidance: "Another change or revert committed first. Inspect the seat and its runtime-change ledger before reverting again." };
+      }
       return {
         ok: false,
         code: "handover_commit_failed",
