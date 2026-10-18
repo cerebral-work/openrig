@@ -74,7 +74,8 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       await tm(["new-session", "-d", "-s", "anchor"]);
       await tm(["set-option", "-g", "default-command", `bash --rcfile ${q(rc)} -i`]);
 
-      const created = await adapter.createSession("dev@rig", root, { OPENRIG_NODE_ID: "n1", CLAUDE_CONFIG_DIR: "/c", EXAMPLE_PROVIDER_API_KEY: "placeholder" });
+      // A secret-named launch variable never reaches tmux now (spec 0013 item 9: refused before new-session runs).
+      const created = await adapter.createSession("dev@rig", root, { OPENRIG_NODE_ID: "n1", CLAUDE_CONFIG_DIR: "/c" });
       expect(created.ok).toBe(true);
       const shell = await paneEnvironNames(tm, "=dev@rig:");
 
@@ -88,11 +89,11 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
 
       if (mode === "allowlist") {
         expect(created).toEqual({ ok: true, warnings: [expect.stringContaining(SEAT_ENV_DENY_KUBECONFIG)] });
-        for (const gone of ["OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY", "EDITOR", "HERDR_SOCKET_PATH", "EXAMPLE_PROVIDER_API_KEY"]) {
+        for (const gone of ["OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY", "EDITOR", "HERDR_SOCKET_PATH"]) {
           expect(shell[gone], `pane shell: ${gone}`).toBeUndefined();
         }
         expect(shell.KUBECONFIG).toBe(SEAT_ENV_DENY_KUBECONFIG);
-        for (const gone of ["OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY", "EDITOR", "HERDR_SOCKET_PATH", "EXAMPLE_PROVIDER_API_KEY", "REFS_API_TOKEN", "REFS_PLAIN"]) {
+        for (const gone of ["OP_SERVICE_ACCOUNT_TOKEN", "EXAMPLE_API_KEY", "EDITOR", "HERDR_SOCKET_PATH", "REFS_API_TOKEN", "REFS_PLAIN"]) {
           expect(launched, `launched command: ${gone}`).not.toContain(gone);
         }
         expect(launched).toEqual(expect.arrayContaining(["HOME", "PATH", "TMUX", "OPENRIG_NODE_ID", "CLAUDE_CONFIG_DIR", "KUBECONFIG"]));

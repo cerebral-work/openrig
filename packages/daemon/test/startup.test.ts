@@ -462,12 +462,10 @@ describe("createDaemon startup composition", () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "openrig-gap7-default-"));
     const daemonHome = path.join(root, "daemon-home");
     fs.mkdirSync(daemonHome, { recursive: true });
-    const saved = saveEnv("HOME", "CODEX_HOME", "PATH", "OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST", "OPENAI_API_KEY");
+    const saved = saveEnv("HOME", "CODEX_HOME", "PATH");
     process.env.HOME = daemonHome;
     delete process.env.CODEX_HOME;
     process.env.PATH = "/proof/openrig/bin:/usr/bin:/bin";
-    process.env.OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST = "OPENAI_API_KEY";
-    process.env.OPENAI_API_KEY = "gap7-openai-key";
     const tmuxExec = vi.fn<ExecFn>(async () => "");
     let result: Awaited<ReturnType<typeof createDaemon>> | undefined;
 
@@ -480,7 +478,6 @@ describe("createDaemon startup composition", () => {
         HOME: daemonHome,
         CODEX_HOME: path.join(daemonHome, ".codex"),
         PATH: "/proof/openrig/bin:/usr/bin:/bin",
-        OPENAI_API_KEY: "gap7-openai-key",
       });
 
       const rig = result.deps.rigRepo.createRig("gap7-default");
@@ -490,7 +487,6 @@ describe("createDaemon startup composition", () => {
       expect(command).toContain(`-e 'HOME=${daemonHome}'`);
       expect(command).toContain(`-e 'CODEX_HOME=${path.join(daemonHome, ".codex")}'`);
       expect(command).toContain("-e 'PATH=/proof/openrig/bin:/usr/bin:/bin'");
-      expect(command).toContain("-e 'OPENAI_API_KEY=gap7-openai-key'");
     } finally {
       result?.db.close();
       restoreEnv(saved);
@@ -589,7 +585,10 @@ describe("createDaemon startup composition", () => {
     }
   });
 
-  it("passes only explicitly allowlisted provider auth env into launched tmux sessions", async () => {
+  // Spec 0013 item 9: a `-e NAME=VALUE` is on the tmux argv, which `ps` shows (a server keeps the argv that started it).
+  // An allowlisted secret-named provider name is therefore refused at launch, named without its value, until a channel
+  // that carries it without argv exists (a follow-up).
+  it("refuses a launch whose allowlisted provider auth env is secret-named, naming it, with no value on any tmux call", async () => {
     vi.stubEnv("OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST", "ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENAI_API_KEY,BOGUS_TOKEN");
     vi.stubEnv("ANTHROPIC_API_KEY", "anthropic-test-key");
     vi.stubEnv("CLAUDE_CODE_OAUTH_TOKEN", "claude-oauth-test-token");
@@ -607,15 +606,16 @@ describe("createDaemon startup composition", () => {
 
       const result = await deps.nodeLauncher.launchNode(rig.id, "worker");
 
-      expect(result.ok).toBe(true);
-      const newSessionCmd = tmuxExec.mock.calls
-        .map((call) => call[0])
-        .find((cmd) => cmd.includes("tmux new-session"));
-      expect(newSessionCmd).toBeDefined();
-      expect(newSessionCmd).toContain("-e 'ANTHROPIC_API_KEY=anthropic-test-key'");
-      expect(newSessionCmd).toContain("-e 'CLAUDE_CODE_OAUTH_TOKEN=claude-oauth-test-token'");
-      expect(newSessionCmd).toContain("-e 'OPENAI_API_KEY=openai-test-key'");
-      expect(newSessionCmd).not.toContain("BOGUS_TOKEN");
+      expect(result).toMatchObject({ ok: false, code: "secret_on_argv_refused" });
+      const message = result.ok ? "" : result.message ?? "";
+      for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY"]) expect(message).toContain(name);
+      expect(message).not.toContain("BOGUS_TOKEN"); // not a known provider name, so never collected
+      const calls = tmuxExec.mock.calls.map((call) => call[0]);
+      expect(calls.some((cmd) => cmd.includes("tmux new-session"))).toBe(false);
+      for (const value of ["anthropic-test-key", "claude-oauth-test-token", "openai-test-key", "must-not-leak"]) {
+        expect(calls.some((cmd) => cmd.includes(value)), value).toBe(false);
+        expect(message).not.toContain(value);
+      }
 
       db.close();
     } finally {
@@ -623,7 +623,7 @@ describe("createDaemon startup composition", () => {
     }
   });
 
-  it("forwards the Codex Bedrock bearer token into a launched session only when the operator names it (#194)", async () => {
+  it("refuses the Codex Bedrock bearer token on a launch when the operator names it (#194; spec 0013 item 9)", async () => {
     const launchCommand = async (allowlist: string) => {
       vi.stubEnv("OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST", allowlist);
       vi.stubEnv("AWS_BEARER_TOKEN_BEDROCK", "synthetic-bedrock-token");
@@ -636,8 +636,9 @@ describe("createDaemon startup composition", () => {
       try {
         const rig = deps.rigRepo.createRig("bedrock-forwarding-rig");
         deps.rigRepo.addNode(rig.id, "worker", { runtime: "codex" });
-        expect((await deps.nodeLauncher.launchNode(rig.id, "worker")).ok).toBe(true);
-        return tmuxExec.mock.calls.map((call) => call[0]).find((cmd) => cmd.includes("tmux new-session")) ?? "";
+        const launched = await deps.nodeLauncher.launchNode(rig.id, "worker");
+        const calls = tmuxExec.mock.calls.map((call) => call[0]);
+        return { launched, calls, newSession: calls.find((cmd) => cmd.includes("tmux new-session")) ?? "" };
       } finally {
         db.close();
       }
@@ -645,12 +646,15 @@ describe("createDaemon startup composition", () => {
 
     try {
       const optedIn = await launchCommand("AWS_BEARER_TOKEN_BEDROCK,AWS_SECRET_ACCESS_KEY");
-      expect(optedIn).toContain("-e 'AWS_BEARER_TOKEN_BEDROCK=synthetic-bedrock-token'");
-      expect(optedIn).not.toContain("AWS_SECRET_ACCESS_KEY");
+      expect(optedIn.launched).toMatchObject({ ok: false, code: "secret_on_argv_refused" });
+      expect(optedIn.launched.ok ? "" : optedIn.launched.message).toContain("AWS_BEARER_TOKEN_BEDROCK");
+      expect(optedIn.newSession).toBe("");
+      expect(optedIn.calls.some((cmd) => cmd.includes("synthetic-bedrock-token"))).toBe(false);
 
       const notNamed = await launchCommand("OPENAI_API_KEY");
-      expect(notNamed).toContain("tmux new-session");
-      expect(notNamed).not.toContain("AWS_BEARER_TOKEN_BEDROCK");
+      expect(notNamed.launched.ok).toBe(true);
+      expect(notNamed.newSession).toContain("tmux new-session");
+      expect(notNamed.newSession).not.toContain("AWS_BEARER_TOKEN_BEDROCK");
     } finally {
       vi.unstubAllEnvs();
     }

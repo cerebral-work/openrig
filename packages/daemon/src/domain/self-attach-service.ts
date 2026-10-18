@@ -21,7 +21,6 @@ export type SelfAttachSuccess = {
     // OPR.0.4.3.28 B3 — activity env echoed for the caller's shell to export.
     OPENRIG_RUNTIME?: string;
     OPENRIG_URL?: string;
-    OPENRIG_ACTIVITY_HOOK_TOKEN?: string;
   };
 };
 
@@ -50,11 +49,12 @@ interface SelfAttachServiceDeps {
   claudeContextProvisioner?: {
     ensureContextCollector(binding: { cwd?: string | null; tmuxSession?: string | null }): void;
   };
-  // OPR.0.4.3.28 B3 — the daemon's resolved activity url+token, echoed into the
+  // OPR.0.4.3.28 B3 — the daemon's resolved activity url, echoed into the
   // self-attach RESPONSE env so the caller's shell (and any agent it starts)
   // can reach the ingest endpoint. This is a returned env for the caller to
-  // export — NOT a mutation of an already-running process.
-  activityEnv?: { url?: string; token?: string };
+  // export — NOT a mutation of an already-running process. The token is not
+  // echoed (spec 0013 item 9); the relay reads it from the endpoint file.
+  activityEnv?: { url?: string };
 }
 
 interface AttachToNodeOptions {
@@ -99,7 +99,7 @@ export class SelfAttachService {
   private tmuxAdapter: TmuxAdapter | null;
   private transcriptStore: TranscriptStore | null;
   private claudeContextProvisioner: SelfAttachServiceDeps["claudeContextProvisioner"] | null;
-  private activityEnv: { url?: string; token?: string };
+  private activityEnv: { url?: string };
 
   constructor(deps: SelfAttachServiceDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SelfAttachService: rigRepo must share the same db handle");
@@ -348,15 +348,15 @@ export class SelfAttachService {
   ): SelfAttachSuccess {
     // OPR.0.4.3.28 B3 — echo the activity env so the caller's shell (and any
     // agent it starts) produces activity signal: OPENRIG_RUNTIME is required by
-    // the relay to build a payload; url+token let it reach the ingest endpoint
-    // directly (file-discovery is the fallback when they are absent).
+    // the relay to build a payload; the url lets it reach the ingest endpoint
+    // directly. The token is never echoed (spec 0013 item 9: `rig attach --self
+    // --json` prints this): the relay reads it from <OPENRIG_HOME>/activity-endpoint.json.
     const env: SelfAttachSuccess["env"] = {
       OPENRIG_NODE_ID: nodeId,
       OPENRIG_SESSION_NAME: sessionName,
     };
     if (runtime) env.OPENRIG_RUNTIME = runtime;
     if (this.activityEnv.url) env.OPENRIG_URL = this.activityEnv.url;
-    if (this.activityEnv.token) env.OPENRIG_ACTIVITY_HOOK_TOKEN = this.activityEnv.token;
     return {
       ok: true,
       nodeId,

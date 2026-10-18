@@ -6,6 +6,7 @@ import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { SEAT_ENV_SECRET_NAME, seatEnvAllowlistApplies, seatEnvScrubScript, seatKubeconfig, seatLaunchExcludedEnvKeys,
   type SeatEnvPolicy } from "../domain/seat-launch-env-filter.js";
+import { SEAT_ENV_KEYS_VAR } from "../domain/seat-env.js";
 import type { TmuxControlExec } from "./tmux-control.js";
 import { stat } from "node:fs/promises";
 import { verifyPaneIdleShell, type NativeProcessLister } from "../domain/native-process-lineage.js";
@@ -70,6 +71,17 @@ export function defaultTmuxFileOps(): TmuxFileOps {
 export type TmuxResult =
   | { ok: true; warnings?: string[] }
   | { ok: false; code: string; message: string };
+
+/** Spec 0013 item 9: a `-e NAME=VALUE` is on the tmux client's argv while it runs, and a tmux server keeps the argv
+ *  of the command that started it for its whole life, so anything on the host can read it with `ps`. A secret-named
+ *  variable is therefore never passed that way: the launch is refused before any tmux command runs, naming the
+ *  variable and never its value. A channel that carries such a value without argv is a follow-up. */
+function secretOnArgvRefusal(env: Record<string, string> | undefined, step: string): TmuxResult | null {
+  // OPENRIG_SEAT_ENV_KEYS matches the name rule (KEY) but carries a list of declared variable names, never a value.
+  const names = Object.keys(env ?? {}).filter((name) => SEAT_ENV_SECRET_NAME.test(name) && name !== SEAT_ENV_KEYS_VAR).sort();
+  if (names.length === 0) return null;
+  return { ok: false, code: "secret_on_argv_refused", message: `tmux ${step} refused: the launch env holds secret-named ${names.join(", ")}, and a secret value is never put on a tmux argv. Remove it from the seat env or the provider-auth allow-list; a channel that carries it without argv is a follow-up.` };
+}
 
 /** Spec 0015: a pane pid read. `absent` is tmux's positive report that the pane is gone; `unavailable` is any other
  *  failure, which is never evidence of absence. */
@@ -718,6 +730,8 @@ export class TmuxAdapter {
   }
 
   async createSession(name: string, cwd?: string, env?: Record<string, string>): Promise<TmuxResult> {
+    const secret = secretOnArgvRefusal(env, "new-session");
+    if (secret) return secret;
     if (this.deliveryGuard && (!env?.OPENRIG_NODE_ID || !this.deliveryGuard.ownsLifecycle(env.OPENRIG_NODE_ID))) {
       return { ok: false, code: "guard_lease_required", message: "Managed launch requires a lifecycle lease before terminal creation." };
     }
@@ -1174,6 +1188,8 @@ export class TmuxAdapter {
     command?: string,
     opts?: { cwd?: string; env?: Record<string, string> },
   ): Promise<TmuxResult> {
+    const secret = secretOnArgvRefusal(opts?.env, "respawn-pane");
+    if (secret) return secret;
     return this.guardedInput(paneTarget, pane => this.respawnPaneUnchecked(pane, command, opts));
   }
 
