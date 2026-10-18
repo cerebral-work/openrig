@@ -8,6 +8,7 @@ import { chmodSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSyn
 import { tmpdir } from "node:os";
 import { isAbsolute, join, relative } from "node:path";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { PodRepository } from "../src/domain/pod-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
@@ -461,6 +462,7 @@ describe("handover successor, on a real tmux server", () => {
   const seats: string[] = [];
   afterAll(async () => {
     for (const seat of seats) await tmux(`kill-session -t ${q(seat)}`).catch(() => {});
+    await releaseTmuxTestSocket(SOCK, { killServer: false });
     rmSync(scratch, { recursive: true, force: true });
   });
 

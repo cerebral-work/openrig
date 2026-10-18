@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll } from "vitest";
+import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -37,6 +38,7 @@ const SEAT = "dev-impl@envhandover-rig";
 const scratch = mkdtempSync(path.join(tmpdir(), "seatenv-"));
 afterAll(async () => {
   await tmux(`kill-session -t ${q(SEAT)}`).catch(() => {});
+  await releaseTmuxTestSocket(SOCK, { killServer: false });
   rmSync(scratch, { recursive: true, force: true });
 });
 

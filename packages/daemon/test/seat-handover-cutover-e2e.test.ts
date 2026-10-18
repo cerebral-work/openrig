@@ -1,4 +1,5 @@
 import { describe, it, expect, afterAll } from "vitest";
+import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
@@ -43,6 +44,7 @@ function tmuxAvailableSync(): boolean {
 const seats: string[] = [];
 afterAll(async () => {
   for (const s of seats) await tmux(`kill-session -t ${q(s)}`).catch(() => {}); // BY NAME, never kill-server
+  await releaseTmuxTestSocket(SOCK, { killServer: false });
 });
 
 describe("seat-handover cutover money-proof (isolated tmux, both retiree-exit paths)", () => {

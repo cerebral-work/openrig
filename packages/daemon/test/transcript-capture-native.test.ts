@@ -1,4 +1,5 @@
 import { expect, it } from "vitest";
+import { releaseTmuxTestSocket } from "./helpers/tmux-test-socket.js";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -42,7 +43,7 @@ it.skipIf(!nativeAvailable)("preserves the exact native trailing buffer and reco
     expect(expected).toContain("new output γδ");
   } finally {
     stopTranscriptRotation("seat");
-    await run("kill-server").catch(() => {});
+    await releaseTmuxTestSocket(socket, { killServer: true });
     rmSync(root, { recursive: true, force: true });
   }
 }, 20_000);
@@ -72,7 +73,7 @@ it.skipIf(!nativeAvailable)("retains active native output before a normal stop d
     expect(readFileSync(file, "utf8")).toContain("final active output αβ");
   } finally {
     stopTranscriptRotation("seat");
-    await run("kill-server").catch(() => {});
+    await releaseTmuxTestSocket(socket, { killServer: true });
     rmSync(root, { recursive: true, force: true });
   }
 }, 15_000);
@@ -126,7 +127,7 @@ it.skipIf(!nativeAvailable)("keeps real idle transcript health fresh across a va
     expect(readFileSync(file, "utf8")).toBe(await run("capture-pane", "-p", "-t", "seat", "-S", "-1000"));
   } finally {
     stopTranscriptRotation("seat");
-    await run("kill-server").catch(() => {});
+    await releaseTmuxTestSocket(socket, { killServer: true });
     rmSync(root, { recursive: true, force: true });
   }
 }, 45_000);
