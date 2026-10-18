@@ -66,7 +66,7 @@ jobs:
       - run: |
           command -v tmux >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y tmux; }
           tmux -V
-      - run: npm ci
+      - run: npm_config_nodedir="$(dirname "$(dirname "$(command -v node)")")" npm ci
       # npm-test-workspaces is excluded on ubuntu: upstream's daemon/cli suites read macOS
       # process, inode and docker behaviour and upstream runs them on macos-latest
       # (tests.yml). Run `cargo xwork` locally for the full DAG.
