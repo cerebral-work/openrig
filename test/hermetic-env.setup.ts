@@ -51,6 +51,11 @@ for (const key of [
   delete process.env[`OPENRIG_${key}`];
   delete process.env[`RIGGED_${key}`];
 }
+// cerebral-work fork (CER-2924): every daemon a test starts binds loopback only, until the
+// daemon authenticates its API. The default bind plan adds the tailnet address, so pin the
+// dedicated bind env for in-process servers and for every child that inherits this env.
+// Tests that assert the env is absent unset it locally.
+process.env["OPENRIG_BIND_HOST"] = "127.0.0.1";
 
 // (2) FORCE a fixture-scoped home — BEFORE importing openrig-compat (whose
 // OPENRIG_HOME const is eager). Node builtins above do not load it; the dynamic

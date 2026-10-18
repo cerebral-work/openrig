@@ -374,6 +374,9 @@ process.exit(result.status ?? 1);
   env.PATH = [tmuxWrapperDir, runtimeStubDir, originalPath].filter(Boolean).join(delimiter);
   // Forced-local: never resolve/attach the shared fleet kernel.
   env.OPENRIG_NO_KERNEL = "1";
+  // cerebral-work fork (CER-2924): the scenario-local daemon binds loopback only, whatever
+  // baseEnv the caller passed.
+  env.OPENRIG_BIND_HOST = "127.0.0.1";
   // A3-R3 injected clock: the ONLY sanctioned way OPENRIG_TEST_CLOCK_NOW is set —
   // the scaffold's own value, never an inherited one. Omitted => unset => the bridge
   // stamps real-time (production behavior).

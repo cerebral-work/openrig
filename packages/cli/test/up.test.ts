@@ -1023,6 +1023,10 @@ describe("Up CLI", () => {
   // ROUTING channel and NEVER creates bind intent (r2 NOT-CLEAR at 95150982d:
   // this very suite carried a positive pin REQUIRING the incident behavior).
   describe("auth-bearer-tailscale-trust: up auto-start respects daemon.host source", () => {
+    // cerebral-work fork (CER-2924): the harness pins OPENRIG_BIND_HOST, which is bind intent; these cases test the no-intent branch.
+    beforeAll(() => { vi.stubEnv("OPENRIG_BIND_HOST", undefined); });
+    afterAll(() => { vi.unstubAllEnvs(); });
+
     function makeAutoStartDeps(captureSpawn: (env: Record<string, string>) => void): StatusDeps {
       let daemonState: DaemonState | null = null;
       let daemonStarted = false;

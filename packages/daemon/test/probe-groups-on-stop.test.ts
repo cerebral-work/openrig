@@ -183,6 +183,7 @@ describe.skipIf(process.platform === "win32")("runtime probe groups end when the
         OPENRIG_HOME: path.join(home, "openrig"), OPENRIG_DB: path.join(home, "openrig", "test.sqlite"),
         CODEX_HOME: path.join(home, ".codex"), CLAUDE_CONFIG_DIR: path.join(home, ".claude"),
         TMUX_TMPDIR: home, XDG_CONFIG_HOME: home, XDG_CACHE_HOME: home, XDG_DATA_HOME: home, XDG_STATE_HOME: home,
+        OPENRIG_BIND_HOST: "127.0.0.1", // cerebral-work fork (CER-2924): this env is built from scratch
       },
     });
     let ready: (v: void) => void;

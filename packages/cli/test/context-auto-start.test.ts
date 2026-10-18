@@ -25,6 +25,8 @@ describe("context add local auto-start", () => {
     vi.stubEnv("OPENRIG_PORT", "42761");
     vi.stubEnv("OPENRIG_HOST", "127.0.0.1");
     vi.stubEnv("RIGGED_HOST", "");
+    // cerebral-work fork (CER-2924): the harness pins OPENRIG_BIND_HOST, which is bind intent; these cases test the no-intent branch.
+    vi.stubEnv("OPENRIG_BIND_HOST", undefined);
     previousExit = process.exitCode;
     process.exitCode = undefined;
     vi.spyOn(console, "log").mockImplementation(() => {});

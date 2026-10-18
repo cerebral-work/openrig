@@ -949,6 +949,9 @@ describe("rig start (OPR.0.3.4.1)", () => {
 // intent. Equivalent coverage to the up-side pin: routing env creates NO intent and
 // never crosses into the spawned daemon env.
 describe("S20 — start auto-start: routing env never becomes bind intent", () => {
+  // cerebral-work fork (CER-2924): the harness pins OPENRIG_BIND_HOST, which is bind intent; this case tests the no-intent branch.
+  beforeAll(() => { vi.stubEnv("OPENRIG_BIND_HOST", undefined); });
+  afterAll(() => { vi.unstubAllEnvs(); });
   it("env-sourced OPENRIG_HOST through rig start creates NO bind intent (no OPENRIG_BIND_HOST, routing scrubbed)", async () => {
     const savedHost = process.env["OPENRIG_HOST"];
     process.env["OPENRIG_HOST"] = "100.64.55.66"; // the distinct-value discriminator
