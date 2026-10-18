@@ -172,6 +172,8 @@ export class SuccessorSessionLauncher {
      *  conversation from its first byte; the returned resume token is the NEW
      *  post-fork token, never the parent's. Absent → a plain fresh launch. */
     forkSource?: ForkSource;
+    /** Spec 0005 revert: resume the predecessor's recorded conversation instead of starting a fresh one. */
+    resumeToken?: string;
   }): Promise<SuccessorLaunchResult> {
     // CUTOVER MODEL (plan 411c43de): a SEAT = one durable tmux session; the successor takes over the
     // retiree's EXACT pane via respawn-pane, so the canonical session name is PRESERVED (no -h shuffle)
@@ -272,7 +274,7 @@ export class SuccessorSessionLauncher {
     //    on ANY launch/readiness failure we do NOT killSession the preserved seat — that would destroy
     //    the retiree's recoverable state. We return the structured failure and leave the re-wakeable
     //    shell in the pane; commit never runs, so the binding is not repointed.
-    const started = await this.startAgent(input.node, departingSession, pane.id, cwd, input.forkSource, input.occupantGeneration);
+    const started = await this.startAgent(input.node, departingSession, pane.id, cwd, input.forkSource, input.occupantGeneration, input.resumeToken);
     if (!started.ok) {
       return { ok: false, code: started.code, step: "start_agent", message: started.message, replacementStarted: true };
     }
@@ -313,6 +315,7 @@ export class SuccessorSessionLauncher {
     cwd: string | undefined,
     forkSource?: ForkSource,
     launchGeneration?: string | null,
+    resumePredecessorToken?: string,
   ): Promise<{ ok: true; resumeToken?: string; resumeType?: string; appliedLaunch?: AppliedLaunchObservation } | { ok: false; code: string; message: string }> {
     const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
     if (!adapter) {
@@ -358,7 +361,7 @@ export class SuccessorSessionLauncher {
 
     let launch: Awaited<ReturnType<RuntimeAdapter["launchHarness"]>>;
     try {
-      launch = await adapter.launchHarness(binding, { name: tmuxSession, ...(forkSource ? { forkSource } : {}) });
+      launch = await adapter.launchHarness(binding, { name: tmuxSession, ...(forkSource ? { forkSource } : {}), ...(resumePredecessorToken ? { resumeToken: resumePredecessorToken } : {}) });
     } catch (err) {
       return { ok: false, code: "successor_launch_failed", message: `Successor harness launch threw: ${err instanceof Error ? err.message : String(err)}` };
     }

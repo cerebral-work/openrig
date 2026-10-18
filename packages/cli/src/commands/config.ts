@@ -83,6 +83,8 @@ Keys:
   runtime.codex.*        hooks_enabled
   runtime.readiness_timeout_seconds
                          harness readiness window for new seats and handover successors (1–600; default 30)
+  runtime.change_env_allowlist
+                         env names a runtime change's --to-env may set (default CLAUDE_CONFIG_DIR,CODEX_HOME)
   workflow.*             exception_routing (orchestrator | human_only — the maturity-dial host default)
   policies.claude_compaction.*
                          enabled, threshold_percent, compact_instruction,

@@ -7,7 +7,7 @@ import type { EventBus } from "../domain/event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
 import { observeClaudePaneStartedAt } from "../domain/native-process-lineage.js";
 import { SeatStatusService } from "../domain/seat-status-service.js";
-import { SeatHandoverService } from "../domain/seat-handover-service.js";
+import { SeatHandoverService, type HandoverCaller, type RuntimeChangeRequest, type SeatHandoverResult } from "../domain/seat-handover-service.js";
 import { SeatSwitchClientService } from "../domain/seat-switch-client-service.js";
 import { SeatLifecycleService } from "../domain/seat-lifecycle-service.js";
 import { makePredecessorRecapResolver } from "../domain/predecessor-recap-resolver.js";
@@ -18,7 +18,8 @@ import { resolveAuthoredRecapPointer } from "../domain/context-packs/seat-recap-
 import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
-import { transportSenderSession } from "./require-sender-identity.js";
+import { requireSenderIdentity, resolveRecordedProvenance, transportSenderSession } from "./require-sender-identity.js";
+import type { Context } from "hono";
 
 export const seatRoutes = new Hono();
 
@@ -91,10 +92,10 @@ seatRoutes.get("/status/:seatRef", (c) => {
   return c.json(result, 404);
 });
 
-seatRoutes.post("/handover/:seatRef", async (c) => {
-  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+/** One construction of the handover service, shared by the handover and runtime-revert routes. */
+function seatHandoverService(c: { get(key: never): unknown }): SeatHandoverService {
   const rigRepo = c.get("rigRepo" as never) as RigRepository;
-  const service = new SeatHandoverService({
+  return new SeatHandoverService({
     db: rigRepo.db,
     rigRepo,
     sessionRegistry: c.get("sessionRegistry" as never) as SessionRegistry,
@@ -187,21 +188,82 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
     // declareOccupantSwap and the successor never inherits the retiree's evidence or
     // promoted rung authority. Optional in the deps contract; ALWAYS wired here.
     activityOracle: (c.get("seatActivityService" as never) as import("../domain/seat-activity-service.js").SeatActivityService | undefined) ?? undefined,
+    // Spec 0005 — a runtime change starts its target member the way a member launch does.
+    memberStartup: (c.get("podInstantiator" as never) as import("../domain/rigspec-instantiator.js").PodRigInstantiator | undefined) ?? undefined,
   });
-  const result = await service.handover({
+}
+
+/** Spec 0005 — the caller's transport identity (X-OpenRig-Session) and its recorded provenance, or null when absent. A
+ *  relayed request is relay:v1 (review r2), so only a local transport identity can be the kernel operator. With no
+ *  caller authentication on the daemon, this is attribution, not authentication. */
+function handoverCaller(c: Context): HandoverCaller | null {
+  const sender = requireSenderIdentity(c);
+  return sender.ok ? { session: sender.session, provenance: resolveRecordedProvenance(c, sender) } : null;
+}
+
+function runtimeChangeFrom(body: Record<string, unknown>): RuntimeChangeRequest | null {
+  const raw = body["runtimeChange"];
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw as Record<string, unknown>;
+  const text = (key: string) => (typeof r[key] === "string" ? r[key] as string : null);
+  const spec = r["spec"] as Record<string, unknown> | undefined;
+  return {
+    toRuntime: text("toRuntime") ?? "",
+    toModel: text("toModel"),
+    toPermissions: text("toPermissions"),
+    toEffort: text("toEffort"),
+    toCwd: text("toCwd"),
+    toEnv: Array.isArray(r["toEnv"]) ? (r["toEnv"] as unknown[]).filter((value): value is string => typeof value === "string") : null,
+    spec: spec && typeof spec["path"] === "string" && typeof spec["yaml"] === "string" ? { path: spec["path"], yaml: spec["yaml"] } : null,
+    approval: text("approval"),
+  };
+}
+
+seatRoutes.post("/handover/:seatRef", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const result = await seatHandoverService(c).handover({
     seatRef: c.req.param("seatRef")!,
     reason: typeof body["reason"] === "string" ? body["reason"] : null,
     source: typeof body["source"] === "string" ? body["source"] : null,
     operator: typeof body["operator"] === "string" ? body["operator"] : null,
     dryRun: body["dryRun"] === true,
+    runtimeChange: runtimeChangeFrom(body),
+    caller: handoverCaller(c),
   });
+  return handoverResponse(c, result);
+});
 
+// Spec 0005 — revert a seat's most recent runtime change (the kernel's operator or advisor).
+seatRoutes.post("/runtime-revert/:seatRef", async (c) => {
+  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
+  const result = await seatHandoverService(c).revertRuntimeChange({
+    seatRef: c.req.param("seatRef")!,
+    reason: typeof body["reason"] === "string" ? body["reason"] : null,
+    approval: typeof body["approval"] === "string" ? body["approval"] : null,
+    resumePredecessor: body["resumePredecessor"] === true,
+    dryRun: body["dryRun"] === true,
+    caller: handoverCaller(c),
+  });
+  return handoverResponse(c, result);
+});
+
+function handoverResponse(c: Context, result: SeatHandoverResult) {
   if (result.ok) {
     return c.json("plan" in result ? result.plan : result.result);
   }
 
   if (result.code === "missing_reason" || result.code === "invalid_source") {
     return c.json(result, 400);
+  }
+  if (result.code === "runtime_change_unauthorized") {
+    return c.json(result, 403);
+  }
+  if (result.code === "runtime_change_invalid" || result.code === "runtime_change_secret_env" || result.code === "runtime_change_env_not_allowed"
+    || result.code === "runtime_change_spec_mismatch") {
+    return c.json(result, 400);
+  }
+  if (result.code === "runtime_revert_unavailable") {
+    return c.json(result, 409);
   }
   if (result.code === "seat_ambiguous") {
     return c.json(result, 409);
@@ -226,11 +288,12 @@ seatRoutes.post("/handover/:seatRef", async (c) => {
   }
   if (result.code === "handover_commit_failed" ||
     result.code === "successor_create_failed" ||
-    result.code === "context_delivery_failed") {
+    result.code === "context_delivery_failed" ||
+    result.code === "runtime_change_target_startup_failed") {
     return c.json(result, 500);
   }
   return c.json(result, 404);
-});
+}
 
 // S5 (OPR.0.5.4.7) — the seat-lifecycle verb surface: set-model / stop / clean.
 // One service, one resolution path, one status mapping shared by all three verbs.

@@ -148,6 +148,7 @@ export const SETTINGS_VALID_KEYS = [
   // independently — daemon does NOT mutate.
   "runtime.codex.hooks_enabled",
   "runtime.readiness_timeout_seconds",
+  "runtime.change_env_allowlist",
   // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10:
   // 7 keys (lockstep with cli/src/config-store.ts VALID_KEYS).
   // Opt-in default-off; daemon ContextMonitor reads `enabled` +
@@ -281,6 +282,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   // (no RIGGED_X legacy on net-new keys).
   "runtime.codex.hooks_enabled": { primary: "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED" },
   "runtime.readiness_timeout_seconds": { primary: "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS" },
+  "runtime.change_env_allowlist": { primary: "OPENRIG_RUNTIME_CHANGE_ENV_ALLOWLIST" },
   // Slice 27 — Claude auto-compaction policy. Net-new keys; OPENRIG_X
   // primary only.
   "policies.claude_compaction.enabled": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED" },
@@ -373,6 +375,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "feed.subscriptions.audit_log": ["feed", "subscriptions", "auditLog"],
   "runtime.codex.hooks_enabled": ["runtime", "codex", "hooksEnabled"],
   "runtime.readiness_timeout_seconds": ["runtime", "readinessTimeoutSeconds"],
+  "runtime.change_env_allowlist": ["runtime", "changeEnvAllowlist"],
   "policies.claude_compaction.enabled": ["policies", "claudeCompaction", "enabled"],
   "policies.claude_compaction.threshold_percent": ["policies", "claudeCompaction", "thresholdPercent"],
   "policies.claude_compaction.pre_compact_instruction": ["policies", "claudeCompaction", "preCompactInstruction"],
@@ -648,6 +651,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     // launch unless operator explicitly sets to false.
     case "runtime.codex.hooks_enabled": return true;
     case "runtime.readiness_timeout_seconds": return 30;
+    case "runtime.change_env_allowlist": return "CLAUDE_CONFIG_DIR,CODEX_HOME";
     // Slice 27 — Claude auto-compaction policy defaults. Opt-in
     // default-off; threshold 80% per spec. Pre/post defaults point at
     // the canonical restore skill; compact_instruction is intentionally
@@ -784,6 +788,15 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
   "transcripts.poll_interval_seconds": (raw, value) => {
     if (!/^\d+$/.test(raw.trim()) || typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > 3600) {
       throw new Error("Invalid transcripts.poll_interval_seconds: must be an integer in [1, 3600]");
+    }
+  },
+  // Spec 0005 (cerebral-work fork), review r2: the env names a runtime change's --to-env may set. Each must be a seat env
+  // name; lockstep with the twin store.
+  "runtime.change_env_allowlist": (raw) => {
+    const bad = (raw ?? "").split(",").map((name) => name.trim()).filter(Boolean)
+      .filter((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name) || name.startsWith("OPENRIG_"));
+    if (bad.length > 0) {
+      throw new Error(`Invalid value for runtime.change_env_allowlist: ${bad.join(", ")} must be seat env names (^[A-Z_][A-Z0-9_]*$, not OPENRIG_*)`);
     }
   },
   "runtime.readiness_timeout_seconds": (raw, coerced) => {

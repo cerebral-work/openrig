@@ -4,6 +4,9 @@ import { DaemonClient } from "../src/client.js";
 import { seatCommand, handoverCommand } from "../src/commands/seat.js";
 import { STATE_FILE, type DaemonState, type LifecycleDeps } from "../src/daemon-lifecycle.js";
 import type { StatusDeps } from "../src/commands/status.js";
+import fs from "node:fs";
+import os from "node:os";
+import nodePath from "node:path";
 
 function mockLifecycleDeps(): LifecycleDeps {
   return {
@@ -920,5 +923,74 @@ describe("seat request deadlines (#260)", () => {
     const output = await run(deps, argv as string[], 5_000);
     expect(output).toHaveProperty("error");
     expect((output as { error: Error }).error.message).toContain("timed out after 5000ms");
+  });
+});
+
+// Spec 0005 (cerebral-work fork): the runtime-change options and the revert verb.
+describe("rig seat handover --to-runtime and rig seat runtime-revert", () => {
+  const tmp: string[] = [];
+  afterEach(() => { for (const d of tmp.splice(0)) fs.rmSync(d, { recursive: true, force: true }); });
+
+  it("handover --to-runtime posts the change with the spec's absolute path and content", async () => {
+    const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "rig-rtc-")); tmp.push(dir);
+    const specPath = nodePath.join(dir, "rig.yaml");
+    fs.writeFileSync(specPath, "name: kernel\n");
+    const paths: string[] = [];
+    const bodies: unknown[] = [];
+    const deps = makeDeps({ status: 200, data: HANDOVER_PLAN }, paths, bodies);
+    const { exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync([
+        "node", "rig", "seat", "handover", "operator-agent@kernel", "--reason", "opus swap", "--dry-run", "--json",
+        "--to-runtime", "claude-code", "--to-model", "claude-opus-5-5", "--to-permissions", "full_bypass",
+        "--to-cwd", dir, "--to-env", "CLAUDE_CONFIG_DIR=/cfg/operator", "--to-env", "LANG=C",
+        "--spec", nodePath.relative(process.cwd(), specPath), "--approval", "qitem-go",
+      ]);
+    });
+    expect(exitCode).toBeUndefined();
+    expect(paths).toEqual(["/api/seat/handover/operator-agent%40kernel"]);
+    expect(bodies[0]).toMatchObject({
+      reason: "opus swap", dryRun: true,
+      runtimeChange: {
+        toRuntime: "claude-code", toModel: "claude-opus-5-5", toPermissions: "full_bypass", toCwd: dir,
+        toEnv: ["CLAUDE_CONFIG_DIR=/cfg/operator", "LANG=C"], spec: { path: specPath, yaml: "name: kernel\n" }, approval: "qitem-go",
+      },
+    });
+  });
+
+  it("handover refuses runtime-change options without --to-runtime, before contacting the daemon", async () => {
+    const paths: string[] = [];
+    const deps = makeDeps({ status: 200, data: HANDOVER_PLAN }, paths);
+    const { exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync(["node", "rig", "seat", "handover", "dev-impl@seat-rig", "--reason", "r", "--to-model", "x", "--json"]);
+    });
+    expect(exitCode).toBe(2);
+    expect(paths).toEqual([]);
+  });
+
+  it("runtime-revert posts the approval, reason and resume choice to the revert route", async () => {
+    const paths: string[] = [];
+    const bodies: unknown[] = [];
+    const deps = makeDeps({ status: 200, data: HANDOVER_PLAN }, paths, bodies);
+    const { exitCode } = await captureLogs(async () => {
+      await makeCommand(deps).parseAsync([
+        "node", "rig", "seat", "runtime-revert", "operator-agent@kernel", "--approval", "qitem-pre-recorded-go",
+        "--reason", "claude successor unusable", "--resume-predecessor", "--json",
+      ]);
+    });
+    expect(exitCode).toBeUndefined();
+    expect(paths).toEqual(["/api/seat/runtime-revert/operator-agent%40kernel"]);
+    expect(bodies[0]).toEqual({ approval: "qitem-pre-recorded-go", reason: "claude successor unusable", resumePredecessor: true, dryRun: false });
+  });
+
+  it("runtime-revert requires --approval and --reason before contacting the daemon", async () => {
+    for (const argv of [["--reason", "r"], ["--approval", "go"]]) {
+      const paths: string[] = [];
+      const deps = makeDeps({ status: 200, data: HANDOVER_PLAN }, paths);
+      const { exitCode } = await captureLogs(async () => {
+        await makeCommand(deps).parseAsync(["node", "rig", "seat", "runtime-revert", "operator-agent@kernel", ...argv, "--json"]);
+      });
+      expect(exitCode, argv.join(" ")).toBe(2);
+      expect(paths).toEqual([]);
+    }
   });
 });

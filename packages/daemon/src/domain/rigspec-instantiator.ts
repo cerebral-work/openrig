@@ -1970,33 +1970,25 @@ export class PodRigInstantiator {
     } catch { /* best-effort on launch refresh only */ }
   }
 
-  private async launchExistingAgentMember(input: {
-    rigId: string;
+  /** The first step of a member launch: its agent spec and node config. Reads only. Also used by a runtime-changing
+   *  seat handover (spec 0005), which starts the target member the way a launch would. */
+  resolveMemberConfig(input: {
     rigSpec: PodRigSpec;
     rigRoot: string;
     pod: RigSpecPod;
     member: RigSpecPodMember;
-    qualifiedId: string;
-    nodeId: string;
     cwdOverride?: string;
-    /** One-off `rig up --env` values for this launch; not saved with the seat. */
-    envOverride?: SeatEnv;
-    /** P20 atom-4 — operator override: overwrite operator-edited (operator_conflict)
-     *  projection targets instead of protecting them. Absent = protect (safe default). */
-    force?: boolean;
     resolveResult?: ReturnType<typeof resolveAgentRef> extends infer T ? T : never;
     configResult?: ReturnType<typeof resolveNodeConfig> extends infer T ? T : never;
-  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[] }> {
-    const guard = this.deps.tmuxAdapter?.deliveryGuard;
-    if (guard && !guard.ownsLifecycle(input.nodeId)) {
-      return guard.lifecycle([input.nodeId], () => this.launchExistingAgentMember(input));
-    }
+  }):
+    | { ok: true; resolveResult: Extract<ReturnType<typeof resolveAgentRef>, { ok: true }>; configResult: Extract<ReturnType<typeof resolveNodeConfig>, { ok: true }> }
+    | { ok: false; error: string } {
     const resolveResult = input.resolveResult ?? resolveAgentRef(input.member.agentRef, input.rigRoot, this.deps.fsOps);
     if (!resolveResult.ok) {
       const msg = resolveResult.code === "validation_failed"
         ? (resolveResult as { errors: string[] }).errors.join("; ")
         : (resolveResult as { error: string }).error;
-      return { status: "failed", error: msg };
+      return { ok: false, error: msg };
     }
 
     const configResult = input.configResult ?? resolveNodeConfig({
@@ -2013,35 +2005,16 @@ export class PodRigInstantiator {
       ...this.systemWorldResolutionContext(),
     });
     if (!configResult.ok) {
-      return { status: "failed", error: configResult.errors.join("; ") };
+      return { ok: false, error: configResult.errors.join("; ") };
     }
+    return { ok: true, resolveResult, configResult };
+  }
 
-    this.updateNodeResolvedConfig(input.nodeId, configResult.config);
-
-    // OPR.0.4.8.3 Seam B: resolve the seat's permission-policy attachment once for this
-    // launch (member > rig precedence; declaring dir = the rig root, where the declaring
-    // RigSpec + its relative policy files live). Also persists restart-stable provenance.
-    // R2 HIGH-1: the LIVE binding must AGREE with persisted provenance — structured
-    // add-member/expansion launch with a SYNTHETIC minimal spec (no rig-level ref), so
-    // when the in-memory spec resolves nothing, the PERSISTED node provenance (written in
-    // the creation tx) and then the PERSISTED rig attachment are the binding's truth.
-    const policyAttachment = this.resolveMemberPolicyAttachment(input.member.permissionPolicy, input.rigSpec.permissionPolicy, input.rigRoot);
-    if (policyAttachment) this.persistNodePolicyProvenance(input.nodeId, policyAttachment);
-    // R2 terminal (954d97a0): TRUE ABSENCE binds the locked MINIMUM FLOOR explicitly
-    // (README v4 "DEFAULT IF NONE ATTACHED = the minimum floor"; FINAL2) — ambient
-    // OPENRIG_YOLO must never widen a seat with no attachment. Absence stays honest
-    // (no fabricated attachment/provenance); only the lifecycle BINDING is explicit.
-    const launchPosture = policyAttachment?.launchPosture
-      ?? this.deps.rigRepo.getNodePolicyProvenance(input.nodeId)?.launchPosture
-      ?? this.deps.rigRepo.getRigPolicyProvenance(input.rigId)?.launchPosture
-      ?? "floor";
-
-    const sessionNameErrors = validateSessionComponents(input.pod.id, input.member.id, input.rigSpec.name);
-    if (sessionNameErrors.length > 0) {
-      return { status: "failed", error: sessionNameErrors.join("; ") };
-    }
-
-    const canonicalSessionName = deriveCanonicalSessionName(input.pod.id, input.member.id, input.rigSpec.name);
+  /** Reconcile the member's skill loadout into its cwd for its runtime (writes files). Returns the kept-skill warnings. */
+  reconcileMemberSkills(
+    configResult: Extract<ReturnType<typeof resolveNodeConfig>, { ok: true }>,
+    canonicalSessionName: string,
+  ): { ok: true; warnings: string[] } | { ok: false; error: string } {
     const keptSkillWarnings: string[] = [];
     if (
       configResult.config.skillLoadout
@@ -2067,39 +2040,36 @@ export class PodRigInstantiator {
         }
       }
       if (!projection.ok) {
-        return {
-          status: "failed",
-          error: projection.errors.map((error) => `${error.code}: ${error.message}`).join("; "),
-          sessionName: canonicalSessionName,
-        };
+        return { ok: false, error: projection.errors.map((error) => `${error.code}: ${error.message}`).join("; ") };
       }
       for (const receipt of projection.receipts.filter(isKeptPluginSkill)) {
         keptSkillWarnings.push(`plugin_skill_kept: ${receipt.id}: ${receipt.detail.slice("kept: ".length)} (${receipt.target})`);
       }
     }
-    // Forward per-seat silenceWindowSeconds from the resolved profile.
-    // Currently inert: the live SeatActivityService poller uses the
-    // global 3s default. Retained for a future per-seat-poller decision.
-    const launchResult = await this.deps.nodeLauncher.launchNode(input.rigId, input.qualifiedId, {
-      sessionName: canonicalSessionName,
-      silenceWindowSeconds: configResult.config.activity?.silenceWindowSeconds,
-      env: input.envOverride,
-      pluginPaths: selectedPluginPaths(configResult.config.selectedResources),
-    });
-    if (!launchResult.ok) {
-      return { status: "failed", error: launchResult.message };
-    }
+    return { ok: true, warnings: keptSkillWarnings };
+  }
 
-    try {
-      this.db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?")
-        .run(configResult.config.restorePolicy, launchResult.session.id);
-    } catch { /* best-effort */ }
-
-    const adapter = this.deps.adapters[input.member.runtime];
-    if (!adapter) {
-      return { status: "failed", error: `No adapter for runtime "${input.member.runtime}"`, sessionName: canonicalSessionName, warnings: launchResult.warnings };
-    }
-
+  /** The member's projection plan and startup files for its runtime's adapter. The body is the planning block of a
+   *  member launch, unchanged: it reads only, apart from the conflict warnings it pushes into `launchResult.warnings`,
+   *  and a failed plan returns the launch's failure. A runtime-changing seat handover (spec 0005) passes its own
+   *  binding and warnings as `launchResult`. codex-skill-projection.test.ts executes this block from the source. */
+  planMemberStartup(input: {
+    rigId: string;
+    rigSpec: PodRigSpec;
+    rigRoot: string;
+    pod: RigSpecPod;
+    member: RigSpecPodMember;
+    force?: boolean;
+    configResult: Extract<ReturnType<typeof resolveNodeConfig>, { ok: true }>;
+    resolveResult: Extract<ReturnType<typeof resolveAgentRef>, { ok: true }>;
+    adapter: RuntimeAdapter;
+    launchResult: { binding: { tmuxSession: string | null }; warnings?: string[] };
+    canonicalSessionName: string;
+    keptSkillWarnings: string[];
+  }):
+    | { ok: true; plan: ProjectionPlan; files: ResolvedStartupFile[] }
+    | { status: "failed"; error: string; sessionName: string; warnings?: string[] } {
+    const { configResult, resolveResult, adapter, launchResult, canonicalSessionName, keptSkillWarnings } = input;
     // P20 — the projection manifest: consulted so a divergent target is
     // discriminated operator-modified (protect) vs stale-projection (safe
     // overwrite). REAL store-backed lookup on this.db (never a mock/null — the
@@ -2162,6 +2132,146 @@ export class PodRigInstantiator {
       planResult.plan,
       { force: input.force },
     ).delivered;
+    return { ok: true, plan: planResult.plan, files: dedupedResolvedFiles };
+  }
+
+  /** Agent Starter resolver dispatch (Agent Starter v1 vertical M2). When
+   *  `member.starterRef` is set, resolve the named registry entry into a
+   *  `ResolvedStartupFile[]` that prepends ahead of the member's per-agent
+   *  and per-pod startup files (the new STARTER layer at the front of the
+   *  layer chain). The resolver THROWS on a failed credential scan, missing
+   *  registry entry, or malformed YAML; on any throw the caller aborts the launch
+   *  BEFORE `startNode` runs (no STARTER layer added; no adapter
+   *  `deliverStartup` called) — load-bearing credential-safety contract. */
+  async resolveMemberStarterFiles(member: RigSpecPodMember): Promise<{ ok: true; files?: ResolvedStartupFile[] } | { ok: false; error: string }> {
+    if (!member.starterRef) return { ok: true };
+    const { AgentStarterResolver } = await import("./agent-starter-resolver.js");
+    const resolver = new AgentStarterResolver();
+    try {
+      return { ok: true, files: resolver.resolveStarter(member.starterRef.name).files };
+    } catch (err) {
+      return { ok: false, error: `Agent Starter resolver failed: ${(err as Error).message}` };
+    }
+  }
+
+  /** The member's startup actions: its configured ones, then the session identity hint. */
+  memberStartupActions(input: {
+    configResult: Extract<ReturnType<typeof resolveNodeConfig>, { ok: true }>;
+    rigSpec: PodRigSpec;
+    pod: RigSpecPod;
+    member: RigSpecPodMember;
+    sessionName: string;
+  }): StartupAction[] {
+    return [
+      ...input.configResult.config.startup.actions,
+      this.buildSessionIdentityAction({
+        rigName: input.rigSpec.name,
+        pod: input.pod,
+        member: input.member,
+        runtime: input.member.runtime,
+        sessionName: input.sessionName,
+        resolvedSpecName: input.configResult.config.resolvedSpecName,
+      }),
+    ];
+  }
+
+  private async launchExistingAgentMember(input: {
+    rigId: string;
+    rigSpec: PodRigSpec;
+    rigRoot: string;
+    pod: RigSpecPod;
+    member: RigSpecPodMember;
+    qualifiedId: string;
+    nodeId: string;
+    cwdOverride?: string;
+    /** One-off `rig up --env` values for this launch; not saved with the seat. */
+    envOverride?: SeatEnv;
+    /** P20 atom-4 — operator override: overwrite operator-edited (operator_conflict)
+     *  projection targets instead of protecting them. Absent = protect (safe default). */
+    force?: boolean;
+    resolveResult?: ReturnType<typeof resolveAgentRef> extends infer T ? T : never;
+    configResult?: ReturnType<typeof resolveNodeConfig> extends infer T ? T : never;
+  }): Promise<{ status: "launched" | "failed" | "attention_required"; error?: string; evidence?: string; sessionName?: string; warnings?: string[] }> {
+    const guard = this.deps.tmuxAdapter?.deliveryGuard;
+    if (guard && !guard.ownsLifecycle(input.nodeId)) {
+      return guard.lifecycle([input.nodeId], () => this.launchExistingAgentMember(input));
+    }
+    const resolvedMember = this.resolveMemberConfig(input);
+    if (!resolvedMember.ok) {
+      return { status: "failed", error: resolvedMember.error };
+    }
+    const { resolveResult, configResult } = resolvedMember;
+
+    this.updateNodeResolvedConfig(input.nodeId, configResult.config);
+
+    // OPR.0.4.8.3 Seam B: resolve the seat's permission-policy attachment once for this
+    // launch (member > rig precedence; declaring dir = the rig root, where the declaring
+    // RigSpec + its relative policy files live). Also persists restart-stable provenance.
+    // R2 HIGH-1: the LIVE binding must AGREE with persisted provenance — structured
+    // add-member/expansion launch with a SYNTHETIC minimal spec (no rig-level ref), so
+    // when the in-memory spec resolves nothing, the PERSISTED node provenance (written in
+    // the creation tx) and then the PERSISTED rig attachment are the binding's truth.
+    const policyAttachment = this.resolveMemberPolicyAttachment(input.member.permissionPolicy, input.rigSpec.permissionPolicy, input.rigRoot);
+    if (policyAttachment) this.persistNodePolicyProvenance(input.nodeId, policyAttachment);
+    // R2 terminal (954d97a0): TRUE ABSENCE binds the locked MINIMUM FLOOR explicitly
+    // (README v4 "DEFAULT IF NONE ATTACHED = the minimum floor"; FINAL2) — ambient
+    // OPENRIG_YOLO must never widen a seat with no attachment. Absence stays honest
+    // (no fabricated attachment/provenance); only the lifecycle BINDING is explicit.
+    const launchPosture = policyAttachment?.launchPosture
+      ?? this.deps.rigRepo.getNodePolicyProvenance(input.nodeId)?.launchPosture
+      ?? this.deps.rigRepo.getRigPolicyProvenance(input.rigId)?.launchPosture
+      ?? "floor";
+
+    const sessionNameErrors = validateSessionComponents(input.pod.id, input.member.id, input.rigSpec.name);
+    if (sessionNameErrors.length > 0) {
+      return { status: "failed", error: sessionNameErrors.join("; ") };
+    }
+
+    const canonicalSessionName = deriveCanonicalSessionName(input.pod.id, input.member.id, input.rigSpec.name);
+    const skills = this.reconcileMemberSkills(configResult, canonicalSessionName);
+    if (!skills.ok) {
+      return { status: "failed", error: skills.error, sessionName: canonicalSessionName };
+    }
+    const keptSkillWarnings = skills.warnings;
+    // Forward per-seat silenceWindowSeconds from the resolved profile.
+    // Currently inert: the live SeatActivityService poller uses the
+    // global 3s default. Retained for a future per-seat-poller decision.
+    const launchResult = await this.deps.nodeLauncher.launchNode(input.rigId, input.qualifiedId, {
+      sessionName: canonicalSessionName,
+      silenceWindowSeconds: configResult.config.activity?.silenceWindowSeconds,
+      env: input.envOverride,
+      pluginPaths: selectedPluginPaths(configResult.config.selectedResources),
+    });
+    if (!launchResult.ok) {
+      return { status: "failed", error: launchResult.message };
+    }
+
+    try {
+      this.db.prepare("UPDATE sessions SET restore_policy = ? WHERE id = ?")
+        .run(configResult.config.restorePolicy, launchResult.session.id);
+    } catch { /* best-effort */ }
+
+    const adapter = this.deps.adapters[input.member.runtime];
+    if (!adapter) {
+      return { status: "failed", error: `No adapter for runtime "${input.member.runtime}"`, sessionName: canonicalSessionName, warnings: launchResult.warnings };
+    }
+
+    const planned = this.planMemberStartup({
+      rigId: input.rigId,
+      rigSpec: input.rigSpec,
+      rigRoot: input.rigRoot,
+      pod: input.pod,
+      member: input.member,
+      force: input.force,
+      configResult,
+      resolveResult,
+      adapter,
+      launchResult,
+      canonicalSessionName,
+      keptSkillWarnings,
+    });
+    if ("status" in planned) return planned;
+    const dedupedResolvedFiles = planned.files;
 
     const binding: NodeBinding = {
       id: launchResult.binding.id,
@@ -2263,22 +2373,16 @@ export class PodRigInstantiator {
     // registry entry, or malformed YAML; on any throw we abort the launch
     // BEFORE `startNode` runs (no STARTER layer added; no adapter
     // `deliverStartup` called) — load-bearing credential-safety contract.
-    let starterArtifacts: import("./runtime-adapter.js").ResolvedStartupFile[] | undefined;
-    if (input.member.starterRef) {
-      const { AgentStarterResolver } = await import("./agent-starter-resolver.js");
-      const resolver = new AgentStarterResolver();
-      try {
-        const resolved = resolver.resolveStarter(input.member.starterRef.name);
-        starterArtifacts = resolved.files;
-      } catch (err) {
-        return {
-          status: "failed",
-          error: `Agent Starter resolver failed: ${(err as Error).message}`,
-          sessionName: canonicalSessionName,
-          warnings: launchResult.warnings,
-        };
-      }
+    const starter = await this.resolveMemberStarterFiles(input.member);
+    if (!starter.ok) {
+      return {
+        status: "failed",
+        error: starter.error,
+        sessionName: canonicalSessionName,
+        warnings: launchResult.warnings,
+      };
     }
+    const starterArtifacts = starter.files;
 
     // STARTER layer (artifact-seeded fresh-launch context; precedes per-agent
     // and per-pod layers). Prepended to dedupedResolvedFiles so the existing
@@ -2294,19 +2398,15 @@ export class PodRigInstantiator {
       sessionId: launchResult.session.id,
       binding,
       adapter,
-      plan: planResult.plan,
+      plan: planned.plan,
       resolvedStartupFiles: finalResolvedStartupFiles,
-      startupActions: [
-        ...configResult.config.startup.actions,
-        this.buildSessionIdentityAction({
-          rigName: input.rigSpec.name,
-          pod: input.pod,
-          member: input.member,
-          runtime: input.member.runtime,
-          sessionName: canonicalSessionName,
-          resolvedSpecName: configResult.config.resolvedSpecName,
-        }),
-      ],
+      startupActions: this.memberStartupActions({
+        configResult,
+        rigSpec: input.rigSpec,
+        pod: input.pod,
+        member: input.member,
+        sessionName: canonicalSessionName,
+      }),
       isRestore: false,
       ...(forkSourceOpt ?? {}),
       ...(rebuildArtifactsOpt ?? {}),

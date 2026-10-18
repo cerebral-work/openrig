@@ -43,9 +43,10 @@ export class NativePermissionStore {
     }
   }
 
-  /** One decision shared by fresh/continue, legacy restore and same-seat handover. */
-  launchOverride(nodeId: string, runtime: string): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority" | "teamPermissionDefault"> {
-    const selection = this.read(nodeId);
+  /** One decision shared by fresh/continue, legacy restore and same-seat handover. A runtime-changing handover
+   *  (spec 0005) passes the selection it will commit for the target runtime, or null for inherit. */
+  launchOverride(nodeId: string, runtime: string, selectionOverride?: NativePermissionSelection | null): Pick<NodeBinding, "launchPosture" | "permissionMode" | "kernelAuthority" | "teamPermissionDefault"> {
+    const selection = selectionOverride !== undefined ? selectionOverride : this.read(nodeId);
     if (selection && selection.runtime !== runtime) {
       throw new Error("Seat runtime changed since permission selection; explicitly select again or inherit.");
     }

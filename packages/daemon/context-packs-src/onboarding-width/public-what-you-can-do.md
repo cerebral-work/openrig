@@ -480,6 +480,11 @@ version, from checking the environment to a useful report to the OpenRig team.
   to plan without changing the seat. Check the selected source and continuity evidence first. A
   seat can be handed over again into its own pane, so a seat left half-handed-over recovers by
   running the handover again.
+- **`rig seat handover <seat> --to-runtime codex|claude-code`** — change a seat's runtime with a
+  recorded handover: the same pane, name and queue custody, the target runtime's own startup, and a
+  ledger row. Only the kernel operator issues it, with `--to-model`, `--to-permissions`, `--spec`
+  and `--approval`; run it with `--dry-run` first. `rig seat runtime-revert` undoes the most
+  recent change, and the kernel advisor may run it too.
 - **`rig seat clear-attention` / `set-resume-token`** — clear a stale attention flag, or repair a
   lost resume handle so restore works next time.
 - **`rig seat continue <seat>`** — a launch stopped on Claude's bypass-permissions consent dialog.
