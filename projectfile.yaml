@@ -74,6 +74,7 @@ org:
             projectfile-check: true
             stages-check: true
             spec-check: true
+            workflow-trigger-check: true
             branch-hygiene: true
         formatted:
           needs:

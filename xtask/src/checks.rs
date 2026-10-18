@@ -1,5 +1,5 @@
 //! Governance gates: `projectfile-check`, `stages-check`, `spec-check`,
-//! `branch-hygiene`. Each validator is a pure function over text so the
+//! `workflow-trigger-check`, `branch-hygiene`. Each validator is a pure function over text so the
 //! `--break-check` falsification self-test can feed it a deliberately broken
 //! input and require a failure.
 
@@ -344,6 +344,110 @@ pub fn check_specs(root: &Path, break_check: bool) -> Result<()> {
     Ok(())
 }
 
+// ───────────────────────── workflow-trigger-check ─────────────────────────
+
+/// Triggers that run a workflow as `refs/heads/cerebral` on a fork's behalf, so they would match the
+/// `ent-parity` runner group's workflow restriction (CER-2908).
+pub const FORBIDDEN_TRIGGERS: &[&str] = &["pull_request_target", "workflow_run"];
+
+/// The forbidden triggers one workflow's text declares, in `FORBIDDEN_TRIGGERS` order. Triggers are read
+/// from `on` in every form: a scalar, a list, or a map. The key `on` is matched as the string `on` and as
+/// boolean `true`: serde_yaml reads `on` as a string, but a YAML 1.1 tool reads it as `true` and writes it
+/// back as `true:`.
+pub fn forbidden_triggers(raw: &str) -> Result<Vec<&'static str>> {
+    use serde_yaml::Value;
+    let doc: Value = serde_yaml::from_str(raw).context("invalid workflow YAML")?;
+    let mut declared: BTreeSet<String> = BTreeSet::new();
+    for (key, value) in doc.as_mapping().into_iter().flatten() {
+        let is_on =
+            matches!(key, Value::String(k) if k == "on") || matches!(key, Value::Bool(true));
+        if !is_on {
+            continue;
+        }
+        match value {
+            Value::String(name) => {
+                declared.insert(name.clone());
+            }
+            Value::Sequence(items) => {
+                declared.extend(items.iter().filter_map(Value::as_str).map(str::to_string))
+            }
+            Value::Mapping(map) => {
+                declared.extend(map.keys().filter_map(Value::as_str).map(str::to_string))
+            }
+            _ => {}
+        }
+    }
+    Ok(FORBIDDEN_TRIGGERS
+        .iter()
+        .copied()
+        .filter(|t| declared.contains(*t))
+        .collect())
+}
+
+/// Every `*.yml` and `*.yaml` file under `dir`, recursively, sorted.
+fn workflow_files(dir: &Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut files = Vec::new();
+    let mut pending = vec![dir.to_path_buf()];
+    while let Some(current) = pending.pop() {
+        for entry in fs::read_dir(&current)
+            .with_context(|| format!("cannot read `{}`", current.display()))?
+        {
+            let path = entry?.path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension().is_some_and(|e| e == "yml" || e == "yaml") {
+                files.push(path);
+            }
+        }
+    }
+    files.sort();
+    Ok(files)
+}
+
+pub fn check_workflow_triggers(root: &Path, break_check: bool) -> Result<()> {
+    let files = workflow_files(&root.join(".github/workflows"))?;
+    let mut violations = Vec::new();
+    for path in &files {
+        let rel = path
+            .strip_prefix(root)
+            .unwrap_or(path)
+            .display()
+            .to_string();
+        let raw = fs::read_to_string(path).with_context(|| format!("cannot read `{rel}`"))?;
+        for trigger in forbidden_triggers(&raw).with_context(|| format!("`{rel}`"))? {
+            violations.push(format!("`{rel}` declares `{trigger}`"));
+        }
+    }
+    if !violations.is_empty() {
+        bail!(
+            "workflow-trigger-check: {}. A `pull_request_target` or `workflow_run` run executes as \
+             refs/heads/cerebral, so it would match the ent-parity runner group's workflow restriction and \
+             could put fork-influenced code on the self-hosted pool (CER-2908)",
+            violations.join("; ")
+        );
+    }
+    println!(
+        "  workflow-trigger-check PASS: {} workflow file(s), none declares pull_request_target or workflow_run",
+        files.len()
+    );
+    if break_check {
+        for (form, yaml) in [
+            ("block map", "on:\n  pull_request_target:\n"),
+            ("list", "on: [push, workflow_run]\n"),
+            ("yaml 1.1 true", "true:\n  pull_request_target:\n"),
+        ] {
+            if forbidden_triggers(yaml)?.is_empty() {
+                bail!("workflow-trigger-check --break-check: a forbidden trigger ({form}) was accepted");
+            }
+        }
+        if !forbidden_triggers("on: [push, pull_request, workflow_dispatch]\n")?.is_empty() {
+            bail!("workflow-trigger-check --break-check: a clean workflow was rejected");
+        }
+        println!("  workflow-trigger-check --break-check PASS: forbidden triggers rejected, a clean workflow accepted");
+    }
+    Ok(())
+}
+
 // ───────────────────────── branch-hygiene ─────────────────────────
 
 const BRANCH_PREFIXES: &[&str] = &[
@@ -444,5 +548,100 @@ mod tests {
     #[test]
     fn malformed_projectfile_is_rejected() {
         assert!(validate_projectfile("not: [valid", "1.0.0").is_err());
+    }
+
+    /// Every trigger form, for both forbidden triggers. `true:` is the YAML 1.1 reading of `on:`, which a
+    /// workflow re-serialized by a YAML 1.1 tool (PyYAML, for one) carries.
+    const FORBIDDEN_FORMS: &[(&str, &str, &str)] = &[
+        ("scalar", "on: pull_request_target\n", "pull_request_target"),
+        ("scalar", "on: workflow_run\n", "workflow_run"),
+        (
+            "list",
+            "on: [push, pull_request_target]\n",
+            "pull_request_target",
+        ),
+        ("list", "on: [push, workflow_run]\n", "workflow_run"),
+        (
+            "flow map",
+            "on: {pull_request_target: {types: [opened]}}\n",
+            "pull_request_target",
+        ),
+        (
+            "flow map",
+            "on: {workflow_run: {workflows: [ci]}}\n",
+            "workflow_run",
+        ),
+        (
+            "block map",
+            "on:\n  push:\n  pull_request_target:\n    types: [opened]\n",
+            "pull_request_target",
+        ),
+        (
+            "block map",
+            "on:\n  push:\n  workflow_run:\n    workflows: [ci]\n",
+            "workflow_run",
+        ),
+        (
+            "quoted on",
+            "\"on\":\n  pull_request_target:\n",
+            "pull_request_target",
+        ),
+        ("quoted on", "\"on\": [workflow_run]\n", "workflow_run"),
+        (
+            "yaml 1.1 true",
+            "true:\n  pull_request_target:\n",
+            "pull_request_target",
+        ),
+        (
+            "yaml 1.1 true",
+            "true: [push, workflow_run]\n",
+            "workflow_run",
+        ),
+    ];
+
+    #[test]
+    fn workflow_trigger_every_forbidden_form_is_caught() {
+        for (form, yaml, want) in FORBIDDEN_FORMS {
+            assert_eq!(
+                forbidden_triggers(yaml).unwrap(),
+                vec![*want],
+                "{form}: {yaml:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn workflow_trigger_clean_workflow_passes() {
+        let clean = "on:\n  pull_request:\n    branches: [cerebral]\n  push:\n    branches: [cerebral]\n  workflow_dispatch:\njobs: {}\n";
+        assert!(forbidden_triggers(clean).unwrap().is_empty());
+    }
+
+    #[test]
+    fn workflow_trigger_both_triggers_are_named() {
+        let both = "on:\n  workflow_run:\n    workflows: [ci]\n  pull_request_target:\n";
+        assert_eq!(
+            forbidden_triggers(both).unwrap(),
+            vec!["pull_request_target", "workflow_run"]
+        );
+    }
+
+    /// What serde_yaml 0.9 does with the keys: a YAML 1.2 core schema, so `on` stays a string and only
+    /// `true` is a boolean. The check accepts both readings.
+    #[test]
+    fn serde_yaml_reads_on_as_a_string_and_true_as_a_bool() {
+        let doc: serde_yaml::Value = serde_yaml::from_str("on: push\ntrue: x\n").unwrap();
+        let keys: Vec<serde_yaml::Value> = doc.as_mapping().unwrap().keys().cloned().collect();
+        assert_eq!(
+            keys,
+            vec![
+                serde_yaml::Value::String("on".into()),
+                serde_yaml::Value::Bool(true)
+            ]
+        );
+    }
+
+    #[test]
+    fn workflow_trigger_malformed_yaml_is_rejected() {
+        assert!(forbidden_triggers("on: [push\n").is_err());
     }
 }

@@ -1,0 +1,4 @@
+# Christian (todie) and Allen (LordVoid) own workflow changes. Lanes author as todie, so once the cerebral
+# ruleset requires a code-owner approval, a lane's workflow PR needs Allen's review: ask him through the
+# advisor only, with Christian setting the timing, never directly (CER-2908).
+.github/workflows/** @todie @LordVoid

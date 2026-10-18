@@ -9,6 +9,7 @@ pub const XWORK_STAGES: &[(&str, &[&str])] = &[
     ("projectfile-check", &[]),
     ("stages-check", &[]),
     ("spec-check", &[]),
+    ("workflow-trigger-check", &[]),
     ("branch-hygiene", &[]),
     ("cargo-fmt", &[]),
     ("cargo-clippy", &[]),
@@ -24,5 +25,6 @@ pub const HYGIENE_STAGES: &[&str] = &[
     "projectfile-check",
     "stages-check",
     "spec-check",
+    "workflow-trigger-check",
     "branch-hygiene",
 ];
