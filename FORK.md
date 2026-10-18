@@ -29,7 +29,7 @@ cw.4, cw.4.1 and cw.4.2 are based on untagged upstream `main` at `f41740137f3d3a
 
 - **The default bind is loopback only until the fork has auth** (CER-2924). With no `OPENRIG_BIND_HOST`, the daemon binds `127.0.0.1`; upstream also binds the tailscale IP, and upstream's default is unchanged. Tailnet exposure is opt-in: `OPENRIG_BIND_HOST=<address>` binds exactly that address. Following upstream's explicit behaviour, loopback is then not also bound, and a bind that is neither loopback nor tailnet needs `OPENRIG_AUTH_BEARER_TOKEN`.
 - **LeanSpec and lsc** (CER-2914): fork specs live in `specs/` (index in `specs/README.md`), agents follow the spec-first rule in [AGENTS.md](AGENTS.md), and `.github/workflows/lsc.yml` runs `lsc check specs/` on every pull request, in warn mode for now.
-- **GitHub-hosted runners for CI** (CER-2908 exception): this fork is public and the estate runner group `ent-default` refuses public repositories, so `estate-xwork.yml` and `lsc.yml` run on `ubuntu-latest`. Both are read-only and use no secrets.
+- **GitHub-hosted runners for CI** (CER-2908 exception): this fork is public, and the estate runner group `ent-default` is not workflow-restricted, so fork-PR code must not run there (OPS-1695). Pull-request runs of `estate-xwork.yml` and all runs of `lsc.yml` use `ubuntu-latest`. A push to `cerebral` runs `estate-xwork.yml` on the workflow-restricted `ent-parity` group (scale set ci-parity). Both workflows are read-only and use no secrets. Never add pull_request_target or workflow_run triggers: they run as refs/heads/cerebral, would match the ent-parity workflow restriction, and could put fork-influenced code on the self-hosted pool (CER-2908).
 
 ## Releases
 
