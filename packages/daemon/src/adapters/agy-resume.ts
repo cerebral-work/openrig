@@ -6,6 +6,7 @@ import { shellQuote } from "./shell-quote.js";
 import { agyPostureArg } from "./yolo-mode.js";
 import { observeAgyPermission } from "../domain/permission-drift.js";
 import { classifyAgyScreen, prepareAgyLaunch, AGY_CONVERSATION_ID_RE } from "../domain/agy-runtime.js";
+import { verifyPaneIdleShell, type NativeProcessLister } from "../domain/native-process-lineage.js";
 
 const SHELL_COMMANDS = new Set(["bash", "fish", "nu", "sh", "tmux", "zsh"]);
 
@@ -17,6 +18,7 @@ export interface AgyResumeOptions {
   pollMs?: number;
   maxWaitMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  listProcesses?: NativeProcessLister;
 }
 
 /** The resume launch line: `agy --dangerously-skip-permissions [--mode m] --conversation <uuid>`. */
@@ -93,7 +95,18 @@ export class AgyResumeAdapter {
       if (attempt < attempts - 1) await sleepFn(pollMs);
     }
     if (command && SHELL_COMMANDS.has(command)) {
-      return { ok: false, code: "retry_fresh", message: "Agy resume failed: pane returned to shell instead of entering agy" };
+      // A shell label alone isn't a return to the shell: a launch script still starting agy holds the pane the
+      // same way. Only a proven, stable idle shell ends the resume; anything else keeps the launch for attention.
+      if (await verifyPaneIdleShell({ target: session, tmux: this.tmux,
+        ...(this.options.listProcesses ? { listProcesses: this.options.listProcesses } : {}) })) {
+        return { ok: false, code: "retry_fresh", message: "Agy resume failed: pane returned to shell instead of entering agy" };
+      }
+      return {
+        ok: false,
+        code: "attention_required",
+        message: "Agy resume could not be verified; launch retained: the pane shows a shell that isn't a proven idle shell, so a launch script may still be starting agy.",
+        evidence: content.split("\n").slice(-12).join("\n"),
+      };
     }
     return { ok: false, code: "resume_failed", message: "Agy resume failed: timed out waiting for agy to become active" };
   }

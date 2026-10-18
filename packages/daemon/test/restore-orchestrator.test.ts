@@ -1918,7 +1918,7 @@ describe("RestoreOrchestrator", () => {
   });
 
   it.each(["exact", "requested-codex-type", "requested-legacy-type", "wrong-token", "foreign-process", "replaced-pane", "replaced-process",
-    "chooser", "login", "trust", "mcp", "error", "missing-token",
+    "chooser", "login", "login-footer", "trust", "mcp", "error", "missing-token",
     "hook-token", "hook-equal", "operator-token", "operator-equal", "hook-wrong-type", "hook-late", "hook-join", "hook-join-equal",
     "join-native-loss", "join-native-loss-hook",
     "join-native-loss-exited", "join-native-loss-foreign", "join-native-loss-replacement",
@@ -1944,11 +1944,13 @@ describe("RestoreOrchestrator", () => {
       // not a native launch or proof that Claude consumed a conversation.
       const gates: Record<string, string> = {
         chooser: "Choose a conversation to resume:\n  1. example",
-        login: "Not logged in · Run /login", trust: "Accessing workspace:\n/fixture\n1. Yes, I trust this folder\n2. No, exit",
+        login: "● Not logged in · Please run /login", trust: "Accessing workspace:\n/fixture\n1. Yes, I trust this folder\n2. No, exit",
         mcp: "new MCP servers found in .mcp.json\nSelect any you wish to enable\nEnter to confirm",
         error: "No conversation found",
       };
-      const screen = `${gates[mode] ?? "Restored conversation"}\n❯\u00a0\n  ⏵⏵ bypass permissions on (shift+tab to cycle)`;
+      // A current refusal blocks; the persistent not-logged-in footer under the input box does not (#1405).
+      const screen = `${gates[mode] ?? "Restored conversation"}\n❯\u00a0\n  ⏵⏵ bypass permissions on (shift+tab to cycle)`
+        + (mode === "login-footer" ? "\n                                   Not logged in · Run /login" : "");
       let launched = false, samples = 0;
       const protectedSource = mode.startsWith("hook-") ? "hook" : mode.startsWith("operator-") ? "operator" : null;
       const protectedToken = mode.endsWith("-equal") || mode === "hook-wrong-type" ? token : "protected-other-token";
@@ -2041,7 +2043,7 @@ describe("RestoreOrchestrator", () => {
         expect(db.prepare("SELECT resume_type, resume_token, resume_provenance FROM sessions WHERE id = ?").get(latest.id))
           .toEqual({ resume_type: "claude_id", resume_token: token, resume_provenance: "scrape" });
         expect(db.prepare("SELECT type FROM events WHERE node_id = ? AND type = 'node.startup_ready'").all(node.id)).toEqual([]);
-      } else if (mode === "exact" || mode === "requested-legacy-type" || mode.endsWith("-equal")) {
+      } else if (mode === "exact" || mode === "login-footer" || mode === "requested-legacy-type" || mode.endsWith("-equal")) {
         expect({ status: outcome.status, token: latest.resumeToken }).toEqual({ status: "resumed", token });
         expect(latest.id).not.toBe(old.id);
         expect(latest.startupStatus).toBe("ready");
@@ -2122,6 +2124,126 @@ describe("RestoreOrchestrator", () => {
       // Node should be "resumed"
       expect(result.result.nodes[0]!.status).toBe("resumed");
     }
+  });
+
+  async function restoreStuckClaude(
+    ClaudeCodeAdapter: typeof import("../src/adapters/claude-code-adapter.js").ClaudeCodeAdapter,
+    occupant: "own" | "script" | "other-claude" | "codex",
+    readinessTimeoutMs: number | undefined,
+  ) {
+    const token = "00000000-0000-4000-8000-000000000359";
+    const rig = rigRepo.createRig("slow");
+    db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-slow-one", rig.id, "Dev");
+    const node = rigRepo.addNode(rig.id, "dev.owner", { runtime: "claude-code", podId: "pod-slow-one", cwd: "/fixture" });
+    rigRepo.setRigPermissionPolicy(rig.id, "builtin:yolo");
+    rigRepo.setRigPolicyProvenance(rig.id, { origin: "builtin", resolvedTarget: null, declaringDir: null, launchPosture: "full_bypass" });
+    const old = sessionRegistry.registerSession(node.id, "dev-owner@slow");
+    sessionRegistry.updateStatus(old.id, "running");
+    sessionRegistry.updateResumeToken(old.id, "claude_id", token);
+    db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)")
+      .run(node.id, "[]", "[]", "[]", "claude-code");
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    sessionRegistry.updateStatus(old.id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id = ?").run(node.id);
+
+    const rows = managedClaudeRows(occupant === "other-claude" ? "some-other-session" : token);
+    if (occupant === "script") rows.pop();
+    if (occupant === "codex") rows[2] = { ...rows[2]!, executableName: "codex", command: "codex resume some-codex-session" };
+    let launched = false;
+    const tmux = {
+      ...mockTmux(),
+      createSession: vi.fn(async () => { launched = true; return { ok: true as const }; }),
+      hasSession: vi.fn(async () => launched),
+      getPaneCommand: vi.fn(async () => "sh"),
+      // Claude's screen is never one any probe recognises.
+      capturePaneContent: vi.fn(async () => "something that no probe knows"),
+      listPanes: vi.fn(async () => [{ id: "%1", index: 0, cwd: "/fixture", width: 80, height: 24, active: true }]),
+    } as unknown as TmuxAdapter;
+    const listProcesses = async () => rows;
+    const adapter = new ClaudeCodeAdapter({ tmux, listProcesses, sleep: async () => {}, readinessTimeoutMs,
+      fsOps: { exists: () => false, readFile: () => "", writeFile: () => {}, mkdirp: () => {}, copyFile: () => {} },
+    });
+    const result = await createOrchestrator({ tmux, listProcesses }).restore(snap.id, { adapters: { "claude-code": adapter } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("restore did not run");
+    const startup = db.prepare("SELECT resume_token, startup_status, resume_last_verified FROM sessions WHERE node_id = ? ORDER BY created_at DESC, id DESC LIMIT 1").get(node.id) as
+      { resume_token: string | null; startup_status: string; resume_last_verified: string | null };
+    return { token, restored: result.result.nodes[0]!, tmux, rows, startup };
+  }
+
+  // The real restore -> startup -> Claude adapter path for a resume that stays unresolved: whose launch is kept, and whether its
+  // conversation is recorded as attempted (the token on the new row) without being certified (no provenance, nothing verified).
+  it.each([
+    ["own Claude, 1 s setting", "own", 1_000],
+    ["own Claude, 4 s setting", "own", 4_000],
+    ["own Claude, default setting", "own", undefined],
+    ["launch script only (nothing seen yet), 1 s setting", "script", 1_000],
+  ] as const)("a slow Claude resume keeps the pane and records the attempted token without certifying it: %s", async (_label, occupant, readinessTimeoutMs) => {
+    const { ClaudeCodeAdapter } = await import("../src/adapters/claude-code-adapter.js");
+    const { token, restored, tmux, rows, startup } = await restoreStuckClaude(ClaudeCodeAdapter, occupant, readinessTimeoutMs);
+    expect(rows.length).toBeGreaterThan(0);
+    expect(restored.status).toBe("attention_required");
+    expect(startup).toEqual({ resume_token: token, startup_status: "attention_required", resume_last_verified: null });
+    // Kept, with no fresh fallback: one launch, no kill, no second launch without the token.
+    expect(tmux.createSession).toHaveBeenCalledTimes(1);
+    expect(tmux.killSession).not.toHaveBeenCalled();
+    expect(tmux.sendText).toHaveBeenCalledTimes(1);
+    expect(tmux.sendText).toHaveBeenCalledWith("dev-owner@slow", expect.stringContaining(`--resume '${token}'`));
+  });
+
+  it.each([
+    ["another conversation's Claude, 1 s setting", "other-claude", 1_000],
+    ["another conversation's Claude, default setting", "other-claude", undefined],
+    ["a Codex under the shell, 1 s setting", "codex", 1_000],
+    ["a Codex under the shell, default setting", "codex", undefined],
+  ] as const)("a different occupant is not a slow start, so the failure stays and no token is recorded: %s", async (_label, occupant, readinessTimeoutMs) => {
+    const { ClaudeCodeAdapter } = await import("../src/adapters/claude-code-adapter.js");
+    const { restored, tmux, startup } = await restoreStuckClaude(ClaudeCodeAdapter, occupant, readinessTimeoutMs);
+    expect(restored.status).not.toBe("attention_required");
+    expect(restored.status).not.toBe("resumed");
+    expect(startup.resume_token).toBeNull();
+    expect(startup.resume_last_verified).toBeNull();
+    expect(tmux.sendText).toHaveBeenCalledTimes(1);
+  });
+
+  it("restore threads no shared allowance: each seat's launch is handed only its own request", async () => {
+    const rig = rigRepo.createRig("test-rig");
+    db.prepare("INSERT INTO pods (id, rig_id, label) VALUES (?, ?, ?)").run("pod-slow", rig.id, "Dev");
+    const sessions: string[] = [];
+    for (const name of ["a", "b", "c"]) {
+      const node = rigRepo.addNode(rig.id, `dev.${name}`, { runtime: "claude-code", podId: "pod-slow" });
+      const session = sessionRegistry.registerSession(node.id, `dev-${name}@test-rig`);
+      sessionRegistry.updateStatus(session.id, "running");
+      sessionRegistry.updateResumeToken(session.id, "claude_id", `slow-token-${name}`);
+      db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
+      sessions.push(session.id);
+    }
+    const snap = snapshotCapture.captureSnapshot(rig.id, "test");
+    for (const id of sessions) sessionRegistry.updateStatus(id, "exited");
+    db.prepare("DELETE FROM bindings WHERE node_id IN (SELECT id FROM nodes WHERE rig_id = ?)").run(rig.id);
+
+    // A slow seat's wait is its own per-seat bound, decided inside the adapter; nothing restore-wide is handed down.
+    const seen: Array<Record<string, unknown>> = [];
+    const launchSpy = vi.fn(async (_binding: unknown, opts: Record<string, unknown>) => {
+      seen.push(opts);
+      return { ok: false as const, error: "Claude resume did not finish; the launch was kept", recovery: "attention_required" as const, evidence: "still starting" };
+    });
+    const mockAdapter = {
+      runtime: "claude-code",
+      listInstalled: vi.fn(async () => []),
+      project: vi.fn(async () => ({ projected: [], skipped: [], failed: [] })),
+      deliverStartup: vi.fn(async () => ({ delivered: 0, failed: [] })),
+      checkReady: vi.fn(async () => ({ ready: true })),
+      launchHarness: launchSpy,
+    };
+
+    const orch = createOrchestrator({ claude: mockClaudeResume(), listProcesses: nativeLineage("claude-code", "slow-token-a") });
+    const result = await orch.restore(snap.id, { adapters: { "claude-code": mockAdapter } });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.result.nodes.map((node) => node.status)).toEqual(["attention_required", "attention_required", "attention_required"]);
+    expect(seen).toHaveLength(3);
+    for (const opts of seen) expect(Object.keys(opts).sort()).toEqual(["name", "resumeToken"]);
   });
 
   it("pod-aware chooser attention preserves the attempted native token for no-input reconciliation", async () => {
