@@ -228,6 +228,20 @@ describe("ConfigStore — extended namespaces (User Settings v0)", () => {
     ["queue.blocker_resume_coalesce_minutes", "OPENRIG_QUEUE_BLOCKER_RESUME_COALESCE_MINUTES"],
     ["queue.parked_owner_wake_grace_minutes", "OPENRIG_QUEUE_PARKED_OWNER_WAKE_GRACE_MINUTES"],
   ] as const;
+  it("queue.stuck_sweep_quiet_kinds: an explicitly empty value is no quiet kinds (B2 off), from the file and the environment; unset is the default", () => {
+    const key = "queue.stuck_sweep_quiet_kinds";
+    const store = new ConfigStore(configPath);
+    expect(store.resolveWithSource(key)).toMatchObject({ value: "dangling-closure,undelivered-wake", source: "default" });
+    store.set(key, "");
+    expect(store.resolveWithSource(key)).toMatchObject({ value: "", source: "file" });
+    process.env["OPENRIG_QUEUE_STUCK_SWEEP_QUIET_KINDS"] = "";
+    try {
+      expect(new ConfigStore(configPath).resolveWithSource(key)).toMatchObject({ value: "", source: "env" });
+    } finally {
+      delete process.env["OPENRIG_QUEUE_STUCK_SWEEP_QUIET_KINDS"];
+    }
+  });
+
   it("accepts 0 (off) to 1440 for the churn minute keys, from the file and the environment", () => {
     const store = new ConfigStore(configPath);
     for (const [key, envName] of CHURN_MINUTE_KEYS) {

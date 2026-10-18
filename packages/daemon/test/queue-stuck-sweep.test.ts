@@ -561,6 +561,32 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
       expect(created[0]!.nudge).not.toBe(false);
     });
 
+    it("an explicitly empty quiet-kinds setting turns B2 off: both self-resolving kinds wake again; unset keeps them quiet", async () => {
+      const ENV = "OPENRIG_QUEUE_STUCK_SWEEP_QUIET_KINDS";
+      const sweepNewFindings = async () => {
+        const failed = await mkRow();
+        // Older than A's grace, so A does not hold it while the closing row's write counts as activity.
+        setNudgeResult(failed.qitemId, "failed:tmux session not found", new Date(Date.now() - 11 * 60_000));
+        const closed = await mkRow();
+        await repo.update({ qitemId: closed.qitemId, actorSession: "worker@r", state: "done", closureReason: "handed_off_to", closureTarget: "next@r" });
+        const create = vi.spyOn(repo, "create");
+        await runSweep({ resolveOrchestrator: () => "orch@r" });
+        const created = findingCreates(create).map((input) => ({
+          kind: (input.tags ?? []).find((tag) => /^stuck-sweep:[a-z-]+:/.test(tag))!.split(":")[1],
+          nudge: input.nudge,
+        }));
+        create.mockRestore();
+        return created.sort((x, y) => x.kind.localeCompare(y.kind));
+      };
+      try {
+        process.env[ENV] = "";
+        expect(await sweepNewFindings()).toEqual([{ kind: "dangling-closure", nudge: undefined }, { kind: "undelivered-wake", nudge: undefined }]);
+      } finally {
+        delete process.env[ENV];
+      }
+      expect(await sweepNewFindings()).toEqual([{ kind: "dangling-closure", nudge: false }, { kind: "undelivered-wake", nudge: false }]);
+    });
+
     it("the quiet kinds are the configured list", async () => {
       const row = await mkRow();
       failNudge(row.qitemId);

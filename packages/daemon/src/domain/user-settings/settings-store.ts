@@ -727,6 +727,10 @@ function coerceValue(key: SettingsValidKey, raw: string, workspaceRoot: string):
 // the CLI rejects.
 // Queue churn A-D — the stuck-sweep finding kinds created without a wake (comma list; empty = every kind wakes).
 const STUCK_SWEEP_FINDING_KINDS = ["unconsumed-wait", "overdue-claim", "stalled-after-claim", "undelivered-wake", "unclaimed-obligation", "dangling-closure"];
+/** Keys whose explicitly empty value means "none" rather than "unset": an empty queue.stuck_sweep_quiet_kinds is no
+ *  quiet kinds, so every finding kind wakes (B2 off). */
+const EXPLICIT_EMPTY_KEYS: ReadonlySet<string> = new Set(["queue.stuck_sweep_quiet_kinds"]);
+
 function stuckSweepKindsConstraint(raw: string): void {
   const unknown = (raw ?? "").split(",").map((kind) => kind.trim()).filter(Boolean).filter((kind) => !STUCK_SWEEP_FINDING_KINDS.includes(kind));
   if (unknown.length > 0) {
@@ -1031,8 +1035,11 @@ export class SettingsStore {
     // env, drop the override + warn so the operator sees the
     // misconfiguration on daemon stderr (which captures-pane / log
     // surfaces). Bad env never poisons the resolved value.
-    const envVal = readEnv(ENV_MAP[key].primary, ENV_MAP[key].legacy);
-    if (envVal !== undefined && envVal !== "") {
+    // Queue churn Q1 (cerebral-work fork): for a key whose empty value means "none", an explicitly empty value
+    // (environment or file) is a value; only an absent one falls back to the default.
+    const explicitEmpty = EXPLICIT_EMPTY_KEYS.has(key);
+    const envVal = explicitEmpty && process.env[ENV_MAP[key].primary] === "" ? "" : readEnv(ENV_MAP[key].primary, ENV_MAP[key].legacy);
+    if (envVal !== undefined && (envVal !== "" || explicitEmpty)) {
       try {
         return { value: coerceAndValidate(key, envVal, wr), source: "env", defaultValue };
       } catch (err) {
@@ -1043,7 +1050,7 @@ export class SettingsStore {
       }
     }
     const fileVal = getNestedValue(fc, KEY_TO_PATH[key]);
-    if (fileVal !== undefined && fileVal !== null && fileVal !== "") {
+    if (fileVal !== undefined && fileVal !== null && (fileVal !== "" || explicitEmpty)) {
       const legacyDefault = deriveLegacyWorkspaceDefault(key, wr);
       if (legacyDefault !== null && fileVal === legacyDefault) {
         return { value: defaultValue, source: "default", defaultValue };
