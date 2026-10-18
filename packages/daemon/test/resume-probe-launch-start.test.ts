@@ -47,4 +47,20 @@ describe("resume probe: a shell before the launch started is not a return to the
     expect(await probeWith(["bash", "awk", "bash"], refused)).toBe("inconclusive");
     expect(await probeWith(["node", "bash"], refused)).toBe("inconclusive");
   });
+
+  // Review r2 L2 on #23: only the scrub's own refusal line counts, and only while Claude isn't the foreground process,
+  // so a live Claude whose visible history mentions the refusal is still judged on its own state.
+  it("a resumed Claude whose history mentions the refusal is resumable, even at a line start", async () => {
+    const quoted = "> why did the launch print openrig: seat_env_refused (step: re-list the environment)?\n";
+    const atLineStart = "openrig: seat_env_refused (step: re-list the environment; names: X); the command was not run\n";
+    expect(await probeWith(["bash", "claude"], quoted)).toBe("resumable");
+    // The probe pane is a fresh session: Claude's history is on screen only while Claude is the foreground process.
+    expect(await probeWith(["claude"], atLineStart)).toBe("resumable");
+    // An npm-installed Claude runs as node and isn't judged resumed by its name: the line in its history is still no refusal.
+    expect(await probeWith(["node", "claude"], atLineStart)).toBe("resumable");
+  });
+
+  it("the string anywhere but at a line start is no refusal: Claude ran and the pane returned to a shell", async () => {
+    expect(await probeWith(["node", "bash"], "$ grep seat_env_refused notes.txt\n$ ")).toBe("not_resumable");
+  });
 });

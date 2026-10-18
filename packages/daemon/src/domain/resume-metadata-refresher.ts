@@ -414,10 +414,6 @@ export class ResumeMetadataRefresher {
       for (let attempt = 0; attempt < attempts; attempt++) {
         const paneCommand = await this.tmuxAdapter.getPaneCommand(probeSession);
         const paneContent = (await this.tmuxAdapter.capturePaneContent(probeSession, 80)) ?? "";
-        // The allow-list scrub refused the launch, so Claude never ran: the token was not tested.
-        if (paneContent.includes("seat_env_refused")) {
-          return "inconclusive";
-        }
         const result = assessNativeResumeProbe({
           runtime: "claude-code",
           paneCommand,
@@ -426,6 +422,11 @@ export class ResumeMetadataRefresher {
 
         if (result.status === "resumed") {
           return "resumable";
+        }
+        // The allow-list scrub refused the launch (its own line, with Claude not in the foreground), so Claude never ran:
+        // the token was not tested. A live Claude's history that merely mentions the refusal is judged above.
+        if (!(paneCommand && CLAUDE_RUNTIME_COMMANDS.has(paneCommand)) && /^openrig: seat_env_refused \(step:/m.test(paneContent)) {
+          return "inconclusive";
         }
         const notStartedYet = result.status === "failed" && result.code === "returned_to_shell" && !started;
         if (result.status === "failed" && !notStartedYet) {
