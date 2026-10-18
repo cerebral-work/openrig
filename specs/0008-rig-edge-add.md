@@ -84,7 +84,6 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 - REQ-0008-15: If `rig edge add` writes no edge row (an existing edge, or a rejection), then the daemon shall record no `rig.edge_added` event.
 - REQ-0008-16: When any path stores an edge identical in rig, source, target and kind to a stored edge, the daemon shall keep the stored edge and write no row.
 - REQ-0008-17: When migration `900_edges_unique` runs, it shall delete every duplicate edge row except the earliest of its group, and record one `rig.edge_removed` event for each deleted row, before adding a unique index on (rig, source, target, kind).
-- REQ-0008-18: The daemon shall number fork-only migrations from 900 to 999.
 
 ## Plan
 
