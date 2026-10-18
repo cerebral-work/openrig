@@ -101,20 +101,24 @@ export class QueueWakeRepository {
           AND transition_id > ?
         ORDER BY transition_id DESC LIMIT 1`,
     ).get(qitemId, armed.wake_ref, armed.transition_id) as WakeRow | undefined;
-    const state = (this.db.prepare(
-      "SELECT state FROM queue_items WHERE qitem_id = ?",
-    ).get(qitemId) as { state: string } | undefined)?.state;
+    const item = this.db.prepare(
+      "SELECT state, blocked_on FROM queue_items WHERE qitem_id = ?",
+    ).get(qitemId) as { state: string; blocked_on: string | null } | undefined;
+    const state = item?.state;
     const kind = armed.wake_kind as ParkWakeKind;
     const expiresAt = this.wakeExpiry(qitemId, kind, armed.wake_ref);
     const repeating = this.isRepeatingTimer(armed.wake_ref);
     // A retained attempt (held back by the typing guard) was not delivered, so it doesn't consume a one-shot wake:
     // the backstop is still live and nothing awaits the owner. The attempt stays in the history.
     const heldBack = fired?.delivery_status === "retained" && !repeating;
+    // A blocker wake lifts the park only while its row is still the row's blocker. A re-park that switches blocked_on
+    // without arming a wake leaves the old record behind, and that record must not read live (review-r2 I2 on #32).
+    const currentBlocker = kind !== "blocker" || item?.blocked_on === armed.wake_ref;
     return {
       kind,
       ref: armed.wake_ref,
       phase: fired ? "fired" : "armed",
-      live: fired && !repeating && !heldBack ? false : this.isLive(kind, armed.wake_ref),
+      live: fired && !repeating && !heldBack ? false : currentBlocker && this.isLive(kind, armed.wake_ref),
       deliveryStatus: fired?.delivery_status ?? null,
       unconsumed: fired !== undefined && !heldBack && state === "blocked",
       ...(repeating ? { recoveryOwner: "queue-stuck-sweep" as const } : {}),

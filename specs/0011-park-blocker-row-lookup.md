@@ -59,6 +59,8 @@ A parked queue row names its blocker in `blocked_on`. The daemon decided what a 
      - a gate restored from a claim (the row no longer carries it): the claim ended that park and its wake (review W1);
      - a still-blocked row whose plain park timer already fired (`park_timer_fired_once`), re-parked on its blocker, with or without naming it.
      Either way the kept blocker would lift nothing. A still-parked re-park whose wake is live keeps it, and an FR-6 human park is unaffected.
+   - **A blocker wake is live only while its row is still the parked row's blocker** (`blocked_on`) and is itself live. A non-strict re-park that switches the blocker to a typed gate arms no wake, so the old blocker record stops reading live (review-r2 I2 on #32). The update route, the parked query's healthy flag and the wake status all read this one rule.
+   - An operator watchdog attached to the park survives a claim and still targets the row, so a claim-restored park that keeps it has a live wake and needs no new one (review-r2 P1).
 5. **The same row lookup everywhere the prefix gated behaviour:**
    - the park's blocker wake;
    - the waiting projection's blocker owner and state;
@@ -88,6 +90,7 @@ A parked queue row names its blocker in `blocked_on`. The daemon decided what a 
 - REQ-0011-13: If a park from the update route names a typed gate or a seat address and carries no wake, then the daemon shall refuse it.
 - REQ-0011-14: When `rig watchdog list` names the rows a park timer serves, it shall name only rows whose current park uses that timer.
 - REQ-0011-15: If a park from the update route keeps its blocker while the row's current wake is not live and carries no wake, then the daemon shall refuse it unless the blocker is a live row.
+- REQ-0011-16: While a row's latest blocker wake names a row other than its current blocker, the daemon shall report that wake as not live.
 
 ## Plan
 
@@ -125,6 +128,8 @@ cd packages/cli && npx vitest run test/queue.test.ts test/queue-update-metadata-
 - `rig watchdog list` doesn't name a resumed row as served;
 - a claimed row re-blocked with no blocker named keeps its retained gate (`queue-claim-blocker`). A typed gate needs a wake for that: without one it is refused, with one it is restored. A restored live row needs none;
 - a still-blocked row whose park timer fired is refused when re-parked on its blocker without a wake (named or not), and re-armed with one; with a live timer, the same re-park needs no wake;
+- a row parked on a live row, then switched by a non-strict re-park to a typed gate with no wake: its old blocker wake reads not live, the parked query marks the row unhealthy, and a bare re-park from the route is refused until it carries a wake (`queue-claim-blocker`, I2). While still parked on the live row, the wake is live and the row healthy;
+- a claim-restored park whose operator watchdog is still attached is re-parked without a wake (P1); a typed gate parked without a wake on a non-strict path needs one on a re-park from the route (P2);
 - end to end through the real CLI, loopback HTTP and the real route and repository (`queue-update-metadata-reject-cli`): `rig queue block` and `rig queue update --blocked-on` refuse bare free text and an unknown prefix with the accepted forms, refuse a done custom row, and accept a live one.
 
 Each fix, broken on purpose once, turns its test red. The existing suites that park on authored names or human addresses stay green.
