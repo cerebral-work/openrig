@@ -133,6 +133,9 @@ export interface SeatHandoverInput {
 /** A revert's commit found the revert slot replaced or cleared since the revert was built. */
 class RevertSlotMovedError extends Error {}
 
+/** What a failed runtime change leaves the operator to do: nothing, check whether the predecessor still runs, or relaunch. */
+type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch";
+
 function runtimeSideOf(state: RevertBefore): RuntimeSide {
   return {
     runtime: state.runtime, model: state.model, cwd: state.cwd, effort: state.effortChoice ?? state.effort,
@@ -706,7 +709,7 @@ export class SeatHandoverService {
       const started = await this.startTargetMember(change, node.id, latestSession.session_name);
       if (!started.ok) {
         return this.failChange(change, { ok: false, code: "runtime_change_target_startup_failed", message: started.message,
-          guidance: "Nothing about the seat changed and the predecessor still runs. Fix the target member's startup, then retry." }, "target-startup", false);
+          guidance: "Nothing about the seat changed and the predecessor still runs. Fix the target member's startup, then retry." }, "target-startup", "none");
       }
     }
     // The successor must carry its own generation from its first byte. This reservation writes no
@@ -741,7 +744,8 @@ export class SeatHandoverService {
         // retiree wholly untouched; a failure after the in-place respawn leaves the seat re-wakeable from
         // its provider session file (never destroyed). Inspect tmux/daemon logs and retry.
         guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
-      }, `create-successor:${launch.step}`, launch.replacementStarted);
+      }, `create-successor:${launch.step}:${launch.code}`,
+        launch.code === "retiree_not_terminated" ? "check-seat" : launch.replacementStarted ? "relaunch" : "none");
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
@@ -756,7 +760,7 @@ export class SeatHandoverService {
       if (failedFiles.length > 0) {
         await this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId);
         return this.failChange(change, { ok: false, code: "context_delivery_failed", message: `Handover failed at step "deliver-startup-files": ${failedFiles.join("; ")}`,
-          guidance: "The node is unchanged." }, "deliver-startup-files", true);
+          guidance: "The node is unchanged." }, "deliver-startup-files", "relaunch");
       }
     }
 
@@ -799,7 +803,7 @@ export class SeatHandoverService {
           code: "context_delivery_failed",
           message: `Handover failed at step "deliver-restore-packet": ${delivered.message}`,
           guidance: "The successor candidate was unwound and the seat's binding is unchanged; the seat is re-wakeable from its provider session file. Retry after tmux delivery is healthy.",
-        }, "deliver-restore-packet", true);
+        }, "deliver-restore-packet", "relaunch");
       }
       contextDelivered = true;
     }
@@ -867,7 +871,7 @@ export class SeatHandoverService {
           code: "context_delivery_failed",
           message: `Handover failed at step "deliver-rebuild-priming": ${delivered.message}`,
           guidance: "The successor candidate was unwound and the seat's binding is unchanged; the seat is re-wakeable from its provider session file. Retry after tmux delivery is healthy.",
-        }, "deliver-rebuild-priming", true);
+        }, "deliver-rebuild-priming", "relaunch");
       }
       contextDelivered = true;
     }
@@ -926,7 +930,7 @@ export class SeatHandoverService {
   }): Promise<SeatHandoverResult> {
     const fail = async (result: SeatHandoverResult): Promise<SeatHandoverResult> => {
       if (input.cleanup) await input.cleanup();
-      return this.failChange(input.change, result, "verify-and-commit", true);
+      return this.failChange(input.change, result, "verify-and-commit", "relaunch");
     };
 
     const discovered = this.discoveryRepo.getDiscoveredSession(input.discoveredRef);
@@ -1426,17 +1430,23 @@ export class SeatHandoverService {
 
   /** A failed runtime change or revert is recorded with its code and step only. The message is never stored: a failed
    *  respawn's message can carry the env it was given (review r2 F3). The node is untouched. */
-  private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult, step: string, replacementStarted: boolean): SeatHandoverResult {
-    // The recovery depends on whether the in-place respawn ran (review r2, N1). Before it, the seat is untouched and
-    // its predecessor still runs, so there is nothing to recover. After it, the canonical session is live and may hold
-    // the target runtime while the node still records the old one; a plain --fresh launch refuses a live session, so
-    // the recovery names --stop.
+  private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult, step: string, recovery: RuntimeChangeRecovery): SeatHandoverResult {
+    // The recovery depends on how far the cutover got (review r2, N1 and N1b). Before it, the seat is untouched and its
+    // predecessor still runs, so there is nothing to recover. If ending the retiree failed, it may have been signalled
+    // and its pane is left set to stay open, so the operator checks whether it still runs. After the respawn, the
+    // canonical session is live and may hold the target runtime while the node still records the old one; a plain
+    // --fresh launch refuses a live session, so the recovery names --stop.
     if (change && !result.ok && "guidance" in result) {
-      result = { ...result, guidance: replacementStarted
-        ? `The node still records ${change.from.runtime ?? "its previous runtime"}. Relaunch the seat under it with: `
-          + `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"`
-        : `The seat was not changed: the failure came at ${step}, before the in-place respawn, and its predecessor still runs. `
-          + "No recovery is needed; fix the cause and retry." } as SeatHandoverResult;
+      const previous = change.from.runtime ?? "its previous runtime";
+      const relaunch = `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"`;
+      result = { ...result, guidance: recovery === "relaunch"
+        ? `The node still records ${previous}. Relaunch the seat under it with: ${relaunch}`
+        : recovery === "check-seat"
+          ? `The predecessor may have been signalled (TERM, then KILL) at ${step} and was not seen to exit; its pane is set to `
+            + `stay open, and the node still records ${previous}. Check the seat with rig capture ${change.seatRef}: if the `
+            + `predecessor still runs, no recovery is needed; if it exited, relaunch with: ${relaunch}`
+          : `The seat was not changed: the failure came at ${step}, before the in-place respawn, and its predecessor still runs. `
+            + "No recovery is needed; fix the cause and retry." } as SeatHandoverResult;
     }
     if (change && !result.ok) {
       const failure = `${result.code} at ${step}`;

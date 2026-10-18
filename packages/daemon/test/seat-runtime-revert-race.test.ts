@@ -109,7 +109,7 @@ function fixture(opts: { guard?: boolean } = {}) {
   const ledger = () => db.prepare("SELECT kind, outcome FROM node_runtime_changes WHERE node_id = ? ORDER BY created_at, rowid").all(node.id);
   const slot = () => db.prepare("SELECT change_id FROM node_runtime_revert_slots WHERE node_id = ?").get(node.id) as { change_id: string } | undefined;
   return {
-    db, node, service, change, held, held1, ledger, slot, launches, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn> },
+    db, node, service, change, held, held1, ledger, slot, launches, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn>; isPaneDead: ReturnType<typeof vi.fn> },
     hold: () => { holdNext = true; },
   };
 }
@@ -172,5 +172,33 @@ describe("review r2 F2: runtime-revert races", () => {
     expect(result.guidance).toContain("resolve_pane");
     expect(result.guidance).toContain("was not changed");
     expect(result.guidance).not.toContain("--fresh --stop");
+  });
+
+  it("N1b: a retiree that was not seen to exit gets check-the-seat advice, not 'not changed'", async () => {
+    const f = fixture();
+    f.tmux.isPaneDead.mockResolvedValue(false); // TERM and KILL sent, the pane never reported dead
+    const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(f.tmux.respawnPane).not.toHaveBeenCalled();
+    expect(result.guidance).not.toContain("was not changed");
+    expect(result.guidance).toContain("not seen to exit");
+    expect(result.guidance).toContain("rig capture dev-impl@rt-rig");
+    expect(result.guidance).toContain("rig seat launch dev-impl@rt-rig --fresh --stop");
+  });
+
+  it("the ledger step names the launcher's code, so a retiree failure and a respawn failure differ (code and step only)", async () => {
+    const failureOf = async (arrange: (f: ReturnType<typeof fixture>) => void) => {
+      const f = fixture();
+      arrange(f);
+      const result = await f.service.handover({ seatRef: "dev-impl@rt-rig", reason: "r", source: "fresh", caller: OPERATOR,
+        runtimeChange: f.change("claude-code", "claude-opus-5-5") });
+      expect(result.ok).toBe(false);
+      return (f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id) as { failure: string }).failure;
+    };
+    const retiree = await failureOf((f) => { f.tmux.isPaneDead.mockResolvedValue(false); });
+    const respawn = await failureOf((f) => { f.tmux.respawnPane.mockResolvedValue({ ok: false, code: "respawn_failed", message: "tmux said no" }); });
+    expect(retiree).toBe("successor_create_failed at create-successor:create_successor:retiree_not_terminated");
+    expect(respawn).toBe("successor_create_failed at create-successor:create_successor:respawn_failed");
   });
 });
