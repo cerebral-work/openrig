@@ -50,17 +50,18 @@ describe("edges: at most one row per (rig, source, target, kind) (CER-3002)", ()
     add("e-4", "n-b", "n-c", "can_observe");  // kept: earliest of two
     add("e-5", "n-b", "n-c", "can_observe");
     add("e-6", "n-a", "n-c", "delegates_to"); // unique, untouched
+    add("e-7", "n-a", "n-b", "can_observe");  // e-1's pair, another kind: a different edge, kept (review r1 F1)
 
     migrate(db, ALL_MIGRATIONS);
 
-    expect(db.prepare("SELECT id FROM edges ORDER BY id").all()).toEqual([{ id: "e-1" }, { id: "e-4" }, { id: "e-6" }]);
+    expect(db.prepare("SELECT id FROM edges ORDER BY id").all()).toEqual([{ id: "e-1" }, { id: "e-4" }, { id: "e-6" }, { id: "e-7" }]);
     const by = { session: "migration 900_edges_unique", provenance: "migration" };
     expect(removedEvents()).toEqual([
       { eventRigId: "r-1", type: "rig.edge_removed", rigId: "r-1", edgeId: "e-2", from: "orch.lead", to: "dev.impl", kind: "delegates_to", by },
       { eventRigId: "r-1", type: "rig.edge_removed", rigId: "r-1", edgeId: "e-3", from: "orch.lead", to: "dev.impl", kind: "delegates_to", by },
       { eventRigId: "r-1", type: "rig.edge_removed", rigId: "r-1", edgeId: "e-5", from: "dev.impl", to: "dev.qa", kind: "can_observe", by },
     ]);
-    expect(() => add("e-7", "n-a", "n-b", "delegates_to")).toThrow(/UNIQUE/);
+    expect(() => add("e-8", "n-a", "n-b", "delegates_to")).toThrow(/UNIQUE/);
   });
 
   it("a binary without 900 (a cw.4.3 rollback) still migrates a database where 900 ran, and the index stays", () => {

@@ -64,8 +64,8 @@ export type RemoveRigEdgeResult =
   | { ok: false; code: "rig_not_found" | "rig_archived" | "node_not_found" | "invalid_kind" | "edge_not_found"; error: string };
 
 /** CER-2981 (spec 0008): remove an edge between two nodes of a live rig, the reverse of `addRigEdge`, with the same checks
- *  in the same order. An edge's identity to the operator is (from, to, kind), so every row matching it is deleted (the
- *  table allows duplicates), each with its own `rig.edge_removed` event naming the caller, in one transaction; no node,
+ *  in the same order. An edge's identity to the operator is (from, to, kind), so every row matching it is deleted (a
+ *  database without CER-3002's unique index can hold duplicates), each with its own `rig.edge_removed` event naming the caller, in one transaction; no node,
  *  session, binding or pane changes. No matching row is `edge_not_found`, never success. A removed `delegates_to` edge
  *  stops counting for queue-owner routing and `rig whoami` at once. */
 export function removeRigEdge(

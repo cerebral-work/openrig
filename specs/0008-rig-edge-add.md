@@ -43,7 +43,7 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 13. **No validity rule applies.** Edges are optional and only shape-checked, and removing one cannot create a cycle. Removing a cycle edge lets the rig grow again and lets restore launch the seats it held.
 14. **Runtime effect:** a removed `delegates_to` edge stops counting for `queue-owner.ts` routing and `rig whoami` at once.
 15. **Authorization** is the same as `rig edge add`: the `/api/*` `browserBoundary`. The add records `rig.edge_added` (item 3, CER-3001) and the remove `rig.edge_removed`, so both directions are audited the same way.
-16. **CLI:** `rig edge remove <rig-id> <from> <to> --kind <kind> [--json]`.
+16. **CLI:** `rig edge remove <rig-id> <from> <to> --kind <kind> [--json]`. Docs: `docs/reference/rig-spec.md` and the capability map describe it.
 
 ### At most one row per edge (CER-3002)
 
@@ -63,7 +63,7 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
       - in materialize (expand, `rig add`) and `instantiate`, the transaction rolls back and the request fails, instead of storing a duplicate;
       - in `instantiateOnce` (`rig up`) the best-effort catch skips the duplicate;
       - `rig edge add` checks for the stored edge first and is unaffected.
-    - **No restore:** a rollback does not bring back the duplicate rows 900 removed; their `rig.edge_removed` events record them. Docs: `docs/reference/rig-spec.md` and the capability map describe it.
+    - **No restore:** a rollback does not bring back the duplicate rows 900 removed; their `rig.edge_removed` events record them.
 
 ## Requirements
 
