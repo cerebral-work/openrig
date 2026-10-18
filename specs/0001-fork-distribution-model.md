@@ -23,6 +23,7 @@ references: []
 6. **GitButler** manages the main checkout with `origin/cerebral` as the target; the `gitbutler/workspace` ref is a valid branch.
 7. **Workflow triggers (CER-2908).** No workflow under `.github/workflows/` may declare a `pull_request_target` or `workflow_run` trigger. Such a run executes as `refs/heads/cerebral`, so it would match the `ent-parity` runner group's workflow restriction and could put fork-influenced code on the self-hosted pool.
    - The `workflow-trigger-check` gate parses each workflow's `on` in every form: scalar, list or map. It reads the key `on` both as a string and as YAML 1.1's boolean `true`.
+   - The gate fails closed on anything it cannot read: a custom YAML tag anywhere in the file, a merge key `<<` (GitHub rejects them), no readable `on` key, an `on` that is empty, a number or a bool, and a list entry or map key under `on` that is not a trigger name. Each finding names the file, the construct and the fix. A test pins that the repository's own workflows pass.
    - It runs in `cargo xwork`. A pull request run is an early warning; the trusted push run on `cerebral` is the alarm.
    - `.github/CODEOWNERS` makes `@todie` and `@LordVoid` the owners of `.github/workflows/**`.
 
@@ -39,6 +40,7 @@ references: []
 - REQ-0001-09: Where a change is generally useful, the maintainer shall offer a clean copy to upstream from an `up/<feature>` branch cut from `upstream/main`.
 - REQ-0001-10: The branch-hygiene gate shall reject any current branch that is not `main`, `cerebral`, `gitbutler/workspace`, or a `<type>/<slug>` branch.
 - REQ-0001-11: If a file under `.github/workflows/` declares a `pull_request_target` or `workflow_run` trigger in any `on` form, then the workflow-trigger-check gate shall fail, naming the file and the trigger.
+- REQ-0001-12: If a file under `.github/workflows/` uses a custom YAML tag or a merge key, has no readable `on` key, or has an `on` value or entry that is not a trigger name, then the workflow-trigger-check gate shall fail, naming the file, the construct and the fix.
 
 ## Plan
 
