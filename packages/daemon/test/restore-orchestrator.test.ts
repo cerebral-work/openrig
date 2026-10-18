@@ -2405,12 +2405,15 @@ describe("RestoreOrchestrator", () => {
     // (The old helper resume fails with mock but returns baseStatus = failed)
   });
 
-  it("legacy Claude restore hands startup the exact id it resumed, for transcript confirmation (spec 0012)", async () => {
+  it.each([
+    ["claude_id", "legacy-resumed-T1", "legacy-resumed-T1"],
+    ["claude_name", "r01-impl-name", undefined],
+  ])("legacy Claude restore (%s) hands startup the exact id it resumed, and no name, for transcript confirmation (spec 0012)", async (resumeType, token, expected) => {
     const rig = rigRepo.createRig("r01");
     const node = rigRepo.addNode(rig.id, "impl", { runtime: "claude-code" });
     const session = sessionRegistry.registerSession(node.id, "r01-impl");
     sessionRegistry.updateStatus(session.id, "running");
-    sessionRegistry.updateResumeToken(session.id, "claude_id", "legacy-resumed-T1");
+    sessionRegistry.updateResumeToken(session.id, resumeType, token);
     db.prepare("INSERT INTO node_startup_context (node_id, projection_entries_json, resolved_files_json, startup_actions_json, runtime) VALUES (?, ?, ?, ?, ?)").run(node.id, "[]", "[]", "[]", "claude-code");
     const snap = snapshotCapture.captureSnapshot(rig.id, "test");
     sessionRegistry.updateStatus(session.id, "exited");
@@ -2433,7 +2436,8 @@ describe("RestoreOrchestrator", () => {
 
       expect(resume).toHaveBeenCalledTimes(1);
       expect(startNode).toHaveBeenCalledTimes(1);
-      expect(startNode.mock.calls[0]![0]).toMatchObject({ skipHarnessLaunch: true, launchSessionId: "legacy-resumed-T1" });
+      expect(startNode.mock.calls[0]![0]).toMatchObject({ skipHarnessLaunch: true });
+      expect(startNode.mock.calls[0]![0].launchSessionId).toBe(expected);
       expect(startNode.mock.calls[0]![0].resumeToken).toBeUndefined();
       expect(mockAdapter.launchHarness).not.toHaveBeenCalled();
     } finally {

@@ -796,6 +796,17 @@ describe("startup prompt submission", () => {
       expect(confirm.mock.calls[0]![1]).toBe("resumed-T1");
     });
 
+    it.each([["claude_id", "seat-token"], ["claude_name", undefined]])("confirms a resume by id with that id, and a resume by name never (%s)", async (resumeType, expected) => {
+      const f = fixture(0, "claude-code", false, true);
+      f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);
+      const confirm = withTranscript(f, { outcome: "verified", recordType: "user", at: "2026-10-18T00:00:01.000Z" });
+      vi.mocked(f.adapter.launchHarness).mockResolvedValue({ ok: true, resumeToken: "seat-token", resumeType });
+      await f.start({ isRestore: true, resumeToken: "seat-token", resumeType, resolvedStartupFiles: [file("role.md")], startupActions: [] });
+      expect(vi.mocked(f.adapter.launchHarness).mock.calls[0]![1]).toMatchObject({ resumeToken: "seat-token" });
+      expect(f.tmux.sendText).toHaveBeenCalledTimes(1);
+      expect(confirm.mock.calls.map(c => c[1])).toEqual(expected ? [expected] : []);
+    });
+
     it("never confirms a fork launch from the transcript", async () => {
       const f = fixture(0, "claude-code", false, true);
       f.tmux.capturePaneContent.mockResolvedValue(UNRECOGNIZED);

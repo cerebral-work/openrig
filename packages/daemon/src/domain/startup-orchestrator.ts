@@ -427,9 +427,12 @@ export class StartupOrchestrator {
           });
           if (launchResult.ok) {
             appliedLaunch = launchResult.appliedLaunch;
-            // Spec 0012: the id on this launch's own command line: the exact resumed id, else the generated id. A fork is
-            // left out: its new file's records relative to the parent's are not established, so it is never confirmed.
-            const ownSessionId = launchResumeToken || (input.forkSource ? undefined : launchResult.resumeToken);
+            // Spec 0012: the id on this launch's own command line: the exact id of a resume by id, else the generated id.
+            // A resume by name passed no id. A fork is left out: its new file's records relative to the parent's are not
+            // established, so it is never confirmed.
+            const ownSessionId = launchResumeToken
+              ? (input.resumeType === "claude_id" ? launchResumeToken : undefined)
+              : (input.forkSource ? undefined : launchResult.resumeToken);
             if (ownSessionId) deliveryInput.ownSessionId = ownSessionId;
             if (input.adapter.runtime === "claude-code" && launchResumeToken?.trim()) {
               await this.recordClaudeResumeLaunch(input.sessionId, input.binding.tmuxPane ?? input.binding.tmuxSession, launchResumeToken.trim(), launchResult.launchedProcess);

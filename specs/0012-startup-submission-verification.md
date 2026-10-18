@@ -34,8 +34,9 @@ Neither cw.4.1 fix touches this path: #8 changes `adapters/tmux.ts`, #1359 chang
    - The Claude adapter reads exactly one file: `<claude config dir>/projects/<encoded cwd>/<session id>.jsonl`.
      - `<session id>` is the id the launch being confirmed passed itself, and the orchestrator passes it in. It is one of:
        - the generated `--session-id` of the orchestrator's own fresh launch;
-       - the exact id of its own `--resume`;
-       - for a launch made elsewhere (a legacy restore that the old Claude resume helper resumed, then `skipHarnessLaunch`), the exact id that resume passed, given as `launchSessionId`.
+       - the exact id of its own `--resume` by id (`claude_id`);
+       - for a launch made elsewhere (a legacy restore that the old Claude resume helper resumed by id, then `skipHarnessLaunch`), the exact id that resume passed, given as `launchSessionId`.
+     - A resume by session name (`claude_name`) passed a name, not an id, so it reports "unavailable".
      - The adapter never takes the id from its own record of a node's last launch. That record can belong to an earlier occupant of the same node.
      - A fork launch is not confirmed and reports "unavailable": how its new file carries the parent conversation's records is not established here.
      - A `rig seat continue` of a fresh launch also reports "unavailable", because the continuation does not carry the launch's id. Recording the id on the pending event would close this; it is not built here.
@@ -93,12 +94,17 @@ cd packages/daemon && npx vitest run test/restore-orchestrator.test.ts -t "exact
   - The orchestrator passes the launch's own id:
     - the id its launch reports;
     - for a skipped launch, `launchSessionId`; with none, confirmation is never called and a required send ends `attention_required`;
-    - for a fork, confirmation is never called.
-  - A legacy Claude restore hands startup the exact id it resumed (`restore-orchestrator.test.ts`).
+    - for a fork, or a resume by name, confirmation is never called; a resume by id passes that id.
+  - A legacy Claude restore by id hands startup the exact id it resumed; by name it hands none (`restore-orchestrator.test.ts`).
 - **Required:** each unverified path (unrecognized boundary, unavailable or thrown capture, mismatched composer, enqueued-unconfirmed, a required post-launch file) ends `attention_required` with one paste and one Enter. A non-required send keeps today's warning.
 - **Existing cases** now use a non-required default role file. They pin the screen check's mechanics, and the required outcome has its own cases. Two cases changed deliberately:
   - the re-look after a collapsed paste gives way (12 captures);
   - the initial unrecognized-boundary label (11 captures, first and last look recorded).
 - **Break-once:** each mechanism was broken and shown red:
   - the re-look, the transcript call, the required collection, the post-send floor, enqueue-as-verified and the own-path read;
-  - review r1's must-fix: the adapter's own last-launch record restored, the fork exclusion dropped, the restore's resumed id not passed, and `launchSessionId` ignored.
+  - review r1's must-fix:
+    - the adapter's own last-launch record restored;
+    - the fork exclusion dropped;
+    - the restore's resumed id not passed;
+    - `launchSessionId` ignored;
+    - a resume by name treated as an id, in the orchestrator and in the restore.
