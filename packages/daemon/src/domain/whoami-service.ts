@@ -85,7 +85,7 @@ export type RuntimeContext =
     };
 
 export class WhoamiAmbiguousError extends Error {
-  constructor(message: string) {
+  constructor(message: string, readonly rigIds: string[] = []) {
     super(message);
     this.name = "WhoamiAmbiguousError";
   }
@@ -154,6 +154,15 @@ export class WhoamiService {
     this.contextUsageStore = deps.contextUsageStore ?? null;
   }
 
+  /** Spec 0009: a rig is live unless archived (a DB without archive support has only live rigs). */
+  private rigIsLive(rigId: string): boolean {
+    const hasArchive = (this.db.prepare("PRAGMA table_info(rigs)").all() as Array<{ name?: string }>)
+      .some((c) => c.name === "archived_at");
+    if (!hasArchive) return true;
+    const row = this.db.prepare("SELECT archived_at FROM rigs WHERE id = ?").get(rigId) as { archived_at: string | null } | undefined;
+    return row !== undefined && row.archived_at === null;
+  }
+
   resolve(query: { nodeId?: string; sessionName?: string; targetRepoOverride?: string; compact?: boolean }): WhoamiResult | null {
     let nodeRow: NodeRow | undefined;
     let resolvedBy: "node_id" | "session_name";
@@ -172,20 +181,28 @@ export class WhoamiService {
 
       if (sessionRows.length === 0) return null;
 
-      // Check distinct rigs
+      // Spec 0009: only sessions of UNARCHIVED rigs count. A lead swap archives a rig and reuses its
+      // session names, so archived rigs never make a session ambiguous and are never resolved to.
+      const liveRows: SessionRow[] = [];
       const rigIds = new Set<string>();
       for (const sess of sessionRows) {
         const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(sess.node_id) as { rig_id: string } | undefined;
-        if (node) rigIds.add(node.rig_id);
+        if (node && this.rigIsLive(node.rig_id)) {
+          liveRows.push(sess);
+          rigIds.add(node.rig_id);
+        }
       }
+      if (liveRows.length === 0) return null;
 
       if (rigIds.size > 1) {
+        const ids = [...rigIds];
         throw new WhoamiAmbiguousError(
-          `Session '${query.sessionName}' is ambiguous — found in ${rigIds.size} rigs. Use --node-id instead.`
+          `Session '${query.sessionName}' is ambiguous — found in ${ids.length} live rigs (${ids.join(", ")}). Use --node-id instead.`,
+          ids,
         );
       }
 
-      const sess = sessionRows[0]!;
+      const sess = liveRows[0]!;
       nodeRow = this.db.prepare("SELECT * FROM nodes WHERE id = ?").get(sess.node_id) as NodeRow | undefined;
       if (!nodeRow) return null;
       resolvedBy = "session_name";

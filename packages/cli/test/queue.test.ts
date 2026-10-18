@@ -1281,7 +1281,9 @@ describe("rig queue CLI", () => {
 
   it("whoami defaults the session from OPENRIG_SESSION_NAME when --session is omitted", async () => {
     const saved = process.env["OPENRIG_SESSION_NAME"];
+    const savedNode = process.env["OPENRIG_NODE_ID"];
     process.env["OPENRIG_SESSION_NAME"] = "bob@rig";
+    delete process.env["OPENRIG_NODE_ID"];
     try {
       const { deps, calls } = makeDeps({
         routes: {
@@ -1306,6 +1308,40 @@ describe("rig queue CLI", () => {
     } finally {
       if (saved === undefined) delete process.env["OPENRIG_SESSION_NAME"];
       else process.env["OPENRIG_SESSION_NAME"] = saved;
+      if (savedNode === undefined) delete process.env["OPENRIG_NODE_ID"];
+      else process.env["OPENRIG_NODE_ID"] = savedNode;
+    }
+  });
+
+  // Spec 0009 (revenant's gap 2): the seat's node id disambiguates a session name shared across rigs.
+  it("whoami sends the seat's OPENRIG_NODE_ID with a defaulted session, and not with an explicit --session", async () => {
+    const saved = process.env["OPENRIG_SESSION_NAME"];
+    const savedNode = process.env["OPENRIG_NODE_ID"];
+    process.env["OPENRIG_SESSION_NAME"] = "bob@rig";
+    process.env["OPENRIG_NODE_ID"] = "01NODEBOB";
+    try {
+      const reply = { status: 200, data: { session: "bob@rig", asDestination: { pending: 0, inProgress: 0, blocked: 0, recent: [] }, asSource: { total: 0 } } };
+      const { deps, calls } = makeDeps({
+        routes: {
+          "GET /api/queue/whoami?session=bob%40rig&recentLimit=25&nodeId=01NODEBOB": reply,
+          "GET /api/queue/whoami?session=carol%40rig&recentLimit=25": reply,
+        },
+      });
+      const run = async (args: string[]) => {
+        const program = createProgram({ queueDeps: deps });
+        program.exitOverride();
+        await program.parseAsync(["node", "rig", "queue", "whoami", ...args, "--json"]);
+      };
+      await run([]);
+      await run(["--session", "carol@rig"]);
+      const paths = calls.filter((c) => c.method === "GET" && c.path.startsWith("/api/queue/whoami")).map((c) => c.path);
+      expect(paths[0]).toContain("nodeId=01NODEBOB");
+      expect(paths[1]).not.toContain("nodeId");
+    } finally {
+      if (saved === undefined) delete process.env["OPENRIG_SESSION_NAME"];
+      else process.env["OPENRIG_SESSION_NAME"] = saved;
+      if (savedNode === undefined) delete process.env["OPENRIG_NODE_ID"];
+      else process.env["OPENRIG_NODE_ID"] = savedNode;
     }
   });
 
