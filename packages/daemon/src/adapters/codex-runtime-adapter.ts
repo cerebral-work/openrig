@@ -443,7 +443,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       // -s workspace-write floor flag.
       // 0.5.2-07 A2-3: the FORK path threads the SPEC model too (fork-instantiate reverted it before).
       const cmd = `codex${daemonArg}${postureArg}${networkArg}${modelArg}${effortArg} fork${queueStateDirArg} ${shellQuote(parentId)}`;
-      const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
+      const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd), undefined, { runtimeLaunch: this.runtime });
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
       }
@@ -474,7 +474,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       ? this.resumeCore(prepared, opts.resumeToken, binding)
       : `codex${daemonArg}${postureArg}${networkArg} -C ${shellQuote(binding.cwd)}${gitDirArg}${queueStateDirArg}${modelArg}${effortArg}`;
 
-    const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
+    const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd), undefined, { runtimeLaunch: this.runtime });
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
     }
@@ -513,7 +513,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
   /** Type a command buildResumeCommand built into the pane's shell, then verify the resume as launchHarness
    *  does. Nothing is prepared again, so the command runs exactly as it was built and checked. */
   async sendResumeCommand(tmuxSession: string, command: string, resumeToken: string): Promise<HarnessLaunchResult> {
-    const textResult = await this.tmux.sendShellCommand(tmuxSession, command);
+    const textResult = await this.tmux.sendShellCommand(tmuxSession, command, undefined, { runtimeLaunch: this.runtime });
     if (!textResult.ok) return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
     return this.verifyResumeInPane(tmuxSession, resumeToken);
   }

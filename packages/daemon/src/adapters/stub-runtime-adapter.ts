@@ -191,7 +191,7 @@ export class StubRuntimeAdapter implements RuntimeAdapter {
         resumeToken: opts.resumeToken,
       });
       // Spec 0013: a launch, so in allow-list mode it is staged behind the prologue.
-      const launched = await this.tmux.sendLaunchCommand(sessionName, cmd);
+      const launched = await this.tmux.sendLaunchCommand(sessionName, cmd, { runtimeLaunch: this.runtime });
       if (!launched.ok) return { ok: false, error: `Failed to send stub launch command: ${launched.message}` };
 
       const ready = await this.waitForRunnerReady(binding, launchId);

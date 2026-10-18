@@ -52,6 +52,7 @@ import { OmpResumeAdapter } from "./adapters/omp-resume.js";
 import { AgyResumeAdapter } from "./adapters/agy-resume.js";
 import { AgyRuntimeAdapter } from "./adapters/agy-runtime-adapter.js";
 import { KNOWN_PROVIDER_AUTH_ENV, OMP_PROVIDER_AUTH_ENV } from "./domain/provider-auth-env.js";
+import { buildDaemonSecretResolver, secretLaunchDir, sweepSecretLaunchDir } from "./domain/seat-secret-launch.js";
 import { RigSpecExporter } from "./domain/rigspec-exporter.js";
 import { PodRepository } from "./domain/pod-repository.js";
 import { RigSpecPreflight } from "./domain/rigspec-preflight.js";
@@ -554,6 +555,11 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const runtimeSessionEnv: Record<string, Record<string, string | undefined>> = {
     omp: collectAllowlistedProviderAuthEnv(startupSettings.recoveryProviderAuthEnvAllowlistRaw, process.env, "omp"),
   };
+  // Spec 0017 items 1-3: these values reach a seat only through its staged script or managed file, never tmux. Every file
+  // a previous daemon left in the directory goes before this one serves (REQ-0017-12).
+  const daemonSecretDir = secretLaunchDir(OPENRIG_HOME);
+  await sweepSecretLaunchDir(daemonSecretDir);
+  tmuxAdapter.setSecretLaunch(buildDaemonSecretResolver(providerAuthEnv, runtimeSessionEnv), daemonSecretDir);
   const transcriptStore = new TranscriptStore({
     enabled: transcriptsEnabled,
     transcriptsRoot: transcriptsPath,
@@ -619,6 +625,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     return policy !== "unreadable" && session !== undefined && seatEnvAllowlistApplies(policy, session)
       ? seatKubeconfig(policy, fs.existsSync).path : undefined;
   });
+  // Spec 0017 item 2: the managed launch's daemon values come from a 0600 file, never `env -i`'s argv.
+  claudeManagedLaunch.setSecretFile((session) => tmuxAdapter.stageManagedSecretFile(session, "claude-code"));
   const claudeResume = new ClaudeResumeAdapter(tmuxAdapter, { claudeManagedLaunch, seatLaunchEnvironment });
   // #275: one reader for both Codex launch adapters, with the PATH, HOME and CODEX_HOME a seat session gets.
   const readCodexNetworkDefault = codexNetworkDefaultReader({ launchPath: process.env.PATH, home: daemonHome, codexHome });

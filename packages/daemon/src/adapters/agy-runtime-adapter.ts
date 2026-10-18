@@ -198,7 +198,7 @@ export class AgyRuntimeAdapter implements RuntimeAdapter {
     const wrapped = this.seatLaunchEnvironment
       ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
       : cmd;
-    const sent = await this.tmux.sendShellCommand(binding.tmuxSession, `cd ${shellQuote(binding.cwd)} && ${wrapped}`);
+    const sent = await this.tmux.sendShellCommand(binding.tmuxSession, `cd ${shellQuote(binding.cwd)} && ${wrapped}`, undefined, { runtimeLaunch: this.runtime });
     if (!sent.ok) return { ok: false, error: `Failed to send launch command: ${sent.message}` };
     // No conversation exists until the first turn; the resume token is captured later from the hook sidecar.
     return { ok: true, appliedLaunch };

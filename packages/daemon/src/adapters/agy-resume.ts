@@ -61,7 +61,7 @@ export class AgyResumeAdapter {
     const wrapped = this.options.seatLaunchEnvironment
       ? await this.options.seatLaunchEnvironment.command(tmuxSessionName, cmd, { nodeId, generation, runtime: "agy" })
       : cmd;
-    const sent = await this.tmux.sendShellCommand(tmuxSessionName, `cd ${shellQuote(cwd)} && ${wrapped}`);
+    const sent = await this.tmux.sendShellCommand(tmuxSessionName, `cd ${shellQuote(cwd)} && ${wrapped}`, undefined, { runtimeLaunch: "agy" });
     if (!sent.ok) return { ok: false, code: "resume_failed", message: sent.message };
     const verified = await this.verifyResume(tmuxSessionName);
     return verified.ok ? { ...verified, appliedLaunch } : verified;

@@ -20,6 +20,7 @@ import { rebindAndVerifyPaneIdentity } from "./seat-attention-reconciler.js";
 import type { RunningCodexLaunch } from "../adapters/codex-runtime-adapter.js";
 import { emittedEffortFromArgv } from "./seat-effort.js";
 import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
+import { shellQuote } from "../adapters/shell-quote.js";
 
 /**
  * OPR.0.7.0.5 — restart ONE Codex seat in place so it reads its Codex home's current account: the same
@@ -37,7 +38,7 @@ import { CODEX_NETWORK_DEFAULT_OVERRIDE } from "./codex-network-default.js";
 export type InPlaceRestartTmux = Pick<TmuxAdapter,
   | "getPanePid" | "getPaneCommand" | "listPanes" | "getSessionEnv" | "signalPid" | "setRemainOnExit"
   | "signalPaneProcess" | "isPaneDead" | "respawnPane" | "getPaneLocalOption" | "restorePaneOption"
-  | "capturePaneHistory">;
+  | "capturePaneHistory"> & Partial<Pick<TmuxAdapter, "stageSecretRespawnScript" | "discardSecretLaunch">>;
 
 /** The Codex runtime adapter's resume surface this operation reuses. */
 export interface InPlaceCodexLauncher {
@@ -283,6 +284,7 @@ export class CodexInPlaceRestart {
       // choices, and prove the resume. Preparing the launch again here would decide those choices afresh.
       progress.stage = "resume";
       launch = await this.deps.codex.sendResumeCommand(sessionName, relaunch.command, report.conversationId);
+      await this.deps.tmux.discardSecretLaunch?.(sessionName);
       if (!launch.ok) return this.incomplete(report, launch, recoveryCommand);
       progress.stage = "identity check";
       return this.verifyReplacement(target, report, oldExe);
@@ -308,13 +310,20 @@ export class CodexInPlaceRestart {
     if (!terminated.ok) return this.afterFailedStop(target, report, observed, held, recoveryCommand, terminated.message, progress);
     // Respawn the dead pane WITHOUT -k (scrollback stays) with the resume command as its own command.
     progress.stage = "respawn";
-    const respawned = await this.deps.tmux.respawnPane(pane, relaunch.command, { cwd });
+    // Spec 0017 item 1 (REQ-0017-19): a seat with daemon values respawns `/bin/sh <staged script>`. The hardened script
+    // (tracing guard, self-delete before any export) exports them and execs the relaunch, so only its path is on argv.
+    const staged = await this.deps.tmux.stageSecretRespawnScript?.(sessionName, "codex", relaunch.command);
+    if (staged && !staged.ok) {
+      return this.afterFailedStop(target, report, observed, held, recoveryCommand, `the relaunch could not be staged: ${staged.message}`, progress);
+    }
+    const respawned = await this.deps.tmux.respawnPane(pane, staged ? `/bin/sh ${shellQuote(staged.path)}` : relaunch.command, { cwd });
     if (!respawned.ok) {
       return this.afterFailedStop(target, report, observed, held, recoveryCommand, `the pane could not be respawned: ${respawned.message}`, progress);
     }
     if (respawned.warnings) report.warnings.push(...respawned.warnings);
     progress.stage = "resume";
     launch = await this.deps.codex.verifyResumeInPane(sessionName, report.conversationId);
+    await this.deps.tmux.discardSecretLaunch?.(sessionName);
     if (!launch.ok) return this.incomplete(report, launch, recoveryCommand, held);
     progress.stage = "identity check";
     const verified = await this.verifyReplacement(target, report, oldExe);

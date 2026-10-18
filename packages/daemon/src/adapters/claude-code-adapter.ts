@@ -337,7 +337,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
         : `${rendererPrefix}claude ${permissionMode}${modelArg}${effortArg} --resume ${shellQuote(parentId)} --fork-session --session-id ${forkSessionId} --name ${opts.name}`;
       const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
         : this.seatLaunchEnvironment
-          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
+          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true, runtimeLaunch: this.runtime })
           : await this.tmux.sendText(binding.tmuxSession, cmd);
       if (!textResult.ok) {
         return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
@@ -360,7 +360,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
 
     const textResult = managed ? await this.tmux.sendShellCommand(binding.tmuxSession, cmd, managed.assertCurrent)
       : this.seatLaunchEnvironment
-          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
+          ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true, runtimeLaunch: this.runtime })
           : await this.tmux.sendText(binding.tmuxSession, cmd);
     if (!textResult.ok) {
       return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };

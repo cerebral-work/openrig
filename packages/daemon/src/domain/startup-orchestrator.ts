@@ -445,11 +445,13 @@ export class StartupOrchestrator {
               this.sessionRegistry.recordResumeLaunch(input.sessionId, launchResumeToken ?? null);
             } catch { /* best-effort: without it a rotation stays unproved, as before */ }
           }
+          // Spec 0017 item 3: a failed launch's unconsumed secret file goes now (a staged script's failed send already removed it).
           const launchResult = await input.adapter.launchHarness(input.binding, {
             name: input.sessionName ?? input.binding.tmuxSession ?? "",
             resumeToken: launchResumeToken,
             ...(input.forkSource && !launchResumeToken ? { forkSource: input.forkSource } : {}),
           });
+          if (!launchResult.ok) await this.tmuxAdapter.discardSecretLaunch?.(input.binding.tmuxSession);
           if (launchResult.ok) {
             appliedLaunch = launchResult.appliedLaunch;
             // Spec 0012: the id on this launch's own command line: the exact id of a resume by id, else the generated id.
@@ -569,6 +571,9 @@ export class StartupOrchestrator {
     } catch (err) {
       errors.push(`Readiness check error: ${(err as Error).message}`);
       return this.fail(input, "failed", errors, undefined, false, undefined, false, "readiness_check", getPendingReadinessWork());
+    } finally {
+      // Spec 0017 item 3 (REQ-0017-07): after the readiness outcome, a secret file the pane never consumed is deleted.
+      await this.tmuxAdapter.discardSecretLaunch?.(input.binding.tmuxSession);
     }
 
     // The adapter returned the exact enforcing value it inserted, and readiness

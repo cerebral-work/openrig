@@ -200,7 +200,8 @@ export class SuccessorSessionLauncher {
     // Spec 0013 item 9 (review r2 F1 on #35): respawnPane refuses a secret-named variable, but only after the retiree
     // has been terminated below, which would leave the seat dead. Refuse the same names here, before anything touches
     // the pane: the retiree keeps running.
-    const secretNamed = secretNamedLaunchVars(env);
+    // Spec 0017 item 1: respawnPane strips the daemon values the channel delivers; check the env it will actually send.
+    const secretNamed = secretNamedLaunchVars(this.tmuxAdapter.launchEnvForTmux?.(env) ?? env);
     if (secretNamed.length > 0) {
       return {
         ok: false,
@@ -382,6 +383,7 @@ export class SuccessorSessionLauncher {
       return { ok: false, code: "successor_launch_failed", message: `Successor harness launch threw: ${err instanceof Error ? err.message : String(err)}` };
     }
     if (!launch.ok) {
+      await this.tmuxAdapter.discardSecretLaunch?.(binding.tmuxSession);
       return { ok: false, code: launch.code === "seat_env_refused" ? "seat_env_refused" : "successor_launch_failed",
         message: `Successor harness launch failed: ${launch.error}` };
     }
@@ -407,12 +409,15 @@ export class SuccessorSessionLauncher {
     try {
       readiness = await this.waitForReady(adapter, binding);
     } catch (err) {
+      await this.tmuxAdapter.discardSecretLaunch?.(binding.tmuxSession);
       return {
         ok: false,
         code: "successor_readiness_failed",
         message: `Successor readiness probe threw: ${err instanceof Error ? err.message : String(err)}`,
       };
     }
+    // Spec 0017 item 3 (REQ-0017-07): after the readiness outcome, a secret file the pane never consumed is deleted.
+    await this.tmuxAdapter.discardSecretLaunch?.(binding.tmuxSession);
     if (!readiness.ready) {
       return {
         ok: false,

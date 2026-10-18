@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { basename, join as pathJoin } from "node:path";
 import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
-import { ensureSecretLaunchDir, SECRET_SCRIPT_TRACE_GUARD, secretExportLines, type DaemonSecretResolver } from "../domain/seat-secret-launch.js";
+import { ensureSecretLaunchDir, SECRET_SCRIPT_TRACE_GUARD, secretExportLines, withoutDaemonSecrets, type DaemonSecretResolver } from "../domain/seat-secret-launch.js";
 import { isSecretSeatEnvName, seatEnvAllowlistApplies, seatEnvScrubScript, seatKubeconfig, seatLaunchExcludedEnvKeys,
   type SeatEnvPolicy } from "../domain/seat-launch-env-filter.js";
 import { SEAT_ENV_KEYS_VAR } from "../domain/seat-env.js";
@@ -546,11 +546,53 @@ export class TmuxAdapter {
 
   /** Spec 0017 item 3 (REQ-0017-07): after a launch's readiness outcome, delete its secret-bearing script if the pane
    *  never consumed it. Other staged scripts keep today's rule (left for diagnosis). */
-  async discardSecretLaunch(target: string): Promise<void> {
-    const path = this.shellLaunches.get(target);
-    if (!path || !this.secretLaunch || !path.startsWith(`${this.secretLaunch.dir}/`)) return;
-    try { await this.fileOps.unlink(path); } catch { /* already consumed */ }
-    this.shellLaunches.delete(target);
+  async discardSecretLaunch(target: string | null | undefined): Promise<void> {
+    if (!target) return;
+    const staged = [this.shellLaunches.get(target), ...(this.secretFiles.get(target) ?? [])];
+    this.secretFiles.delete(target);
+    for (const path of staged) {
+      if (!path || !this.secretLaunch || !path.startsWith(`${this.secretLaunch.dir}/`)) continue;
+      try { await this.fileOps.unlink(path); } catch { /* already consumed */ }
+      if (this.shellLaunches.get(target) === path) this.shellLaunches.delete(target);
+    }
+  }
+
+  // Spec 0017: secret-bearing files staged for a target outside sendShellCommand (the managed file, the respawn script).
+  private secretFiles = new Map<string, string[]>();
+
+  /** Spec 0017 item 1: the launch env tmux may carry, without the daemon values the channel delivers for its runtime
+   *  (`OPENRIG_RUNTIME`). Exactly the resolver's names go; 0013 item 9's guard then refuses any other secret-named one. */
+  launchEnvForTmux<T extends Record<string, string> | undefined>(env: T): T {
+    if (!env) return env;
+    const secrets = this.secretsFor(env["OPENRIG_RUNTIME"]);
+    return secrets ? withoutDaemonSecrets(env, secrets) as T : env;
+  }
+
+  /** Spec 0017 items 1-2: write a runtime's daemon values to a new 0600 file in the checked 0700 directory, tracked for
+   *  `discardSecretLaunch`. `body` wraps the export lines: the managed file is exports only; the respawn script adds its
+   *  guard, self-delete and `exec`. Null when the runtime has no values to carry. */
+  private async stageSecretFile(target: string, runtime: string, body: (path: string, exports: string) => string):
+    Promise<{ ok: true; path: string; names: string[] } | { ok: false; code: string; message: string } | null> {
+    const secrets = this.secretsFor(runtime);
+    if (!secrets) return null;
+    const dir = await ensureSecretLaunchDir(this.secretLaunch!.dir);
+    if (!dir.ok) return dir;
+    const path = pathJoin(this.secretLaunch!.dir, basename(this.fileOps.tmpName()));
+    await this.fileOps.writeFile(path, body(path, secretExportLines(secrets)), { mode: 0o600, flag: "wx" });
+    this.secretFiles.set(target, [...(this.secretFiles.get(target) ?? []), path]);
+    return { ok: true, path, names: Object.keys(secrets) };
+  }
+
+  /** Spec 0017 item 2 (REQ-0017-04): the managed Claude launch's file of exports, read through MANAGED_SECRET_WRAPPER. */
+  async stageManagedSecretFile(target: string, runtime: string) {
+    return this.stageSecretFile(target, runtime, (_path, exports) => exports);
+  }
+
+  /** Spec 0017 item 1, restart-in-place `direct_native` (REQ-0017-19): the respawn command becomes `/bin/sh <path>`. The
+   *  script is the hardened one: the tracing guard, the self-delete before any export, then `exec` of the relaunch. */
+  async stageSecretRespawnScript(target: string, runtime: string, command: string) {
+    return this.stageSecretFile(target, runtime, (path, exports) =>
+      `${SECRET_SCRIPT_TRACE_GUARD}\n/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${exports}exec ${command}\n`);
   }
 
   /** Read for each launch, so a seat_env change applies to the next launch. */
@@ -760,6 +802,7 @@ export class TmuxAdapter {
   }
 
   async createSession(name: string, cwd?: string, env?: Record<string, string>): Promise<TmuxResult> {
+    env = this.launchEnvForTmux(env);
     const secret = secretOnArgvRefusal(env, "new-session");
     if (secret) return secret;
     if (this.deliveryGuard && (!env?.OPENRIG_NODE_ID || !this.deliveryGuard.ownsLifecycle(env.OPENRIG_NODE_ID))) {
@@ -1232,6 +1275,7 @@ export class TmuxAdapter {
     command?: string,
     opts?: { cwd?: string; env?: Record<string, string> },
   ): Promise<TmuxResult> {
+    if (opts?.env) opts = { ...opts, env: this.launchEnvForTmux(opts.env) };
     const secret = secretOnArgvRefusal(opts?.env, "respawn-pane");
     if (secret) return secret;
     return this.guardedInput(paneTarget, pane => this.respawnPaneUnchecked(pane, command, opts));

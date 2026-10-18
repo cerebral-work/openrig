@@ -9,6 +9,7 @@ import { shellQuote } from "../adapters/shell-quote.js";
 import { claudeClassicRendererEnvPrefix } from "../adapters/yolo-mode.js";
 import { parseClaudePermissionModes } from "./permission-drift.js";
 import { validateNativePermissionSelection } from "./native-permission-selection.js";
+import { MANAGED_SECRET_WRAPPER } from "./seat-secret-launch.js";
 
 export interface ClaudeLaunchTarget {
   nodeId: string;
@@ -31,7 +32,17 @@ interface TargetSnapshot {
  */
 const MANAGED_LAUNCH_KEYS = ["PATH", "HOME", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_DISABLE_ALTERNATE_SCREEN"];
 
+/** Spec 0017 item 2: stage a seat's daemon values in a 0600 file for the wrapper; null when there are none to carry. */
+export type ManagedSecretFileStager = (session: string) => Promise<{ ok: true; path: string; names: string[] } | { ok: false; code: string; message: string } | null>;
+
 export class ClaudeManagedLaunch {
+  private secretFile?: ManagedSecretFileStager;
+
+  /** Spec 0017 item 2: wire the daemon's managed-file stager (startup). Without it no managed launch carries a value. */
+  setSecretFile(stage: ManagedSecretFileStager): void {
+    this.secretFile = stage;
+  }
+
   constructor(private readonly db: Database.Database,
     private readonly sessionEnv: Readonly<Record<string, string | undefined>>,
     private readonly rendererEnv: Readonly<NodeJS.ProcessEnv>,
@@ -169,11 +180,16 @@ export class ClaudeManagedLaunch {
       ...(before.session ? { OPENRIG_SESSION_NAME: before.session } : {}),
       ...(generation ? { OPENRIG_OCCUPANT_GENERATION: generation } : {}) };
     const seatKeys = await this.seatEnvKeys(target.nodeId, before.session ?? undefined);
+    // Spec 0017 item 2 (REQ-0017-04, -06): the daemon's values go in a file the wrapper unlinks before it reads; the
+    // names are left out of the `"NAME=${NAME-}"` forwarding, so no value is ever an argument.
+    const secretFile = this.secretFile && before.session ? await this.secretFile(before.session) : null;
+    if (secretFile && !secretFile.ok) throw new Error(secretFile.message);
+    const secretNames = secretFile?.ok ? secretFile.names : [];
     const publicEnv = publicSeatEnvironment(this.sessionEnv);
     const kubeconfig = this.seatKubeconfig?.(before.session ?? undefined);
     const assignments = Object.entries({ ...context.env, ...publicEnv, ...identity, ...(kubeconfig ? { KUBECONFIG: kubeconfig } : {}) })
       .map(([key, value]) => shellQuote(`${key}=${value}`));
-    const forwarded = inherited.filter(key => !(key in identity) && !(key in publicEnv)).map(key => `"${key}=\${${key}-}"`);
+    const forwarded = inherited.filter(key => !(key in identity) && !(key in publicEnv) && !secretNames.includes(key)).map(key => `"${key}=\${${key}-}"`);
     // A declared name is forwarded only when the pane shell has it set, so a one-off name recorded on
     // the session never reaches a successor pane that was not given it. Set-but-empty stays empty.
     const seatForwarded = seatKeys.filter(key => !inherited.includes(key) && !(key in identity) && !(key in publicEnv))
@@ -193,7 +209,7 @@ export class ClaudeManagedLaunch {
     return Object.freeze({ assertCurrent, configDir: context.configDir, executable: context.executable, command: (args: readonly string[], launchEnv: Readonly<Record<string, string>> = {}) => {
       assertCurrent();
       const launch = Object.entries(launchEnv).map(([key, value]) => shellQuote(`${key}=${value}`));
-      return `cd ${shellQuote(cwd)} && /usr/bin/env -i ${[...assignments, ...forwarded, ...seatForwarded, ...projectForwarded, ...terminal, ...launch, shellQuote(context.executable), ...args.map(shellQuote)].join(" ")}`;
+      return `cd ${shellQuote(cwd)} && /usr/bin/env -i ${[...assignments, ...forwarded, ...seatForwarded, ...projectForwarded, ...terminal, ...launch, ...(secretFile?.ok ? ["/bin/sh", "-c", shellQuote(MANAGED_SECRET_WRAPPER), shellQuote(secretFile.path)] : []), shellQuote(context.executable), ...args.map(shellQuote)].join(" ")}`;
     } });
   }
 }
