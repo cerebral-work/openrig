@@ -303,6 +303,19 @@ describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error
       .toEqual({ failure: "successor_create_failed at create-successor:start_agent:seat_env_refused" });
   });
 
+  it("a successor that never becomes ready gets the relaunch plus a check for an in-pane seat env refusal (review r2 INFO)", async () => {
+    const f = fixture();
+    vi.spyOn(f.adapters["claude-code"], "checkReady").mockResolvedValue({ ready: false } as never);
+    const result = await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(result.guidance).toContain(`Relaunch the seat under it with: rig seat launch ${SEAT} --fresh --stop`);
+    expect(result.guidance).toContain(
+      "If the pane shows seat_env_refused, fix the seat env policy first (rig config set seat_env.mode filter rolls it back), then relaunch.");
+    expect(f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id))
+      .toEqual({ failure: "successor_create_failed at create-successor:start_agent:successor_not_ready" });
+  });
+
   it("a committed change whose declaration succeeds is marked declared at commit, by its operator", async () => {
     const f = fixture();
     expect((await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,

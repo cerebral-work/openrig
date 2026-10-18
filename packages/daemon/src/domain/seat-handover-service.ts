@@ -139,7 +139,7 @@ export interface SeatHandoverInput {
 class RevertSlotMovedError extends Error {}
 
 /** What a failed runtime change leaves the operator to do: nothing, check whether the predecessor still runs, or relaunch. */
-type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch" | "fix-seat-env";
+type RuntimeChangeRecovery = "none" | "check-seat" | "relaunch" | "relaunch-check-seat-env" | "fix-seat-env";
 
 function runtimeSideOf(state: RevertBefore): RuntimeSide {
   return {
@@ -759,7 +759,7 @@ export class SeatHandoverService {
         guidance: "The seat's registry binding is unchanged. If the failure was after the in-place respawn, the seat is re-wakeable from its provider session file. Inspect tmux/daemon logs and retry.",
       }, `create-successor:${launch.step}:${launch.code}`,
         launch.code === "retiree_not_terminated" ? "check-seat" : launch.code === "seat_env_refused" ? "fix-seat-env"
-          : launch.replacementStarted ? "relaunch" : "none");
+          : launch.code === "successor_not_ready" ? "relaunch-check-seat-env" : launch.replacementStarted ? "relaunch" : "none");
     }
 
     // Spec 0005: the target member's post-launch startup files go to the ready successor.
@@ -1513,8 +1513,13 @@ export class SeatHandoverService {
     if (change && !result.ok && "guidance" in result) {
       const previous = change.from.runtime ?? "its previous runtime";
       const relaunch = `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"`;
-      result = { ...result, guidance: recovery === "relaunch"
+      result = { ...result, guidance: recovery === "relaunch" || recovery === "relaunch-check-seat-env"
         ? `The node still records ${previous}. Relaunch the seat under it with: ${relaunch}`
+          // Review r2 (INFO): the seat env scrub (spec 0013) refuses inside the pane, where the daemon can't see it, so
+          // it surfaces as a readiness failure; the seat env mode is not known here, so the check is always named.
+          + (recovery === "relaunch-check-seat-env"
+            ? " If the pane shows seat_env_refused, fix the seat env policy first (rig config set seat_env.mode filter rolls it back), then relaunch."
+            : "")
         : recovery === "fix-seat-env"
           // Spec 0013 (#16): the respawn was refused because the seat env allow-list could not be applied, after the
           // predecessor had ended; a relaunch is refused the same way until the policy applies again.
