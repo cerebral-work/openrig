@@ -51,7 +51,7 @@ function respond(cmd: string, failing: string[]): string {
 }
 
 /** A shell-path adapter whose every run() call records its caller line, its argv and the string exec received. */
-function recordingAdapter(calls: RunCall[], opts: { failing?: string[]; guard?: boolean } = {}): TmuxAdapter {
+function recordingAdapter(calls: RunCall[], opts: { failing?: string[]; guard?: boolean; handshake?: boolean } = {}): TmuxAdapter {
   const execs: string[] = [];
   const fileOps: TmuxFileOps = {
     writeFile: async () => {},
@@ -62,7 +62,13 @@ function recordingAdapter(calls: RunCall[], opts: { failing?: string[]; guard?: 
   const adapter = new TmuxAdapter(async (cmd) => {
     execs.push(cmd);
     return respond(cmd, opts.failing ?? []);
-  }, fileOps);
+  }, fileOps, undefined, opts.handshake ? {
+    // The fresh-shell handshake (CER-2889) sees an idle shell on the pane pid respond() reports, and its pane
+    // reads as in a mode, so the mode check and exit are driven too.
+    handshake: true,
+    listProcesses: () => [{ pid: 4242, ppid: 1, command: "/bin/zsh", pgid: 4242, tpgid: 4242, executableName: "zsh", startedAt: "Sat Jan  1 12:00:00 2000" }],
+    sleep: async () => {},
+  } : undefined);
   if (opts.guard) {
     adapter.deliveryGuard = {
       maybeTarget: () => TARGET,
@@ -110,6 +116,9 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.respawnPane("%1");
   await a.getPaneLocalOption("%1", "remain-on-exit");
   await a.restorePaneOption("%1", "remain-on-exit", "on");
+  const fresh = recordingAdapter(calls, { handshake: true });
+  await fresh.createSession(SESSION, "/w x");
+  await fresh.sendShellCommand(SESSION, "echo 'hi there'");
   await a.restorePaneOption("%1", "remain-on-exit", null);
   await a.capturePaneHistory("%1");
   await a.setRemainOnExit("%1", true);
