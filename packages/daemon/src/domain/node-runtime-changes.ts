@@ -25,6 +25,7 @@ export interface RuntimeChangeRecord {
   from: RuntimeSide;
   to: RuntimeSide;
   specPath?: string | null;
+  /** The sha256 of the spec text the daemon parsed and validated (the CLI sends the file at specPath). */
   specSha256?: string | null;
   approval: string;
   reason: string;

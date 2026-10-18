@@ -284,9 +284,11 @@ describe("spec 0005: cross-runtime seat handover (isolated tmux)", () => {
           toCwd: f.newCwd, toEnv: [`CLAUDE_CONFIG_DIR=${f.configDir}`],
           spec: { path: f.specPath, yaml: f.specYaml }, approval: "christian-go-e2e",
         },
-      } as never) as { ok: boolean; code?: string };
+      } as never) as { ok: boolean; code?: string; guidance?: string };
 
       expect(result.ok).toBe(false);
+      // After the respawn the session is live, so the recovery is --fresh --stop (review r2).
+      expect(result.guidance).toContain(`rig seat launch ${f.SEAT} --fresh --stop`);
       const node = f.db.prepare("SELECT runtime, model, cwd, env_json FROM nodes WHERE id = ?").get(f.node.id) as Record<string, string | null>;
       expect(node).toMatchObject({ runtime: "codex", model: "gpt-5.5-codex", cwd: f.oldCwd, env_json: null });
       const context = f.db.prepare("SELECT runtime FROM node_startup_context WHERE node_id = ?").get(f.node.id) as { runtime: string };

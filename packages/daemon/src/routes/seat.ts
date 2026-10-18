@@ -18,7 +18,7 @@ import { resolveAuthoredRecapPointer } from "../domain/context-packs/seat-recap-
 import { buildRebuildPrimingChain } from "../domain/rebuild-priming-chain.js";
 import { OPENRIG_HOME } from "../openrig-compat.js";
 import { SettingsStore } from "../domain/user-settings/settings-store.js";
-import { requireSenderIdentity, transportSenderSession } from "./require-sender-identity.js";
+import { requireSenderIdentity, resolveRecordedProvenance, transportSenderSession } from "./require-sender-identity.js";
 import type { Context } from "hono";
 
 export const seatRoutes = new Hono();
@@ -193,11 +193,12 @@ function seatHandoverService(c: { get(key: never): unknown }): SeatHandoverServi
   });
 }
 
-/** Spec 0005 — the caller's transport identity (X-OpenRig-Session) and its provenance, or null when absent. With no
+/** Spec 0005 — the caller's transport identity (X-OpenRig-Session) and its recorded provenance, or null when absent. A
+ *  relayed request is relay:v1 (review r2), so only a local transport identity can be the kernel operator. With no
  *  caller authentication on the daemon, this is attribution, not authentication. */
 function handoverCaller(c: Context): HandoverCaller | null {
   const sender = requireSenderIdentity(c);
-  return sender.ok ? { session: sender.session, provenance: sender.provenance } : null;
+  return sender.ok ? { session: sender.session, provenance: resolveRecordedProvenance(c, sender) } : null;
 }
 
 function runtimeChangeFrom(body: Record<string, unknown>): RuntimeChangeRequest | null {

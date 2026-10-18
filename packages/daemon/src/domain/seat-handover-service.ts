@@ -93,6 +93,7 @@ type MemberConfig = Extract<ReturnType<MemberStartupResolver["resolveMemberConfi
 interface PreparedRuntimeChange {
   kind: "change" | "revert";
   nodeId: string;
+  seatRef: string;
   revertsChangeId: string | null;
   from: RuntimeSide;
   to: RuntimeSide;
@@ -513,7 +514,7 @@ export class SeatHandoverService {
     }
     const current = this.captureRuntimeState(node.id, null);
     const change: PreparedRuntimeChange = {
-      kind: "revert", nodeId: node.id, revertsChangeId: slot.changeId,
+      kind: "revert", nodeId: node.id, seatRef: input.seatRef, revertsChangeId: slot.changeId,
       from: runtimeSideOf(current), to: runtimeSideOf(before),
       toAuthoredEffort: before.effort, toEffortChoice: before.effortChoice, toCodexProfile: before.codexConfigProfile,
       toPermissionRow: before.permission, launchOverride, adapter,
@@ -755,7 +756,7 @@ export class SeatHandoverService {
       if (failedFiles.length > 0) {
         await this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId);
         return this.failChange(change, { ok: false, code: "context_delivery_failed", message: `Handover failed at step "deliver-startup-files": ${failedFiles.join("; ")}`,
-          guidance: "The node is unchanged; the seat relaunches under its own runtime with: rig seat launch <seat> --fresh" }, "deliver-startup-files");
+          guidance: "The node is unchanged." }, "deliver-startup-files");
       }
     }
 
@@ -1344,7 +1345,7 @@ export class SeatHandoverService {
       return invalid(`Permission selection: ${(error as Error).message}`, "Choose --to-permissions floor, full_bypass or inherit.");
     }
     return {
-      kind: "change", nodeId: node.id, revertsChangeId: null,
+      kind: "change", nodeId: node.id, seatRef: input.status.seat_ref, revertsChangeId: null,
       from: runtimeSideOf(before),
       to: { runtime: toRuntime, model: toModel, cwd: targetCwd, effort: effortChoice ?? authoredEffort, permission: toSelection?.mode ?? null, env: targetEnv },
       toAuthoredEffort: authoredEffort, toEffortChoice: effortChoice, toCodexProfile: codexProfile,
@@ -1426,6 +1427,12 @@ export class SeatHandoverService {
   /** A failed runtime change or revert is recorded with its code and step only. The message is never stored: a failed
    *  respawn's message can carry the env it was given (review r2 F3). The node is untouched. */
   private failChange(change: PreparedRuntimeChange | null, result: SeatHandoverResult, step: string): SeatHandoverResult {
+    // After the in-place respawn the canonical session is live and may hold the target runtime, while the node still
+    // records the old one; a plain --fresh launch refuses a live session, so the recovery names --stop (review r2).
+    if (change && !result.ok && step !== "target-startup" && "guidance" in result) {
+      result = { ...result, guidance: `The node still records ${change.from.runtime ?? "its previous runtime"}. Relaunch the seat under it with: `
+        + `rig seat launch ${change.seatRef} --fresh --stop --reason "<why>"` } as SeatHandoverResult;
+    }
     if (change && !result.ok) {
       const failure = `${result.code} at ${step}`;
       this.runtimeLedger.record({

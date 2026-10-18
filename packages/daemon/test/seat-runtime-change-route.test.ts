@@ -24,9 +24,9 @@ describe("spec 0005: runtime-change routes", () => {
     setup.sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-impl@seat-rig", tmuxPane: "%1" });
   });
 
-  const post = (path: string, body: unknown, sender?: string) => app.request(path, {
+  const post = (path: string, body: unknown, sender?: string, extra: Record<string, string> = {}) => app.request(path, {
     method: "POST",
-    headers: { "Content-Type": "application/json", ...(sender ? { "X-OpenRig-Session": sender } : {}) },
+    headers: { "Content-Type": "application/json", ...(sender ? { "X-OpenRig-Session": sender } : {}), ...extra },
     body: JSON.stringify(body),
   });
   const change = { reason: "r", operator: "operator-agent@kernel", runtimeChange: { toRuntime: "claude-code", toModel: "m", toPermissions: "floor" } };
@@ -37,6 +37,14 @@ describe("spec 0005: runtime-change routes", () => {
       expect(res.status, String(sender)).toBe(403);
       expect(await res.json()).toMatchObject({ code: "runtime_change_unauthorized" });
     }
+  });
+
+  it("a relayed operator identity is relay:v1, not transport:v1, so a runtime change and a revert are 403", async () => {
+    const relayed = { "X-OpenRig-Relay": "remote-host", "X-OpenRig-Provenance": "transport:v1" };
+    const res = await post("/api/seat/handover/dev-impl%40seat-rig", { ...change, runtimeChange: { ...change.runtimeChange, approval: "go" } }, "operator-agent@kernel", relayed);
+    expect(res.status).toBe(403);
+    const revert = await post("/api/seat/runtime-revert/dev-impl%40seat-rig", { reason: "r", approval: "go" }, "operator-agent@kernel", relayed);
+    expect(revert.status).toBe(403);
   });
 
   it("the operator's transport identity reaches the service: a change without --approval is 400", async () => {

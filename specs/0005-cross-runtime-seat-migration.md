@@ -52,7 +52,7 @@ A runtime changes only when a new occupant starts, and handover already owns tha
 - `--spec` is required. Its `name` must equal the seat's rig, and its member at the seat's logical id must declare `runtime` = `--to-runtime`.
 - **A non-kernel rig's spec is the source of truth:** the member must also declare `model` = `--to-model`, and every other value the change carries must be declared identically (`--to-cwd` against the resolved member cwd, `--to-env` against the member env, `--to-effort`). The successor takes cwd, env and effort from the spec, so a later `rig up` of that spec starts what runs.
 - **On the kernel rig** the packaged variant (for example `rig-claude-only.yaml`) need declare only the runtime. Model, cwd and env come from the flags, and after the recorded change the node row is authoritative: a managed kernel never re-reads the builtin, restore relaunches from node rows, and installs rewrite only the packaged files. A cold boot of a missing kernel rig is a new identity. A first-start retry with the old builtin member is refused, never silently reverted.
-- The ledger records the spec's path and sha256.
+- The ledger records the spec's path and the sha256 of the spec text the daemon parsed and validated. The CLI reads that text from the path; the daemon does not read the path itself.
 
 ### What a change carries and commits
 
@@ -87,7 +87,7 @@ The successor starts fresh: no native history crosses harnesses. The recap resol
 3. **Cutover and verify:** the successor launches in the same pane with the target adapter, is ready, and receives its post-launch files and the packet.
 4. **Commit:** one transaction for every row in the table above, plus the ledger row, the revert slot and the event.
 
-- **Before the commit**, a failure leaves the node row, its startup context and the predecessor session untouched and records a `failed` ledger row; a plain `rig seat launch <seat> --fresh` relaunches the seat under its own runtime.
+- **Before the commit**, a failure leaves the node row, its startup context and the predecessor session untouched and records a `failed` ledger row with its code and step only. If the failure came after the in-place respawn, the canonical session is live (and may hold the target runtime), so the recovery is `rig seat launch <seat> --fresh --stop`, which relaunches the seat under the runtime its node still records; the failure's guidance names it.
 - **After the commit**, `rig seat runtime-revert` restores the node's runtime, model, cwd, member env, effort, Codex profile, permission selection and startup context from the revert slot, and starts a fresh successor under the restored runtime in the same pane. `--resume-predecessor` resumes the predecessor's recorded conversation instead. A revert is recorded with `reverts_change_id`, clears the slot, and cannot itself be reverted.
 - The successor's acceptance is recorded as `pending` on the ledger and the event; observing it is a follow-up (Notes).
 
@@ -153,6 +153,7 @@ The successor starts fresh: no native history crosses harnesses. The recap resol
 - Persisting the rig spec path at `rig up` and reading it at handover (Q1 follow-up).
 - The successor-acceptance signal and its attention mark (Q2 follow-up).
 - Claude-native permission modes on a runtime change; cleaning up the predecessor runtime's files.
+- Binding D3 to the daemon's managed-kernel record rather than to the rig name: while the real kernel rig is archived, a rig newly named `kernel` would authorize. No stable identifier survives a legitimate restart of the kernel from spec today, since that restart issues a new rig id (review r2, LOW).
 - Runtimes other than `codex` and `claude-code`, a pod-wide or rig-wide change, and the UI.
 
 XERJ has no OpenRig index (checked 2026-10-18; a control query on the vilicus prefix answered). The references above are direct reads of `6d746c2a`.

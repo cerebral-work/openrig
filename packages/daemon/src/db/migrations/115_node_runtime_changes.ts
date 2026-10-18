@@ -3,7 +3,8 @@ import type { Migration } from "../migrate.js";
 // Spec 0005 (cerebral-work fork): a seat's runtime can change through a recorded handover.
 // - occupant_tenures.runtime: the runtime each occupant generation ran, backfilled from its node.
 // - node_runtime_changes: the append-only ledger of runtime changes and reverts, committed or failed. It names the
-//   member env and hashes each value, never storing a raw value.
+//   member env and hashes each value, never storing a raw value. spec_sha256 is the sha256 of the spec text the daemon
+//   parsed and validated, which the CLI reads from spec_path; the daemon does not read spec_path itself.
 // - node_runtime_revert_slots: one per node, the state a revert of its last committed change restores (node fields,
 //   member env, permission selection and startup context before that change). Operational state, like nodes.env_json.
 // Numbered 115: upstream main already has 114. The fork keeps its migration numbers clear of upstream's at each sync.

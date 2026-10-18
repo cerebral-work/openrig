@@ -428,7 +428,10 @@ Examples:
   rig seat handover spec-writer@openrig-pm --source discovered:01H... --reason mvp-proof --json
   rig seat handover operator-agent@kernel --to-runtime claude-code --to-model claude-opus-5-5 --to-permissions full_bypass \\
     --to-cwd ~/kernel/operator --to-env CLAUDE_CONFIG_DIR=$HOME/.claude-operator \\
-    --spec <kernel package>/specs/rigs/launch/kernel/rig-claude-only.yaml --approval <go ref> --reason opus-swap --dry-run`)
+    --spec <kernel package>/specs/rigs/launch/kernel/rig-claude-only.yaml --approval <go ref> --reason opus-swap --dry-run
+
+If a runtime change fails after the successor started, the node still records the old runtime: relaunch with
+rig seat launch <seat> --fresh --stop --reason <why>. After a committed change, undo it with rig seat runtime-revert.`)
     .action((seat: string, opts: HandoverActionOpts) => runSeatHandover(seat, opts, getDeps()));
 
   // Spec 0005 — undo the seat's most recent committed runtime change. The kernel's operator or advisor may run it,
