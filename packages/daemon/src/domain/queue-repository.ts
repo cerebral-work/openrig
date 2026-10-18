@@ -2882,9 +2882,10 @@ export class QueueRepository {
       // An existing park is kept, not refused: the request names no blocker (the row's own, or the gate a claim retained,
       // is restored) or names the one the row already carries.
       const kept = (input.blockedOn == null || qitem.blockedOn === effectiveBlockedOn) && !effectiveBlockedOn.startsWith("qitem-");
-      // A gate restored from a claim (the row no longer carries it) keeps the form waiver, but its park has ended, so the
-      // wake rule applies to it as to a new park (review W1); a still-parked re-park keeps its existing wake.
-      const restoredFromClaim = input.blockedOn == null && qitem.blockedOn == null;
+      // A kept park keeps the form waiver, but it has a wake only while the row's current wake is live. A claim ends the
+      // park and its wake (review W1), and a plain park timer goes terminal once it fires (park_timer_fired_once); either
+      // way the kept blocker would lift nothing, so the wake rule applies to it as to a new park.
+      const keptWithoutLiveWake = kept && this.wakeRepo.getStatus(qitem.qitemId)?.live !== true;
       const refuseOnRequest = (code: string, message: string, details: Record<string, unknown>) => {
         if (kept || input.strictBlocker !== true) {
           console.warn(`[queue] ${qitem.qitemId} parks on '${effectiveBlockedOn}' (${code}); a new park from the CLI would be refused: ${message}`);
@@ -2934,7 +2935,7 @@ export class QueueRepository {
       }
       const liftsItself = resolved.kind === "row" && isBlockerLive(resolved.item.state);
       const hasWake = input.wakeAfterSeconds != null || input.wakeWatchdogId != null;
-      if (input.strictBlocker === true && (!kept || restoredFromClaim) && !liftsItself && !hasWake && (resolved.kind === "typed-gate" || resolved.kind === "address")) {
+      if (input.strictBlocker === true && (!kept || keptWithoutLiveWake) && !liftsItself && !hasWake && (resolved.kind === "typed-gate" || resolved.kind === "address")) {
         throw new QueueRepositoryError(
           "blocker_wake_required",
           `blocked_on '${effectiveBlockedOn}' has no automatic lift: nothing on this daemon resolves it, so the park needs a wake (--wake-after <duration> or --wake-watchdog <jobId>). ${forms} Example: rig queue block <qitemId> --on external:<what> --wake-after 2h --continuation '<what resumes>'.`,

@@ -9,6 +9,9 @@ import { QueueRepository } from "../src/domain/queue-repository.js";
 import { WatchdogJobsRepository } from "../src/domain/watchdog-jobs-repository.js";
 import { escalationDedupTag, runWakeLadderTick } from "../src/domain/queue-wake-ladder.js";
 import { queueRoutes } from "../src/routes/queue.js";
+import { WatchdogPolicyEngine } from "../src/domain/watchdog-policy-engine.js";
+import { WatchdogHistoryLog } from "../src/domain/watchdog-history-log.js";
+import { QueueWakeRepository } from "../src/domain/queue-wake-repository.js";
 
 // Both SQL writers are supported by QueueRepository's generation-column detection.
 describe.each(["current", "without generation stamps"])("claim park exit (%s schema)", (schema) => {
@@ -60,6 +63,42 @@ describe.each(["current", "without generation stamps"])("claim park exit (%s sch
     const restored = await reblock(row.qitemId, { wakeAfterSeconds: 120 });
     expect(restored.status).toBe(200);
     expect(await restored.json()).toMatchObject({ state: "blocked", blockedOn: "external:owned-gate" });
+  });
+
+  // Spec 0011, review INFO on #21: a plain park timer fires once and goes terminal (park_timer_fired_once) while
+  // the row stays blocked. A re-park that keeps the blocker then has nothing to lift it unless it carries a wake.
+  const fireParkTimer = async (id: string) => {
+    const engine = new WatchdogPolicyEngine({
+      jobsRepo: jobs, historyLog: new WatchdogHistoryLog(db), eventBus: new EventBus(db),
+      deliver: async () => ({ status: "ok" }),
+      resolvePreDeliveryTerminalReason: ({ jobId }: { jobId: string }) => repo.resolveWatchdogPreDeliveryTerminalReason(jobId),
+      onWakeAttempt: ({ jobId, deliveryStatus }) => repo.recordWatchdogWakeAttempt(jobId, deliveryStatus),
+    });
+    await engine.evaluate(jobs.getByIdOrThrow(timerFor(id)));
+  };
+
+  it("a still-blocked row whose park timer fired needs a wake to be re-parked on its blocker; with one it is re-armed", async () => {
+    const row = await create();
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "external:owned-gate", wakeAfterSeconds: 90 });
+    await fireParkTimer(row.qitemId);
+    expect(jobs.getById(timerFor(row.qitemId))).toMatchObject({ state: "terminal", terminalReason: "park_timer_fired_once" });
+    expect(repo.getById(row.qitemId)).toMatchObject({ state: "blocked", blockedOn: "external:owned-gate" });
+    for (const named of [{}, { blockedOn: "external:owned-gate" }]) {
+      const refused = await reblock(row.qitemId, named);
+      expect(refused.status, JSON.stringify(named)).toBe(500);
+      expect(await refused.json()).toMatchObject({ error: "blocker_wake_required", rejectedBlocker: "external:owned-gate" });
+    }
+    const rearmed = await reblock(row.qitemId, { wakeAfterSeconds: 120 });
+    expect(rearmed.status).toBe(200);
+    expect(new QueueWakeRepository(db).getStatus(row.qitemId)).toMatchObject({ kind: "timer", live: true });
+  });
+
+  it("control: a still-blocked row whose park timer is still live is re-parked on its blocker without a wake", async () => {
+    const row = await create();
+    repo.update({ qitemId: row.qitemId, actorSession: "worker@rig", state: "blocked", blockedOn: "external:owned-gate", wakeAfterSeconds: 3600 });
+    const kept = await reblock(row.qitemId);
+    expect(kept.status).toBe(200);
+    expect(await kept.json()).toMatchObject({ state: "blocked", blockedOn: "external:owned-gate" });
   });
 
   it("W1: a claim-restored live row needs no wake on a bare re-block", async () => {
