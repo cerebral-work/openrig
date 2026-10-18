@@ -30,7 +30,7 @@ jobs:
     steps:
       - name: Egress policy probe (ci-parity CNP must deny these)
         if: github.event_name == 'push'
-        shell: bash
+        shell: bash {0}
         run: |
           set -u
           # Positive control first: an allow-listed name must work, or a "deny" below proves nothing.
