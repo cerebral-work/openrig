@@ -8,6 +8,9 @@ import {
   WatchdogJobsError,
 } from "../domain/watchdog-jobs-repository.js";
 import { parseWatchdogSpec } from "../domain/watchdog-policy-engine.js";
+import type Database from "better-sqlite3";
+import { QueueWakeRepository } from "../domain/queue-wake-repository.js";
+import { isQueueWait } from "../domain/queue-wait-backoff.js";
 
 /**
  * Watchdog HTTP routes (PL-004 Phase C). Backs `rig watchdog` CLI verb.
@@ -146,7 +149,15 @@ export function watchdogRoutes(): Hono {
   // Literal path before /:job_id (per Phase A R1 SSE route-order lesson).
   app.get("/list", (c) => {
     const jobs = getJobsRepo(c).listAll();
-    return c.json(jobs);
+    // Spec 0011: a timer a park generated serves that parked row, and a plain one fires once (it goes terminal
+    // with park_timer_fired_once), so a long park timer does not read as a recurring job. Queue waits repeat.
+    const db = c.get("db" as never) as Database.Database | undefined;
+    if (!db) return c.json(jobs);
+    const wakes = new QueueWakeRepository(db);
+    return c.json(jobs.map((job) => {
+      const rows = wakes.findQitemsByGeneratedTimer(job.jobId);
+      return rows.length === 0 ? job : { ...job, parkTimer: { oneShot: !isQueueWait(job.specYaml), serves: rows.map((row) => row.qitemId) } };
+    }));
   });
 
   // SSE for watchdog.* events. MUST precede /:job_id so the literal

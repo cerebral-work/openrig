@@ -1205,6 +1205,21 @@ describe.each(["done", "handed-off"] as const)("#318 seat-target closure without
     expect(repo.list({ destinationSession: "next@r" })).toHaveLength(0);
   });
 
+  // Spec 0011: a close handed off to a custom-id successor row that exists is custody, not a dangling closure.
+  it("CUSTOM-ID SUCCESSOR ROW: a close handed off to an existing custom row id is not swept", async () => {
+    await repo.create({ qitemId: "custom-successor-row-20261018", sourceSession: "worker@r", destinationSession: "next@r", body: "successor", nudge: false });
+    const row = await mkRow();
+    await repo.update({
+      qitemId: row.qitemId,
+      actorSession: "worker@r",
+      state: closureState,
+      closureReason: "handed_off_to",
+      closureTarget: "custom-successor-row-20261018",
+    });
+    await runSweep();
+    expect(await findingsFor(row.qitemId)).toHaveLength(0);
+  });
+
   it("TRANSACTIONAL HANDOFF: repo.handoff to a seat target creates linked successor in same txn — zero findings", async () => {
     const row = await mkRow();
     await repo.handoff({

@@ -190,4 +190,30 @@ describe("51-06 D2 — real CLI->loopback HTTP->queueRoutes/QueueRepository acce
     expect(exit).toBeFalsy();
     expect(repo.getByIdOrThrow(id)).toMatchObject({ state: "blocked", blockedOn: gate });
   });
+
+  // Spec 0011: the CLI park must name something that can lift it. A custom row id is a row like any other.
+  it.each(["block", "update"] as const)("%s refuses bare free text and an unknown prefix, listing the accepted forms", async (verb) => {
+    for (const [blockedOn, code] of [["operator decision", "blocker_not_found"], ["gate:time", "blocker_unknown_prefix"]] as const) {
+      const before = repo.getByIdOrThrow(id);
+      const { out, exit } = await runCli([...parkArgs(verb, blockedOn), "--json"]);
+      expect(exit, blockedOn).toBe(2);
+      const body = JSON.parse(out);
+      expect(body).toMatchObject({ error: code, rejectedBlocker: blockedOn });
+      expect(body.message).toContain("fold:<what>, auth:<what>, external:<what>");
+      expect(body.message).toContain("A free-text human wait uses external:<name>.");
+      expect(repo.getByIdOrThrow(id)).toEqual(before);
+    }
+  });
+
+  it.each(["block", "update"] as const)("%s refuses a custom row that is done and accepts one that is live", async (verb) => {
+    const done = await repo.create({ qitemId: `done-custom-row-${verb}`, sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "done" });
+    repo.update({ qitemId: done.qitemId, actorSession: "dev-x@rig", state: "done", closureReason: "no-follow-on", transitionNote: "finished" });
+    const refused = await runCli([...parkArgs(verb, `done-custom-row-${verb}`), "--json"]);
+    expect(refused.exit).toBe(2);
+    expect(JSON.parse(refused.out)).toMatchObject({ error: "blocker_not_live", rejectedBlocker: `done-custom-row-${verb}`, blockerState: "done" });
+    await repo.create({ qitemId: `live-custom-row-${verb}`, sourceSession: "orch@rig", destinationSession: "dev-x@rig", body: "live" });
+    const { exit } = await runCli([...parkArgs(verb, `live-custom-row-${verb}`), "--json"]);
+    expect(exit).toBeFalsy();
+    expect(repo.getByIdOrThrow(id)).toMatchObject({ state: "blocked", blockedOn: `live-custom-row-${verb}` });
+  });
 });

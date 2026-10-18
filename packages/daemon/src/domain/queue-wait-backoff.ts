@@ -42,7 +42,8 @@ export function isQueueWait(specYaml: string): boolean {
 /** The exact blocker owns progress signals. Ignore delivery receipts; do not
  * interpret its notes. Our own waiting acknowledgments are on a different row. */
 function blockerTransition(db: Database.Database, blocker: string | null): number | null {
-  if (!blocker?.startsWith("qitem-")) return null;
+  // Spec 0011: any blocker that is a queue row, whatever its prefix.
+  if (!blocker || !db.prepare("SELECT 1 FROM queue_items WHERE qitem_id = ?").get(blocker)) return null;
   return lastMeaningfulTransition(db, blocker)?.id ?? null;
 }
 

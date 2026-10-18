@@ -360,8 +360,8 @@ function evidenceIsNewer(evidenceAt: string, closedAt: string): boolean {
   return !Number.isNaN(evidence) && !Number.isNaN(closed) && evidence > closed;
 }
 
-export function verificationCommand(target: string): string {
-  if (target.startsWith("qitem-")) {
+export function verificationCommand(target: string, isRow = false): string {
+  if (isRow || target.startsWith("qitem-")) {
     const successorId = target.split("@", 1)[0] ?? target;
     return `OPENRIG_URL=<registered-host> rig queue show ${successorId}`;
   }
@@ -374,7 +374,7 @@ export function verificationCommand(target: string): string {
 function evidenceBody(db: Database.Database, c: Candidate): string {
   if (c.verificationTargets?.length) {
     const checks = c.verificationTargets
-      .map((target) => `- ${target}\n  ${verificationCommand(target)}`)
+      .map((target) => `- ${target}\n  ${verificationCommand(target, Boolean(db.prepare("SELECT 1 FROM queue_items WHERE qitem_id = ?").get(target)))}`)
       .join("\n");
     return (
       `STUCK SWEEP FINDING (successor-verification-required)\n` +
@@ -625,6 +625,8 @@ export async function runStuckSweep(deps: StuckSweepDeps): Promise<StuckSweepRes
           if (target === row.qitemId) return true;
           return !deps.queueRepo.getById(target);
         }
+        // Spec 0011: a custom-id successor row is a row, not a seat.
+        if (deps.queueRepo.getById(target)) return false;
         try {
           return !hasLinkedSuccessor(deps.db, row.qitemId, target);
         } catch {
