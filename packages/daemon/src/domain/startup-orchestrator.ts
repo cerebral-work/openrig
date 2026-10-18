@@ -129,6 +129,28 @@ export function isRecoverableStartupFailure(db: Database.Database, nodeId: strin
 
 // -- Types --
 
+/** Step 3 of a start: the files that apply to `context`, split by concrete delivery hint into pre-launch (filesystem)
+ *  and post-launch (TUI) files. Also used by a runtime-changing seat handover (spec 0005). */
+export function partitionStartupFiles(
+  files: ResolvedStartupFile[],
+  context: "fresh_start" | "restore",
+  readFile: (absolutePath: string) => string,
+): { preLaunchFiles: ResolvedStartupFile[]; postLaunchFiles: ResolvedStartupFile[] } {
+  const preLaunchFiles: ResolvedStartupFile[] = [];
+  const postLaunchFiles: ResolvedStartupFile[] = [];
+  for (const f of files.filter((file) => file.appliesOn.includes(context))) {
+    const hint = f.deliveryHint === "auto"
+      ? resolveConcreteHint(f.path, readFile(f.absolutePath))
+      : f.deliveryHint;
+    if (hint === "send_text") {
+      postLaunchFiles.push(f);
+    } else {
+      preLaunchFiles.push(f);
+    }
+  }
+  return { preLaunchFiles, postLaunchFiles };
+}
+
 export interface StartupInput {
   rigId: string;
   nodeId: string;
@@ -362,19 +384,9 @@ export class StartupOrchestrator {
     const sourceFiles = input.rebuildArtifacts && input.rebuildArtifacts.length > 0
       ? [...input.rebuildArtifacts, ...input.resolvedStartupFiles]
       : input.resolvedStartupFiles;
-    const applicableFiles = sourceFiles.filter((f) => f.appliesOn.includes(context));
-    const preLaunchFiles: ResolvedStartupFile[] = [];
-    let postLaunchFiles: ResolvedStartupFile[] = [];
-    for (const f of applicableFiles) {
-      const hint = f.deliveryHint === "auto"
-        ? resolveConcreteHint(f.path, this.safeReadFile(f.absolutePath))
-        : f.deliveryHint;
-      if (hint === "send_text") {
-        postLaunchFiles.push(f);
-      } else {
-        preLaunchFiles.push(f);
-      }
-    }
+    const partitioned = partitionStartupFiles(sourceFiles, context, (path) => this.safeReadFile(path));
+    const preLaunchFiles = partitioned.preLaunchFiles;
+    let postLaunchFiles = partitioned.postLaunchFiles;
 
     // 4. Deliver pre-launch files (filesystem: guidance_merge, skill_install)
     // Always call even with empty list so adapters can provision runtime-specific config (e.g. context collectors)
