@@ -118,6 +118,12 @@ describe("the fleet identity sweep under tmux failures (spec 0015)", () => {
     expect(verdicts.c2).toMatchObject({ verdict: "tmux_unavailable", reason: "tmux_unavailable" });
   });
 
+  it("a managed Claude seat (wrapper shell, resume token) whose every read fails is unavailable, not down-ranked", async () => {
+    const managed = [{ id: "m1", runtime: "claude-code", pane: "%5", token: "tok-m1" }];
+    const verdicts = await sweep(managed, scriptedTmux({ listing: timeout, panes: { "%5": timeout } }));
+    expect(verdicts.m1).toMatchObject({ verdict: "tmux_unavailable", reason: "tmux_unavailable" });
+  });
+
   it("states upstream's Codex rule, kept: a failed read is mismatch for codex, named tmux_unavailable (a known gap)", async () => {
     const codex = [{ id: "x1", runtime: "codex", pane: "%4" }];
     const verdicts = await sweep(codex, scriptedTmux({ listing: timeout, panes: { "%4": exitError } }));

@@ -40,17 +40,29 @@ Two more writers turned a failed tmux read into a down-rank:
    - A failed batch read lists nothing, so each pane is decided by its own read; the selection cache marks a failed read `unavailable`.
    - The tokenless sole-pane recheck gives the unavailable verdict when its `listPanes` or pid read fails.
    - The rebind proof reports "tmux pane identity lookup failed" and records no verdict when the pid of the pane its listing showed can't be read.
-3. **The cross-runtime rule, as built.** On a failed read the unavailable verdict is:
+3. **The cross-runtime rule, as built.** On a failed read:
    - **`claude-code` and `terminal`:** verdict `tmux_unavailable`. It is not down-ranked (`types.ts` "fail-open on unknown", OPR.0.4.3.19), so the seat keeps its stored status.
-   - **`codex`:** upstream's rule is kept: verdict `mismatch`, reason `tmux_unavailable` (6553aaef, pinned by `seat-identity-reconciler.test.ts` "cannot verify an unavailable pane"). This is fail-closed and down-ranked.
-     - **Known gap:** a Codex seat still flaps on a tmux failure.
-     - No Codex seat runs on ceres today. orch-lead's ruling (2026-10-18) keeps upstream's identity rule here and files the Codex choice as its own follow-up: the last verdict through a bounded outage, a uniform `tmux_unavailable`, or upstream.
-4. **Consumers of `pane_missing` / `pane_pid_gone`** (read-only audit at b6847523). None of them acts on the verdict inside OpenRig; every one is a projection or report:
-   - `node-inventory` (`rig ps` `startupStatus` and lifecycle), `graph-projection`, `ps-projection`, `seat-status-service`;
-   - the provider read model (`provider-collect`, which hides non-running Claude seats);
-   - `restore-check` (red, with `remediationSafe: false`).
-   - The archive guard keys on `session_missing` only. A transient tmux failure could have triggered every listed projection.
-   - The action is outside OpenRig: cortex-edge reads `rig ps` and deregisters the seats.
+   - **`codex`:** upstream's tmux-unavailable rule applies: verdict `mismatch`, reason `tmux_unavailable` (6553aaef, pinned by `seat-identity-reconciler.test.ts` "cannot verify an unavailable pane").
+     - A Codex seat's failed pid read used to give `pane_missing` / `pane_pid_gone`; it now gives that rule's `mismatch` / `tmux_unavailable`. Both are down-ranked, but `restore-check`'s remediation text differs.
+     - **Known gap:** a Codex seat still flaps on a tmux failure. No Codex seat runs on ceres today.
+     - orch-lead's ruling (2026-10-18) keeps upstream's fail-closed rule here and files the Codex choice as its own follow-up: the last verdict through a bounded outage, a uniform `tmux_unavailable`, or upstream.
+   - **Shapes tested** (the claims here go no further):
+     - a terminal seat, a direct Claude seat, and a Claude seat with a resume token, each under a total failure and a mixed one;
+     - a managed Claude seat (wrapper shell and resume token, the dominant production shape) under a total failure;
+     - the tokenless wrapped Claude recheck;
+     - the rebind proof.
+   - **Known residual, not in this change:** a managed Claude seat under an **intermittent** blip still gets `mismatch` / `process_identity_ambiguous`, which down-ranks it. That happens when `ps` fails once, or one native-proof sample's pid read fails. Native proof is fail-closed. orch-lead files it with the Codex rule as one follow-up: a bounded last-verdict hold through transient proof failures. (Probed at da94bf2e.)
+4. **Consumers of a down-ranking verdict** (`pane_missing`, `pane_pid_gone` and `mismatch`), read-only audit at b6847523. A down-ranked running seat projects `startupStatus` and `lifecycleState` `attention_required` (`node-inventory`), and the rig rolls up `attention_required`.
+   - **Acting consumers:**
+     - **`rig archive`** refused without `--force` only while the rig was `running`/`degraded`, read from that projection. A flap therefore let it archive a rig with live seats without `--force`. **Fixed here:** the guard reads stored liveness. A stored-running seat counts as `attention_required` only on a confirmed `session_missing`, stored startup attention, or restore attention/failed, never on a pane-read verdict (orch-lead ruling (b), 2026-10-18). Upstream's "healthy plus confirmed-missing archives without force" stays.
+     - **Workflow role resolution** (`workflow-role-resolver.ts:122`) disqualifies a seat that is not `running` (`not_live(lifecycleState=attention_required)`), so routing to a role skips a down-ranked seat. **Unchanged, by ruling:** skipping an identity-unverified seat for routing is defensible.
+   - **Projections and reports, no action:**
+     - `rig ps` (`node-inventory`), `graph-projection`, `ps-projection`, `seat-status-service`;
+     - the provider read model (`provider-collect`, which hides non-running Claude seats);
+     - `restore-check` (red, with `remediationSafe: false`).
+   - **Not affected:** `kernel-boot-tracker`, which reads the stored `startup_status`.
+   - Outside OpenRig, cortex-edge reads `rig ps` and deregisters the seats.
+   - Scope: the modules that read the identity verdict or the projected `lifecycleState`/`startupStatus`, found by searching for the verdict names and for `=== "running"`/`"ready"` filters.
 
 ## Requirements
 
@@ -59,6 +71,7 @@ Two more writers turned a failed tmux read into a down-rank:
 - REQ-0015-03: If a batched pane read fails, then the seat identity reconciler shall decide each pane from its own read.
 - REQ-0015-04: When the tokenless Claude sole-pane recheck cannot read tmux, the seat identity reconciler shall record the unavailable verdict instead of a mismatch.
 - REQ-0015-05: When the rebind proof cannot read the pid of the pane its listing showed, the attention reconciler shall report the lookup failure without recording a verdict.
+- REQ-0015-06: While a stored running seat has no confirmed missing session and no stored startup or restore attention, the archive route shall count it as live.
 
 ## Plan
 
@@ -69,6 +82,7 @@ Two more writers turned a failed tmux read into a down-rank:
 
 ```bash
 cd packages/daemon && npx vitest run test/tmux-pane-pid-failure.test.ts
+cd packages/daemon && npx vitest run test/rigs-routes.test.ts -t "force|archive"
 ```
 
 - **Adapter:**
@@ -80,14 +94,20 @@ cd packages/daemon && npx vitest run test/tmux-pane-pid-failure.test.ts
   - A timeout, and a non-zero exit, on the batch and every pane read: every seat is `tmux_unavailable` and none is down-ranked.
   - A gone pane is still `pane_missing`.
   - Mixed (the batch fails; one pane reads, one is gone, one fails): `verified`, `pane_missing` and `tmux_unavailable`.
+  - A managed Claude seat (wrapper shell, resume token) whose every read fails is `tmux_unavailable`.
   - Codex keeps upstream's `mismatch` / `tmux_unavailable`.
 - **Recheck:** a failed `listPanes` or pid read is unavailable, not `process_identity_ambiguous`.
 - **Rebind:** a failed read writes no `pane_missing`; tmux's "can't find pane" still does.
-- **Red first:** 12 of 15 fail on b6847523; the 3 controls pass.
-- **Break-once:** each of 7 guards was broken and shown red:
+- **Archive** (`rigs-routes.test.ts`): running seats down-ranked by `pane_missing`/`pane_pid_gone`, `mismatch`/`process_identity_ambiguous`, or Codex `mismatch`/`tmux_unavailable` are refused without `--force` (409) and archive with it. The upstream healthy-plus-confirmed-missing case still archives without `--force`.
+- **Red first:** every new case except the 3 controls fails on its base:
+  - 12 of 15 on b6847523;
+  - the managed-seat case on 79e11a4f (`pane_pid_gone`);
+  - the 3 archive cases (200 instead of 409).
+- **Break-once:** each of 8 guards was broken and shown red:
   - failures taken as absent;
   - classifying on stdout;
   - the verdict guard;
   - the cache mark;
   - both recheck guards;
-  - the rebind guard.
+  - the rebind guard;
+  - the archive guard reading the projected lifecycle again.
