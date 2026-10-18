@@ -340,7 +340,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
           : await this.tmux.sendText(binding.tmuxSession, cmd);
       if (!textResult.ok) {
-        return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
+        return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
       }
       const enterResult = managed || this.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);
       if (!enterResult.ok) {
@@ -363,7 +363,7 @@ export class ClaudeCodeAdapter implements RuntimeAdapter {
           ? await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime }), undefined, { sourceInPane: true })
           : await this.tmux.sendText(binding.tmuxSession, cmd);
     if (!textResult.ok) {
-      return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
+      return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
     }
     // Send Enter to execute
     const enterResult = managed || this.seatLaunchEnvironment ? { ok: true as const } : await this.tmux.sendKeys(binding.tmuxSession, ["Enter"]);

@@ -444,7 +444,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
       const cmd = `codex${daemonArg}${postureArg}${networkArg}${modelArg}${effortArg} fork${queueStateDirArg} ${shellQuote(parentId)}`;
       const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
       if (!textResult.ok) {
-        return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
+        return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
       }
       await this.dismissSkippableCodexUpdatePrompt(binding.tmuxSession, updatePrompt, 8);
       if (updatePrompt.failure) return updatePrompt.failure;
@@ -475,7 +475,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
 
     const textResult = await this.tmux.sendShellCommand(binding.tmuxSession, await this.seatCommand(binding, cmd));
     if (!textResult.ok) {
-      return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
+      return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
     }
 
     await this.dismissSkippableCodexUpdatePrompt(binding.tmuxSession, updatePrompt);
@@ -513,7 +513,7 @@ export class CodexRuntimeAdapter implements RuntimeAdapter {
    *  does. Nothing is prepared again, so the command runs exactly as it was built and checked. */
   async sendResumeCommand(tmuxSession: string, command: string, resumeToken: string): Promise<HarnessLaunchResult> {
     const textResult = await this.tmux.sendShellCommand(tmuxSession, command);
-    if (!textResult.ok) return { ok: false, error: `Failed to send launch command: ${textResult.message}` };
+    if (!textResult.ok) return { ok: false, error: `Failed to send launch command: ${textResult.message}`, code: textResult.code };
     return this.verifyResumeInPane(tmuxSession, resumeToken);
   }
 

@@ -1886,3 +1886,11 @@ describe("Codex runtime adapter", () => {
     expect(fs.readFileSync(nodePath.join(cwd, ".agents", "reviewer.yaml"), "utf-8")).toBe("name: reviewer");
   });
 });
+
+describe("launchHarness — a refused launch send keeps its code (CER-2983)", () => {
+  it("returns the tmux code with the error, so the handover can name a seat env refusal", async () => {
+    const tmux = mockTmux({ sendText: vi.fn(async () => ({ ok: false as const, code: "seat_env_refused", message: "s: the seat env allow-list could not be applied, so nothing was sent." })) } as Partial<TmuxAdapter>);
+    const result = await new CodexRuntimeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} }).launchHarness(makeBinding(), { name: "seat" });
+    expect(result).toMatchObject({ ok: false, code: "seat_env_refused" });
+  });
+});

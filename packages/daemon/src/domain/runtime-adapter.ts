@@ -105,7 +105,8 @@ export type HarnessLaunchResult =
   // `missingConversation` is set only when the runtime itself reported that the requested
   // conversation doesn't exist; other `retry_fresh` failures (such as a pane back at its shell)
   // leave it unset.
-  | { ok: false; error: string; recovery?: HarnessLaunchRecovery; evidence?: string; missingConversation?: true;
+  // `code` carries a refused send's tmux code (for example `seat_env_refused`, spec 0013), so a handover can name it.
+  | { ok: false; error: string; code?: string; recovery?: HarnessLaunchRecovery; evidence?: string; missingConversation?: true;
     launchedProcess?: import("./native-process-lineage.js").ClaudeLaunchedProcess };
 
 // -- Shared concrete-hint resolver --

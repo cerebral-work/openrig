@@ -112,7 +112,7 @@ function fixture(opts: { guard?: boolean; authoredRecapResolver?: (seatRef: stri
   const ledger = () => db.prepare("SELECT kind, outcome FROM node_runtime_changes WHERE node_id = ? ORDER BY created_at, rowid").all(node.id);
   const slot = () => db.prepare("SELECT change_id FROM node_runtime_revert_slots WHERE node_id = ?").get(node.id) as { change_id: string } | undefined;
   return {
-    db, node, service, change, held, held1, ledger, slot, launches, eventBus, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn>; isPaneDead: ReturnType<typeof vi.fn> },
+    db, node, service, change, held, held1, ledger, slot, launches, eventBus, adapters, tmux: tmux as unknown as { listPanes: ReturnType<typeof vi.fn>; respawnPane: ReturnType<typeof vi.fn>; isPaneDead: ReturnType<typeof vi.fn> },
     hold: () => { holdNext = true; },
   };
 }
@@ -289,6 +289,18 @@ describe("spec 0005: post-commit recovery (runtime-declare, committed-with-error
     expect(result.guidance).toContain(`then relaunch with: rig seat launch ${SEAT} --fresh --stop`);
     expect(f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id))
       .toEqual({ failure: "successor_create_failed at create-successor:create_successor:seat_env_refused" });
+  });
+
+  it("a harness launch refused by the seat env allow-list keeps its code at start_agent and gets the same guidance", async () => {
+    const f = fixture();
+    vi.spyOn(f.adapters["claude-code"], "launchHarness").mockResolvedValue({ ok: false, code: "seat_env_refused",
+      error: "Failed to send launch command: s: the seat env allow-list could not be applied, so nothing was sent." } as never);
+    const result = await f.service.handover({ seatRef: SEAT, reason: "r", source: "fresh", caller: OPERATOR,
+      runtimeChange: f.change("claude-code", "claude-opus-5-5") }) as { ok: boolean; guidance?: string };
+    expect(result.ok).toBe(false);
+    expect(result.guidance).toContain("Fix the seat env policy first (rig config set seat_env.mode filter rolls it back)");
+    expect(f.db.prepare("SELECT failure FROM node_runtime_changes WHERE node_id = ?").get(f.node.id))
+      .toEqual({ failure: "successor_create_failed at create-successor:start_agent:seat_env_refused" });
   });
 
   it("a committed change whose declaration succeeds is marked declared at commit, by its operator", async () => {
