@@ -380,7 +380,8 @@ describe("Lifecycle reboot/recovery scenario matrix (Tier 1)", () => {
 
         const r = await adapter.resume("r99-worker", "codex_id", "tok-abc", "/tmp");
 
-        expect(tmux.sendShellCommand).toHaveBeenCalledWith("r99-worker", "codex -s workspace-write '-c' 'check_for_update_on_startup=false' resume 'tok-abc'");
+        // Spec 0017 REQ-0017-17: the resume marks itself as a codex runtime launch, so the daemon's values reach it only staged.
+        expect(tmux.sendShellCommand).toHaveBeenCalledWith("r99-worker", "codex -s workspace-write '-c' 'check_for_update_on_startup=false' resume 'tok-abc'", undefined, { runtimeLaunch: "codex" });
         expect(tmux.sendText).not.toHaveBeenCalled();
         expect(r).toEqual({
           ok: true,
