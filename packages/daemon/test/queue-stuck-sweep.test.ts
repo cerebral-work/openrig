@@ -272,6 +272,18 @@ describe("S02 standing stuck sweep — both halves, routed findings, quiet-but-o
     expect(finding?.body).toContain("age: 5 min\nclaimed: 383 min ago\n");
   });
 
+  it("CER-2984 F1: an unparsable claim timestamp never throws; the sweep completes and still reports the other rows", async () => {
+    const bad = await mkRow();
+    repo.claim({ qitemId: bad.qitemId, destinationSession: "worker@r" });
+    db.prepare("UPDATE queue_items SET claimed_at = 'not-a-date' WHERE qitem_id = ?").run(bad.qitemId);
+    const good = await mkRow();
+    repo.claim({ qitemId: good.qitemId, destinationSession: "worker@r" });
+    ageClaim(good.qitemId, 60);
+    const { result } = await runSweep();
+    expect(result.outcome).toBe("findings");
+    expect(await findingsFor(good.qitemId)).toHaveLength(1);
+  });
+
   it("CER-2984 STALL AGE: a never-parked row reports the same age as before, its claim age", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });

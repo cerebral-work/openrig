@@ -87,7 +87,8 @@ export function derivePickup(facts: PickupFacts): PickupReceipt {
   const minutes = Math.floor(ageMs / 60_000);
   return {
     state: "stalled-after-claim",
-    stalledSince: new Date(anchor).toISOString(),
+    // An unparsable claim or change timestamp leaves the anchor NaN: no stalledSince, never a throw (F1).
+    ...(Number.isFinite(anchor) ? { stalledSince: new Date(anchor).toISOString() } : {}),
     evidence: facts.lastMeaningfulAt === undefined
       ? `claimed ${minutes} min ago, zero substantive transitions since`
       : `no meaningful queue change for ${minutes} min; owner activity ${facts.activity ?? "unknown"} (queue age does not prove idle)`,

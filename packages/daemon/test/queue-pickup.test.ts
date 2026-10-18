@@ -236,6 +236,19 @@ describe("S04 pickup receipts — derived, visible, threshold-honest", () => {
     expect(derivePickup({ ...base, lastMeaningfulAt: resumed, now: new Date("2026-10-18T12:50:00.000Z") })).toEqual({ state: "working" });
   });
 
+  it("CER-2984 F1: an unparsable claim or change timestamp never throws; the stalled receipt simply has no stalledSince", async () => {
+    const { derivePickup } = await import("../src/domain/queue-pickup.js");
+    const base = { state: "in-progress", lastHeartbeat: null, postClaimMotionCount: 0, thresholdMinutes: 3, now: new Date("2026-10-18T12:53:09.000Z") };
+    for (const facts of [
+      { ...base, claimedAt: "not-a-date", lastMeaningfulAt: "2026-10-18T12:48:22.000Z" },
+      { ...base, claimedAt: "2026-10-18T06:30:09.000Z", lastMeaningfulAt: "not-a-date" },
+    ]) {
+      const receipt = derivePickup(facts);
+      expect(receipt.state).toBe("stalled-after-claim");
+      expect(receipt).not.toHaveProperty("stalledSince");
+    }
+  });
+
   it("VIEW LENS 'pickup': claimed rows with derived state + named stalled evidence, queryable", async () => {
     const row = await mkRow();
     repo.claim({ qitemId: row.qitemId, destinationSession: "worker@r" });
