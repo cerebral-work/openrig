@@ -88,7 +88,7 @@ function fixture(opts: { rigName?: string; memberRuntime?: string; memberModel?:
     toRuntime: "claude-code", toModel: "claude-opus-5-5", toPermissions: "full_bypass",
     spec: { path: specPath, yaml: specYaml }, approval: "christian-go", ...overrides,
   });
-  return { db, node, seat, cwd, service, unchanged, request };
+  return { db, node, seat, cwd, service, unchanged, request, rigRepo };
 }
 
 const OPERATOR = { session: "operator-agent@kernel", provenance: "transport:v1" };
@@ -100,6 +100,19 @@ describe("spec 0005: runtime-change refusals and dry run", () => {
     for (const caller of [null, { session: "dev-impl@rt-rig", provenance: "transport:v1" }, { ...OPERATOR, provenance: "claimed:v1" }, ADVISOR]) {
       const result = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", operator: "operator-agent@kernel", caller, runtimeChange: f.request() });
       expect(result).toMatchObject({ ok: false, code: "runtime_change_unauthorized" });
+    }
+    f.unchanged();
+  });
+
+  it("D3: an operator.agent seat in a rig not named kernel is not the kernel operator", async () => {
+    const f = fixture();
+    const impostor = f.rigRepo.createRig("impostor");
+    f.rigRepo.addNode(impostor.id, "operator.agent", { runtime: "codex", cwd: f.cwd });
+    for (const session of ["operator-agent@impostor"]) {
+      const change = await f.service.handover({ seatRef: f.seat, reason: "r", source: "fresh", caller: { session, provenance: "transport:v1" }, runtimeChange: f.request() });
+      expect(change).toMatchObject({ ok: false, code: "runtime_change_unauthorized" });
+      const revert = await f.service.revertRuntimeChange({ seatRef: f.seat, reason: "r", approval: "go", caller: { session, provenance: "transport:v1" } });
+      expect(revert).toMatchObject({ ok: false, code: "runtime_change_unauthorized" });
     }
     f.unchanged();
   });
