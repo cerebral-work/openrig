@@ -14,6 +14,7 @@ import { resolveStubActivityEndpoint } from "../src/adapters/stub-runner.js";
 import Database from "better-sqlite3";
 import { ClaudeManagedLaunch } from "../src/domain/claude-managed-launch.js";
 import { SEAT_ENV_SECRET_NAME } from "../src/domain/seat-launch-env-filter.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -67,7 +68,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
       expect(processesWithArgv(token)).toBe(0);
     } finally {
       await run("tmux", ["-S", socket, "kill-server"], { env, timeout: 8000 }).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 

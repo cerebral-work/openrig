@@ -5,8 +5,10 @@
 import { describe, it, expect, afterAll } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
-import { existsSync } from "node:fs";
-import { releaseTmuxTestSocket, tmuxTestSocketPath } from "./helpers/tmux-test-socket.js";
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { releaseTmuxTestSocket, removeTmuxTestRoot, tmuxTestSocketPath } from "./helpers/tmux-test-socket.js";
 
 const pexec = promisify(execFile);
 const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
@@ -56,5 +58,18 @@ describe("releaseTmuxTestSocket: a test's private tmux server leaves no socket f
     for (const bad of ["default", "openrig", "../default", "fleet-socket"]) {
       await expect(releaseTmuxTestSocket(bad, { killServer: true })).rejects.toThrow("not a test tmux socket");
     }
+  });
+});
+
+describe("removeTmuxTestRoot", () => {
+  // The race it absorbs (a pane still writing into the root after kill-server, so a plain recursive rmSync reads
+  // ENOTEMPTY) was seen on ubuntu-latest and did not reproduce locally; this pins the removal itself.
+  it("removes a nested root, and a root already gone is no error", () => {
+    const root = mkdtempSync(join(tmpdir(), "tmux-test-root-"));
+    mkdirSync(join(root, "a", "b"), { recursive: true });
+    writeFileSync(join(root, "a", "b", "f"), "x");
+    removeTmuxTestRoot(root);
+    expect(existsSync(root)).toBe(false);
+    expect(() => removeTmuxTestRoot(root)).not.toThrow();
   });
 });

@@ -9,6 +9,7 @@ import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_pro
 import { promisify } from "node:util";
 import { describe, it, expect } from "vitest";
 import { TmuxAdapter } from "../src/adapters/tmux.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -58,7 +59,7 @@ describe.skipIf(!tools || process.platform !== "linux")("fresh-shell launch into
     } finally {
       await tm(["kill-server"]).catch(() => {});
       client?.kill("SIGKILL");
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 });

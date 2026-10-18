@@ -9,6 +9,7 @@ import { SessionTransport } from "../src/domain/session-transport.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const exec = promisify(execCallback);
 const quote = (s: string) => "'" + s.replace(/'/g, "'\"'\"'") + "'";
@@ -56,7 +57,7 @@ describe.skipIf(!nativeAvailable)("terminal send verification through native Bas
     } finally {
       await run("tmux kill-server").catch(() => undefined);
       db.close();
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   });
 });

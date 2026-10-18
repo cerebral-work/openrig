@@ -15,6 +15,7 @@ import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
 import { ResumeMetadataRefresher } from "../src/domain/resume-metadata-refresher.js";
 import { SEAT_ENV_DEFAULT_BASE, SEAT_ENV_DENY_KUBECONFIG, type SeatEnvPolicy } from "../src/domain/seat-launch-env-filter.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -111,7 +112,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       }
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -158,7 +159,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       }
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -203,7 +204,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       }
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -242,7 +243,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
     } finally {
       db.close();
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 
@@ -273,7 +274,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("seat env allow-list o
       expect(launched).toContain("SSH_AUTH_SOCK");
     } finally {
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 });

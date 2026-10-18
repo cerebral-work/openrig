@@ -10,6 +10,15 @@ const pexec = promisify(execFile);
 /** Test socket names only (the CLI's terminal-window tests use ws-/wv-); "default", the live fleet's socket, never matches. */
 const TEST_SOCKET = /^(openrig|silent|ws|wv)-[\w-]+$/;
 
+/**
+ * Remove a test's scratch root after its tmux server was told to stop. The server's panes (a shell, a stub runtime) can
+ * still be writing into the root for a moment after kill-server, and a plain recursive rmSync then fails with ENOTEMPTY
+ * (ubuntu-latest, 2026-10-18). Node's rmSync retries ENOTEMPTY and EBUSY when it is given maxRetries.
+ */
+export function removeTmuxTestRoot(root: string): void {
+  rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
 /** Where tmux puts a `-L` socket: `$TMUX_TMPDIR` (or `/tmp`), then `tmux-<uid>`. */
 export function tmuxTestSocketPath(name: string, env: NodeJS.ProcessEnv = process.env): string {
   return join(env["TMUX_TMPDIR"] || "/tmp", `tmux-${process.getuid!()}`, name);

@@ -12,6 +12,7 @@ import { SuccessorSessionLauncher } from "../src/domain/successor-session-launch
 import { DiscoveryRepository } from "../src/domain/discovery-repository.js";
 import { createFullTestDb } from "./helpers/test-app.js";
 import type { RuntimeAdapter } from "../src/domain/runtime-adapter.js";
+import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
 
 const run = promisify(execFile);
 const q = (v: string) => "'" + v.replaceAll("'", "'\"'\"'") + "'";
@@ -60,7 +61,7 @@ describe.skipIf(!hasTmux || process.platform !== "linux")("handover with a secre
     } finally {
       db.close();
       await tm(["kill-server"]).catch(() => {});
-      fs.rmSync(root, { recursive: true, force: true });
+      removeTmuxTestRoot(root);
     }
   }, 30_000);
 });
