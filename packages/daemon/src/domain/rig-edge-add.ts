@@ -15,7 +15,8 @@ export type AddRigEdgeResult =
 
 export function addRigEdge(
   rigRepo: RigRepository,
-  input: { rigId: string; from: string; to: string; kind: string },
+  eventBus: EventBus,
+  input: { rigId: string; from: string; to: string; kind: string; by: { session: string; provenance: string } | null },
 ): AddRigEdgeResult {
   const rig = rigRepo.getRig(input.rigId);
   if (!rig) return { ok: false, code: "rig_not_found", error: `Rig ${input.rigId} not found` };
@@ -48,7 +49,14 @@ export function addRigEdge(
   } catch (err) {
     return { ok: false, code: "cycle", error: `Edge ${input.from} -> ${input.to} (${input.kind}) would close a launch-order cycle. ${(err as Error).message}` };
   }
-  return { ok: true, status: "created", edge: rigRepo.addEdge(input.rigId, source.id, target.id, input.kind) };
+  // CER-3001: the insert and its rig.edge_added event (shaped like rig.edge_removed) commit together, or neither does.
+  const { edge, event } = rigRepo.db.transaction(() => {
+    const created = rigRepo.addEdge(input.rigId, source.id, target.id, input.kind);
+    return { edge: created, event: eventBus.persistWithinTransaction({ type: "rig.edge_added", rigId: input.rigId, edgeId: created.id,
+      from: input.from, to: input.to, kind: input.kind, by: input.by }) };
+  })();
+  eventBus.notifySubscribers(event);
+  return { ok: true, status: "created", edge };
 }
 
 export type RemoveRigEdgeResult =

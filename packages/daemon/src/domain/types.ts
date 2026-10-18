@@ -127,6 +127,9 @@ export type RigEvent =
       channels: Array<{ channel: string; target: string | null; status: string; detail?: string }>;
     }
   | { type: "rig.deleted"; rigId: string }
+  // CER-3001 (spec 0008): one edge added by `rig edge add`; `by` is the caller's transport identity (attribution).
+  | { type: "rig.edge_added"; rigId: string; edgeId: string; from: string; to: string; kind: string;
+      by: { session: string; provenance: string } | null }
   // CER-2981 (spec 0008): one edge removed by `rig edge remove`; `by` is the caller's transport identity (attribution).
   | { type: "rig.edge_removed"; rigId: string; edgeId: string; from: string; to: string; kind: string;
       by: { session: string; provenance: string } | null }

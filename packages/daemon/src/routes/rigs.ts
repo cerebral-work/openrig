@@ -805,7 +805,10 @@ rigsRoutes.post("/:rigId/edges", async (c) => {
   if (!from || !to || !kind) {
     return c.json({ ok: false, code: "validation_failed", error: "from, to and kind are required (logical ids such as orch.lead, dev.build)" }, 400);
   }
-  const result = addRigEdge(rigRepo, { rigId, from, to, kind });
+  const eventBus = c.get("eventBus" as never) as EventBus;
+  const sender = requireSenderIdentity(c);
+  const by = sender.ok ? { session: sender.session, provenance: resolveRecordedProvenance(c, sender) } : null;
+  const result = addRigEdge(rigRepo, eventBus, { rigId, from, to, kind, by });
   if (!result.ok) {
     const status = result.code === "rig_not_found" ? 404 : result.code === "rig_archived" ? 409 : 400;
     return c.json(result, status);

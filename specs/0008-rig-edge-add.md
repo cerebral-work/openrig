@@ -20,6 +20,7 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 1. `POST /api/rigs/:rigId/edges` with `{ from, to, kind }`, where `from` and `to` are logical ids (`pod.member`), handled by `domain/rig-edge-add.ts` `addRigEdge`.
 2. The rig must exist (404 `rig_not_found`) and be unarchived (409 `rig_archived`). Both logical ids must be nodes of that rig (400 `node_not_found`). The kind must be in `VALID_EDGE_KINDS` (400 `invalid_kind`). A missing field is 400 `validation_failed`. Every rejection comes before any write.
 3. A new edge is one row through `RigRepository.addEdge` (201 `created`). An identical existing edge is returned as it is (200 `exists`), and nothing is written.
+   - **Audit (CER-3001):** in the same transaction as the insert, a `rig.edge_added` event records `{ rigId, edgeId, from, to, kind, by }`, shaped like `rig.edge_removed` (item 11). `by` is the caller's transport identity (`X-OpenRig-Session`) with its recorded provenance, `{ session, provenance }` (`relay:v1` when relayed), or null when absent: attribution, not authentication. Subscribers are notified after the commit. A repeat (`exists`) and every rejection write no event, because no row is written.
    - Like the spec path (`rigspec-schema.ts` validation and the instantiator's launch order), it refuses a self-edge of any kind (400 `self_edge`). It also refuses a `delegates_to` or `spawned_by` edge that would close a launch-order cycle (400 `cycle`), both before any write.
    - The cycle check is the spec path's own `computeLaunchOrder`, now exported from `rigspec-instantiator.ts`, run over the rig's stored edges plus the new one. Restore plans from those stored edges and drops the nodes of a cycle (review r1), so the refusal keeps every node restorable.
    - Order of checks: rig, archive, kind, nodes, self-edge, existing edge, cycle. A repeat of an existing edge stays a 200 `exists`.
@@ -41,7 +42,7 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 12. **What it never touches:** no node, session, binding or pane changes, so the rig ID and every seat's conversation are kept.
 13. **No validity rule applies.** Edges are optional and only shape-checked, and removing one cannot create a cycle. Removing a cycle edge lets the rig grow again and lets restore launch the seats it held.
 14. **Runtime effect:** a removed `delegates_to` edge stops counting for `queue-owner.ts` routing and `rig whoami` at once.
-15. **Authorization** is the same as `rig edge add`: the `/api/*` `browserBoundary`. The add records no audit; the remove's event is new.
+15. **Authorization** is the same as `rig edge add`: the `/api/*` `browserBoundary`. The add records `rig.edge_added` (item 3, CER-3001) and the remove `rig.edge_removed`, so both directions are audited the same way.
 16. **CLI:** `rig edge remove <rig-id> <from> <to> --kind <kind> [--json]`. Docs: `docs/reference/rig-spec.md` and the capability map describe it.
 
 ## Requirements
@@ -59,6 +60,8 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 - REQ-0008-11: The edge removal shall leave every node, session, binding and pane of the rig unchanged.
 - REQ-0008-12: If no edge of the rig matches the two logical ids and the kind, then the daemon shall reject the removal with `edge_not_found` and write nothing.
 - REQ-0008-13: If the rig is archived, the kind is invalid, or either logical id is not a node of the rig, then the daemon shall reject the removal before any write.
+- REQ-0008-14: When `rig edge add` inserts an edge, the daemon shall record a `rig.edge_added` event naming the edge, the caller's transport identity and its provenance, in the same transaction as the insert.
+- REQ-0008-15: If `rig edge add` writes no edge row (an existing edge, or a rejection), then the daemon shall record no `rig.edge_added` event.
 
 ## Plan
 
@@ -72,6 +75,8 @@ A rig expanded after `rig up` could not gain edges between seats that already ex
 cd packages/daemon && npx vitest run test/rig-edge-add-route.test.ts test/rig-expansion-route.test.ts
 cd packages/cli && npx vitest run test/edge.test.ts test/lazy-program.test.ts test/expand.test.ts
 ```
+
+Audit (CER-3001): `rig-edge-add-route.test.ts` (an add records `rig.edge_added` with the edge and the caller's identity, a relayed caller as `relay:v1`, no caller as null; a repeat and a rejection record none; an insert that fails leaves no event and no row).
 
 Removal (CER-2981): `rig-edge-add-route.test.ts` (the DELETE route: removed with its event and the caller's identity, a relayed caller, a wrong kind or the reverse direction as 404 while the edge exists, duplicate rows all removed with one event each, an already-removed edge as 404, a row gone before the write as 404 with no event, the rejections, a cross-site request refused), `rig-growth-graph-cycle.test.ts` (after removing a cycle edge the rig grows again), `restore-graph-cycle.test.ts` (the held seat's reason names `rig edge remove` with the rig's id; after removing a cycle edge restore launches every seat it held) and `cli/test/edge.test.ts` (`rig edge remove`).
 
