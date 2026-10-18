@@ -214,6 +214,11 @@ export type RigEvent =
       sourceOutcome?:
         | { mode: "fork"; forkedFrom: string; forkId?: "captured" | "pending"; limit?: string }
         | { mode: "rebuild"; primedArtifacts: Array<{ address: string; label: string }>; gaps: string[]; emptyChainReason?: string } }
+  // Spec 0005 (cerebral-work fork): a seat's runtime changed, or a change was reverted, through a recorded handover.
+  // The member env is named with a sha256 per value, never a raw value.
+  | { type: "seat.runtime_changed"; rigId: string; nodeId: string; logicalId: string; changeId: string; kind: "change" | "revert";
+      fromRuntime: string | null; toRuntime: string; fromModel: string | null; toModel: string | null; fromCwd: string | null; toCwd: string | null;
+      env: Array<{ name: string; sha256: string }> | null; approval: string; reason: string; operator: string; acceptance: "pending" }
   // Bundle events (cross-rig)
   | { type: "bundle.created"; bundleName: string; bundleVersion: string; archiveHash: string }
   // Teardown events
