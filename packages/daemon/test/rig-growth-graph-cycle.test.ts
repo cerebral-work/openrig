@@ -33,6 +33,16 @@ describe("growing an existing rig never closes a launch-dependency cycle (spec 0
     };
   };
 
+  it("CER-3002: an expand that lists a pod-local edge and a cross-pod edge twice stores each once", async () => {
+    const rig = setup.rigRepo.createRig("grow-dup-edges");
+    expect((await setup.rigExpansionService.expand({ rigId: rig.id, pod: pod("orch", ["lead"]) })).ok).toBe(true);
+    const twice = { from: "impl", to: "qa", kind: "can_observe" };
+    const result = await setup.rigExpansionService.expand({ rigId: rig.id, pod: pod("dev", ["impl", "qa"], [twice, twice]),
+      crossPodEdges: [{ from: "orch.lead", to: "dev.impl", kind: "delegates_to" }, { from: "orch.lead", to: "dev.impl", kind: "delegates_to" }] });
+    expect(result.ok, JSON.stringify(result)).toBe(true);
+    expect(shape(rig.id).edges).toEqual(["dev.impl can_observe dev.qa", "orch.lead delegates_to dev.impl"]);
+  });
+
   it("control: a one-way cross-pod edge to an existing seat is accepted", async () => {
     const rig = setup.rigRepo.createRig("grow-control");
     expect((await setup.rigExpansionService.expand({ rigId: rig.id, pod: pod("orch", ["lead"]) })).ok).toBe(true);
