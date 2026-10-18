@@ -1,0 +1,20 @@
+name: lsc
+
+# LeanSpec check on every pull request: `lsc check specs/` plus the spec-link check for
+# feat/fix pull requests (AGENTS.md). Both run in warn mode until the backfill is done.
+# Same pin as cerebral-work/vilicus: the merge commit of unsigned-gg/lsc#22 (the reusable job, pinned to lsc d19f393f).
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  lsc:
+    uses: unsigned-gg/lsc/.github/workflows/lsc-check.yml@ddde01ee2958a4ff2b71fbb898699e266f1062db
+    with:
+      # Public fork; ent-default refuses public repos; read-only, no secrets; CER-2908 exception as for estate-xwork.
+      runs-on: '"ubuntu-latest"'
+      lsc-mode: warn
+      spec-link-mode: warn
