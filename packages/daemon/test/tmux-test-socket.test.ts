@@ -2,7 +2,7 @@
 // kill-server, so every run added one file to the socket directory (about 3,500 by 2026-10-18). The shared teardown
 // stops the server where the file allows that, and unlinks the socket once nothing answers on it, also when the
 // test failed. It runs against real tmux and skips where tmux is missing.
-import { describe, it, expect, afterAll } from "vitest";
+import { describe, it, expect, afterAll, vi } from "vitest";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -95,6 +95,23 @@ describe("removeTmuxTestRoot", () => {
     expect(calls).toBe(10);
     try { removeTmuxTestRoot(root, () => { throw enotempty(); }); } catch (error) { expect(String(error)).not.toContain("SENTINEL-CONTENT"); }
     rmSync(root, { recursive: true, force: true });
+  });
+
+  // Review r1 S1: a test with fake timers (vi.useFakeTimers freezes Date) still gets its 100 ms between attempts.
+  it("waits for real between attempts under fake timers", { timeout: 5_000 }, () => {
+    const before = Date.now(); // real time: taken before the timers are faked
+    vi.useFakeTimers();
+    try {
+      const root = mkdtempSync(join(tmpdir(), "tmux-test-root-"));
+      let calls = 0;
+      removeTmuxTestRoot(root, (path) => { if (calls++ === 0) throw enotempty(); rmSync(path, { recursive: true, force: true }); });
+      expect(calls).toBe(2);
+      expect(existsSync(root)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+    // Review r1 on #47: the one retry waited a real ~100 ms, not zero.
+    expect(Date.now() - before).toBeGreaterThanOrEqual(95);
   });
 
   it("rethrows any other error at once", () => {

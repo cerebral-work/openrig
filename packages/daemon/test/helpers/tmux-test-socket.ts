@@ -48,8 +48,9 @@ export function removeTmuxTestRoot(root: string, remove: (path: string) => void 
       const code = (error as NodeJS.ErrnoException).code;
       if (code !== "ENOTEMPTY" && code !== "EBUSY") throw error;
       last = error;
-      const until = Date.now() + 100;
-      while (Date.now() < until) { /* a sync wait: callers tear down synchronously */ }
+      // A real 100 ms, synchronously (callers tear down synchronously). Not a Date.now() spin: vi.useFakeTimers() freezes Date,
+      // and the spin would never end (review r1 S1 on #45).
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);
     }
   }
   let left: string[] = [];
