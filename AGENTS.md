@@ -13,3 +13,12 @@ A Codex or agy seat rooted in this checkout gets `<!-- BEGIN OpenRig MANAGED BLO
 - CI runs the reusable lsc job on every pull request (`.github/workflows/lsc.yml`).
   - The spec-link check applies to pull requests whose title starts `feat` or `fix`.
   - Both checks only warn for now. They become blocking once the backfill is done.
+
+## The full suite runs in CI (CER-2937)
+
+- `.github/workflows/full-suite.yml` runs every suite `npm run test:workspaces` names, on each pull request to `cerebral`, on GitHub-hosted `ubuntu-latest`. It compares the failures with the Linux baseline, `.github/full-suite-baseline.json` (spec 0001 item 8).
+- **Once that job is green on your pull request's head, don't run the full suite locally:** neither `npm run test:workspaces` nor a `cargo xwork` that includes `npm-test-workspaces`. Use `cargo xwork --skip npm-test-workspaces`.
+- **Still run locally:** the suites for the files you change, and red-first and break-once for each rule you add.
+- **A test that fails on Linux for an environmental reason** goes in the baseline in the same pull request, with its reason and the run URL. A `flaky` entry needs two runs: one where it failed and one where it passed.
+- **A real defect is filed as a ticket**, and the entry's reason names it. Never baseline one silently.
+- **When a baselined test starts passing,** the job fails until its entry is removed.

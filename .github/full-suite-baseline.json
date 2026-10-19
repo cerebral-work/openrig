@@ -1,0 +1,27 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "file": "packages/daemon/test/exact-session-probe.test.ts",
+      "test": "probes exact native session names so a live prefix neighbor cannot hide a detached seat",
+      "kind": "flaky",
+      "reason": "CER-3005: on ubuntu-latest the test's private tmux server sometimes exits as it starts ('server exited unexpectedly' from new-session); it failed in the first and third runs and passed in the second",
+      "evidence": [
+        "https://github.com/cerebral-work/openrig/actions/runs/39155179957",
+        "https://github.com/cerebral-work/openrig/actions/runs/39158508894/attempts/1",
+        "https://github.com/cerebral-work/openrig/actions/runs/39158508894/attempts/2"
+      ]
+    },
+    {
+      "file": "packages/daemon/test/seat-runtime-change-e2e.test.ts",
+      "test": "spec 0005: cross-runtime seat handover (isolated tmux) > codex to claude-code: the same pane and name; the node, tenure, startup context and ledger record the change; the successor gets its cwd and CLAUDE_CONFIG_DIR",
+      "kind": "fails",
+      "reason": "CER-3004 (investigation): on ubuntu-latest the claude-code stand-in's output never reaches the pane after the handover (the pane shows a bash prompt); the test passes locally with bash as the pane shell. Not yet explained",
+      "evidence": [
+        "https://github.com/cerebral-work/openrig/actions/runs/39155179957",
+        "https://github.com/cerebral-work/openrig/actions/runs/39158508894/attempts/1",
+        "https://github.com/cerebral-work/openrig/actions/runs/39158508894/attempts/2"
+      ]
+    }
+  ]
+}
