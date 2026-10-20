@@ -114,6 +114,11 @@ export class UsageHost {
     return (this.opts.now ?? (() => new Date().toISOString()))();
   }
 
+  /** A host on a fixed `now` keeps the fixed reset; a host on the real clock gets one in its own future. */
+  private defaultSecondaryReset(): string {
+    return this.opts.now ? DEFAULT_RESET : new Date(Date.parse(this.now()) + 7 * 24 * 3600 * 1000).toISOString();
+  }
+
   private async readCodex(): Promise<CodexUsageReadOutcome> {
     this.codexReads += 1;
     const plan = this.codex;
@@ -133,7 +138,7 @@ export class UsageHost {
         rateLimits: {
           limitId,
           primary: { usedPercent: plan.primaryUsed ?? 10, windowDurationMins: 300, resetsAt: toEpoch("2026-10-14T05:00:00.000Z") },
-          secondary: { usedPercent: plan.secondaryUsed ?? 40, windowDurationMins: 10080, resetsAt: toEpoch(plan.secondaryResetsAt ?? DEFAULT_RESET) },
+          secondary: { usedPercent: plan.secondaryUsed ?? 40, windowDurationMins: 10080, resetsAt: toEpoch(plan.secondaryResetsAt ?? this.defaultSecondaryReset()) },
         },
       },
     };
