@@ -115,7 +115,8 @@ const PERMISSION_PROMPT_PATTERNS = [
   /\bAllow Codex to run\b/i,
   // Further approval questions found in the installed runtimes (see spec 0018): Codex 0.163.0 patch,
   // permission-grant, terminal-input and network approvals.
-  /\bWould you like to (?:make the following edits|grant these permissions|send input to the existing terminal\b)/i,
+  /\bWould you like to (?:make the following edits|grant these permissions)/i,
+  /\bWould you like to send input to (?:the existing terminal|terminal [^?\n]{1,40})\?/i,
   /\bDo you want to approve network access\b/i,
 ];
 

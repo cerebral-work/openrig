@@ -1160,10 +1160,20 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
       expect(overrideEvents().length).toBe(1);
     });
 
-    it("the Codex send-input pattern matches only the real question, not prose", () => {
-      const pane = (line: string) => [line, "", "› 1. Yes", "  2. No"].join("\n");
-      expect(classifyPaneActivity(pane("Would you like to send input to the server?")).reason).not.toBe("permission_prompt");
-      expect(classifyPaneActivity(pane("Would you like to send input to the existing terminal?")).reason).toBe("permission_prompt");
+    it.each([
+      "Would you like to send input to terminal 3?",
+      "Would you like to send input to the existing terminal?",
+    ])("the Codex send-input question %j is a permission_prompt, with its selector visible", question => {
+      const pane = ["  " + question, "", "› 1. Yes, proceed (y)", "  2. No, and tell Codex what to do differently (esc)"].join("\n");
+      expect(classifyPaneActivity(pane).reason).toBe("permission_prompt");
+    });
+
+    it.each([
+      "Would you like to send input to the server?",
+      "I will send input to terminal 3 next",
+    ])("the Codex send-input pattern does not match prose %j", line => {
+      const pane = [line, "", "› 1. Yes", "  2. No"].join("\n");
+      expect(classifyPaneActivity(pane).reason).not.toBe("permission_prompt");
     });
 
     it("CONTROL: a real AskUserQuestion picker stays selection_prompt and keeps the audited override", async () => {
