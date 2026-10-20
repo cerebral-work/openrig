@@ -23,7 +23,7 @@ git rebase --onto vX.Y.Z <old-upstream-tag> cerebral
 
 Resolve conflicts toward upstream unless the estate change is intentionally kept. Re-run `cargo xwork` before pushing `cerebral`.
 
-cw.4, cw.4.1, cw.4.2 and cw.4.3 are based on untagged upstream `main` at `f41740137f3d3ab807f5f24e559b9845632ed908`, not on a release tag.
+cw.4, cw.4.1, cw.4.2, cw.4.3 and cw.4.4 are based on untagged upstream `main` at `f41740137f3d3ab807f5f24e559b9845632ed908`, not on a release tag.
 
 ## Estate changes
 
@@ -33,7 +33,7 @@ cw.4, cw.4.1, cw.4.2 and cw.4.3 are based on untagged upstream `main` at `f41740
 
 ## Releases
 
-Tag the `cerebral` commit `cw-v<version>` (for example `cw-v0.6.10-cw.4.3`). The `cw-v*` prefix is disjoint from upstream `v*` tags, so tag syncs never cross-fire release workflows.
+Tag the `cerebral` commit `cw-v<version>` (for example `cw-v0.6.10-cw.4.4`). The `cw-v*` prefix is disjoint from upstream `v*` tags, so tag syncs never cross-fire release workflows.
 
 ## GitButler
 
