@@ -115,7 +115,7 @@ const PERMISSION_PROMPT_PATTERNS = [
   /\bAllow Codex to run\b/i,
   // Further approval questions found in the installed runtimes (see spec 0018): Codex 0.163.0 patch,
   // permission-grant, terminal-input and network approvals.
-  /\bWould you like to (?:make the following edits|grant these permissions|send input to (?:the|terminal))/i,
+  /\bWould you like to (?:make the following edits|grant these permissions|send input to the existing terminal\b)/i,
   /\bDo you want to approve network access\b/i,
 ];
 
@@ -2486,6 +2486,7 @@ export class SessionTransport {
     // the positive-picker guard (FR-4 — the footgun separation). The advisory is carried on the
     // success result via `warning` so the honest telemetry is surfaced.
     let sendAdvisory: string | undefined;
+    let overrideReadiness: AgentActivity | undefined;
     const promptOverride = waitForIdleMs === undefined && Boolean(opts?.dangerouslyInteract);
     if (waitForIdleMs === undefined) {
       const readiness = await this.classifySendReadiness({
@@ -2494,6 +2495,7 @@ export class SessionTransport {
         attachmentType: sessionMeta.attachmentType,
         binding: observed?.binding,
       });
+      overrideReadiness = readiness;
 
       // Explicit interaction selects key input even when readiness cannot recognize the prompt.
       // Only bypassing a positive picker requires a successful audit; other states already sent.
@@ -2511,28 +2513,8 @@ export class SessionTransport {
         // SEC-189: whatever the readiness state (a running or elicitation hook, or an unknown pane, can hide a
         // permission dialog), one fresh pane read must show no permission prompt before any input. An
         // unreadable pane cannot prove that, so it refuses too.
-        if (sessionMeta.attachmentType !== "external_cli") {
-          const preInput = await this.runStage("session_transport.prompt_override_pre_input_capture",
-            () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
-          if (preInput === null || preInput === undefined) {
-            return {
-              ok: false,
-              sessionName,
-              reason: "permission_check_unavailable",
-              activity: readiness,
-              error: `Refused: the pane of '${sessionName}' could not be read, so an override cannot prove no permission prompt is on screen. No text was sent.`,
-            };
-          }
-          if (classifyPaneActivity(preInput).reason === "permission_prompt") {
-            return {
-              ok: false,
-              sessionName,
-              reason: "permission_prompt_override_refused",
-              activity: readiness,
-              error: `Refused: '${sessionName}' shows a permission or approval prompt on screen. --dangerously-interact never answers permission or approval prompts: a person must answer them in the pane. No text was sent.`,
-            };
-          }
-        }
+        const earlyRefusal = await this.overridePanePermissionRefusal(sessionName, readiness);
+        if (earlyRefusal) return earlyRefusal;
         if (readiness.state === "needs_input" && (!opts.reason || opts.reason.trim().length === 0)) {
           return {
             ok: false,
@@ -2623,6 +2605,13 @@ export class SessionTransport {
     if (targetFailure) return observe(targetFailure);
     const copyModeFailure = await leavePaneMode("No text was sent.");
     if (copyModeFailure) return observe({ ...copyModeFailure, ...(waitMode ? waitEvidence : {}) });
+
+    // SEC-189: the input boundary. A dialog can be raised during the awaits above, so an override send reads
+    // the pane again; this is the last await before the text is written.
+    if (promptOverride) {
+      const boundaryRefusal = await this.overridePanePermissionRefusal(sessionName, overrideReadiness);
+      if (boundaryRefusal) return observe(boundaryRefusal);
+    }
 
     // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
     if (observed) observed.sentHash = hashSentText(text);
@@ -3184,6 +3173,33 @@ export class SessionTransport {
       return withEnv(`producer link STALE — the last activity hook arrived ${ageText} (beyond the store window); the seat has gone quiet or its hooks stopped firing`);
     }
     return `a recent activity hook exists but the live pane probe could not confirm idle (possible identity mismatch between the seat env, the DB, and the stored payload)`;
+  }
+
+  /** SEC-189: one fresh pane read for an override send. A permission prompt on screen, or a pane that cannot be
+   *  read, is a refusal; null means the read shows no permission prompt. Used before the audit row and again at
+   *  the input boundary, where it is the last await before the text is written. */
+  private async overridePanePermissionRefusal(sessionName: string, readiness: AgentActivity | undefined): Promise<SendResult | null> {
+    const pane = await this.runStage("session_transport.prompt_override_pre_input_capture",
+      () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+    if (pane === null || pane === undefined) {
+      return {
+        ok: false,
+        sessionName,
+        reason: "permission_check_unavailable",
+        activity: readiness,
+        error: `Refused: the pane of '${sessionName}' could not be read, so an override cannot prove no permission prompt is on screen. No text was sent.`,
+      };
+    }
+    if (classifyPaneActivity(pane).reason === "permission_prompt") {
+      return {
+        ok: false,
+        sessionName,
+        reason: "permission_prompt_override_refused",
+        activity: readiness,
+        error: `Refused: '${sessionName}' shows a permission or approval prompt on screen. --dangerously-interact never answers permission or approval prompts: a person must answer them in the pane. No text was sent.`,
+      };
+    }
+    return null;
   }
 
   // Record actor/reason with the actual readiness, never a fabricated prompt classification.

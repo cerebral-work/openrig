@@ -1039,7 +1039,7 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
       const { sendText, sendKeys } = spies();
       let captures = 0;
       const t = makeTransport(mockTmux({
-        capturePaneContent: async () => (++captures <= 2 ? ASK_USER_QUESTION_PICKER : CLAUDE_PERMISSION_DIALOG),
+        capturePaneContent: async () => (++captures <= 3 ? ASK_USER_QUESTION_PICKER : CLAUDE_PERMISSION_DIALOG),
         sendText, sendKeys,
       }));
       const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "pick" });
@@ -1141,6 +1141,29 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
       "Do you want to approve network access to example.org?",
     ])("classifies the Codex approval question %j as permission_prompt", question => {
       expect(classifyPaneActivity([question, "", "› 1. Yes", "  2. No"].join("\n"))).toMatchObject({ reason: "permission_prompt" });
+    });
+
+    // Time of check: the early read is clean, then a dialog appears before the text is written.
+    it.each([
+      ["a permission dialog", CLAUDE_PERMISSION_DIALOG, "permission_prompt_override_refused"],
+      ["an unavailable capture", null, "permission_check_unavailable"],
+    ])("the input-boundary read (%s) refuses the override with no text or keys, after the audit row", async (_label, boundary, reason) => {
+      let n = 0; // 1 readiness probe, 2 early read, 3 boundary read
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => (++n <= 2 ? ASK_USER_QUESTION_PICKER : boundary), sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "pick" });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe(reason);
+      expect(r.error).toContain("No text was sent.");
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+      expect(overrideEvents().length).toBe(1);
+    });
+
+    it("the Codex send-input pattern matches only the real question, not prose", () => {
+      const pane = (line: string) => [line, "", "› 1. Yes", "  2. No"].join("\n");
+      expect(classifyPaneActivity(pane("Would you like to send input to the server?")).reason).not.toBe("permission_prompt");
+      expect(classifyPaneActivity(pane("Would you like to send input to the existing terminal?")).reason).toBe("permission_prompt");
     });
 
     it("CONTROL: a real AskUserQuestion picker stays selection_prompt and keeps the audited override", async () => {
