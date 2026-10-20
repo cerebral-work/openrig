@@ -32,7 +32,7 @@ describe("explicit prompt answer delivery", () => {
     const eventBus = new EventBus(db);
     const activity = new AgentActivityStore({ db, eventBus });
     if (mode === "choice" || mode === "text") activity.recordHookEvent({ runtime, sessionName: name,
-      hookEvent: "PermissionRequest", subtype: "Bash" });
+      hookEvent: "Notification", subtype: "elicitation_dialog" });
     const state = { selected: [] as number[], submitted: [] as string[], input: "", stored: "",
       received: [] as string[], effects: [] as string[], commands: [] as string[][], capture: undefined as string | null | undefined };
     const tmux = new TmuxAdapter(async () => { throw new Error("argv executor expected"); }, {
@@ -86,11 +86,18 @@ describe("explicit prompt answer delivery", () => {
     expect(db.prepare("SELECT count(*) AS n FROM events WHERE type = 'transport.prompt_override'").get()).toEqual({ n: 1 });
   });
 
-  it.each(["claude-code", "codex"] as const)("uses a pending permission to deliver an explicit still-staged text answer for %s", async runtime => {
+  it("SEC-189: a pending Codex permission refuses an explicit answer and sends nothing", async () => {
+    const f = fixture("text", "codex");
+    f.activity.recordHookEvent({ runtime: "codex", sessionName: f.name, hookEvent: "PermissionRequest", subtype: "Bash" });
+    expect(f.activity.getLatestForNode({ sessionName: f.name })).toMatchObject({ state: "unknown", reason: "permission_request_pending" });
+    const result = await f.transport.send(f.name, "green please", { dangerouslyInteract: true, reason: "answer the text field" });
+    expect(result).toMatchObject({ ok: false, reason: "permission_prompt_override_refused" });
+    expect(f.state.submitted).toEqual([]);
+    expect(f.state.commands.filter(a => a[1] === "send-keys" || a[1] === "paste-buffer")).toEqual([]);
+  });
+
+  it.each(["claude-code", "codex"] as const)("uses a pending elicitation to deliver an explicit still-staged text answer for %s", async runtime => {
     const f = fixture("text", runtime);
-    if (runtime === "codex") {
-      expect(f.activity.getLatestForNode({ sessionName: f.name })).toMatchObject({ state: "unknown", reason: "permission_request_pending" });
-    }
     const result = await f.transport.send(f.name, "green please", { dangerouslyInteract: true, reason: "answer the text field" });
     expect(result.ok).toBe(true);
     expect(f.state.submitted).toEqual(["green please"]);

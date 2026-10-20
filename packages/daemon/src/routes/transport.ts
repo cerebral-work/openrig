@@ -130,6 +130,7 @@ export function transportRoutes(opts?: { bearerToken?: string | null }): Hono {
         dangerously_interact_requires_reason: 400,
         wait_for_idle_timeout: 409,
         target_needs_input: 409,
+        permission_prompt_override_refused: 409,
         target_activity_unknown: 409,
         prompt_override_audit_unavailable: 500,
         submit_failed: 502,

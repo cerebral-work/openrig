@@ -214,8 +214,8 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
 
   // K-5 HOOK-PRIMARY (founder expansion): a fresh Codex PermissionRequest hook is the PRIMARY signal —
   // it blocks default/raw/force even when the pane looks idle (a high-stakes guard must not depend on
-  // screen-scraping). Only --dangerously-interact --reason drives it (+ audit).
-  it.each([0, 15_000])("K-5(hook): a send-fresh pending Codex permission (%sms old) may hide a prompt — refuse sends, allow only an audited answer", async ageMs => {
+  // screen-scraping). SEC-189: even --dangerously-interact is refused for a permission prompt.
+  it.each([0, 15_000])("K-5(hook): a send-fresh pending Codex permission (%sms old) may hide a prompt — refuse sends and overrides", async ageMs => {
     const seat = seedCodexSeat();
     const now = new Date();
     agentActivityStore.recordHookEvent({ runtime: "codex", sessionName: seat, hookEvent: "PermissionRequest", subtype: "Bash",
@@ -241,12 +241,13 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(sendText).not.toHaveBeenCalled();
     expect(sendKeys).not.toHaveBeenCalled();
 
+    // SEC-189: an override never answers a permission prompt; nothing is typed and no audit row is written.
     const drive = await t.send(seat, "1", { dangerouslyInteract: true, reason: "approve the blocked command", actorSession: "orch-lead@my-rig" });
-    expect(drive.ok).toBe(true);
-    expect(sendText).toHaveBeenCalledWith(seat, "1", undefined, { bracketed: false });
-    const ev = overrideEvents();
-    expect(ev.length).toBe(1);
-    expect(ev[0]).toMatchObject({ detectedState: "needs_input", detectedReason: "permission_request_pending", overrideReason: "approve the blocked command" });
+    expect(drive.ok).toBe(false);
+    expect(drive.reason).toBe("permission_prompt_override_refused");
+    expect(sendText).not.toHaveBeenCalled();
+    expect(sendKeys).not.toHaveBeenCalled();
+    expect(overrideEvents()).toEqual([]);
     agentActivityStore.recordHookEvent({ runtime: "codex", sessionName: seat, hookEvent: "Stop" });
     expect((await t.send(seat, "hi")).ok).toBe(true);
   });
@@ -954,5 +955,131 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
     expect(forced.warning).toContain("mid-task");
     expect(forced.warning).toContain("busy is advisory");
     expect(runSpy).toHaveBeenCalled();
+  });
+
+  // SEC-189: permission and command-approval prompts are classified before selection prompts, and an
+  // override never answers one (a digit key selects an option at once, so no key may be sent).
+  const CLAUDE_PERMISSION_DIALOG = [
+    "● Bash(touch /tmp/x)",
+    "",
+    " Bash command",
+    "   touch /tmp/x",
+    "",
+    " Do you want to proceed?",
+    " ❯ 1. Yes",
+    "   2. Yes, and don't ask again for touch commands",
+    "   3. No, and tell Claude what to do differently (esc)",
+  ].join("\n");
+  const ASK_USER_QUESTION_PICKER = [
+    "Which database should the migration target?",
+    "",
+    "❯ 1. Postgres (Recommended)",
+    "  2. SQLite",
+    "  3. Skip",
+  ].join("\n");
+
+  describe("SEC-189 permission before selection", () => {
+    it("classifies a Claude permission dialog with a visible selector as permission_prompt", () => {
+      expect(classifyPaneActivity(CLAUDE_PERMISSION_DIALOG)).toMatchObject({ state: "attention", reason: "permission_prompt" });
+    });
+
+    it("classifies a Codex command approval with its selector as permission_prompt", () => {
+      expect(classifyPaneActivity(CODEX_APPROVAL)).toMatchObject({ state: "attention", reason: "permission_prompt" });
+    });
+
+    it("refuses an override on a Claude permission dialog before any input", async () => {
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => CLAUDE_PERMISSION_DIALOG, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve", actorSession: "orch-lead@my-rig" });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe("permission_prompt_override_refused");
+      expect(r.error).toContain("No text was sent.");
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+      expect(overrideEvents()).toEqual([]);
+    });
+
+    it("refuses an override on a Codex command approval before any input", async () => {
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => CODEX_APPROVAL, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve", actorSession: "orch-lead@my-rig" });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe("permission_prompt_override_refused");
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["PermissionRequest", undefined],
+      ["Notification", "permission_prompt"],
+    ])("refuses an override on hook-evidenced permission (%s %s) even over an idle-looking pane", async (hookEvent, subtype) => {
+      agentActivityStore.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent, ...(subtype ? { subtype } : {}) });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => "❯ \n  ⏵⏵ accept edits on", sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve" });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe("permission_prompt_override_refused");
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+      expect(overrideEvents()).toEqual([]);
+    });
+
+    it("refuses an override on a pending Codex PermissionRequest hook", async () => {
+      const seat = seedCodexSeat();
+      agentActivityStore.recordHookEvent({ runtime: "codex", sessionName: seat, hookEvent: "PermissionRequest", subtype: "Bash" });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => "› ready\n\n  gpt-5.5 xhigh fast · Context [████ ] · ~/code", sendText, sendKeys }));
+      const r = await t.send(seat, "1", { dangerouslyInteract: true, reason: "approve" });
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe("permission_prompt_override_refused");
+      expect(sendText).not.toHaveBeenCalled();
+    });
+
+    it("does not press Enter when the pre-submit capture shows a permission prompt", async () => {
+      const { sendText, sendKeys } = spies();
+      let captures = 0;
+      const t = makeTransport(mockTmux({
+        capturePaneContent: async () => (++captures <= 1 ? ASK_USER_QUESTION_PICKER : CLAUDE_PERMISSION_DIALOG),
+        sendText, sendKeys,
+      }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "pick" });
+      expect(r.ok).toBe(true);
+      expect(r.outcome).toBe("rendered-unconfirmed");
+      expect(r.warning).toContain("permission");
+      expect(sendKeys).not.toHaveBeenCalled();
+    });
+
+    it("CONTROL: a real AskUserQuestion picker stays selection_prompt and keeps the audited override", async () => {
+      expect(classifyPaneActivity(ASK_USER_QUESTION_PICKER)).toMatchObject({ state: "attention", reason: "selection_prompt" });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => ASK_USER_QUESTION_PICKER, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "2", { dangerouslyInteract: true, reason: "pick sqlite", actorSession: "orch-lead@my-rig" });
+      expect(r.ok).toBe(true);
+      expect(sendText).toHaveBeenCalledWith("dev-impl@my-rig", "2", undefined, { bracketed: false });
+      expect(overrideEvents().length).toBe(1);
+    });
+
+    it("the prompt_override event carries the truncated pane evidence", async () => {
+      const long = "x".repeat(300);
+      const pane = ["Pick one", "", `❯ 1. ${long}`, "  2. other"].join("\n");
+      const { sendText } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => pane, sendText }));
+      const r = await t.send("dev-impl@my-rig", "2", { dangerouslyInteract: true, reason: "pick" });
+      expect(r.ok).toBe(true);
+      const ev = overrideEvents()[0]!;
+      expect(typeof ev.evidence).toBe("string");
+      expect((ev.evidence as string).length).toBeGreaterThan(0);
+      expect((ev.evidence as string).length).toBeLessThanOrEqual(120);
+      expect(ev).not.toHaveProperty("rawEvent");
+    });
+
+    it("the prompt_override event carries rawEvent and rawSubtype for hook evidence", async () => {
+      agentActivityStore.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent: "Notification", subtype: "elicitation_dialog" });
+      const { sendText } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => "❯ \n  ⏵⏵ accept edits on", sendText }));
+      const r = await t.send("dev-impl@my-rig", "answer", { dangerouslyInteract: true, reason: "answer the elicitation" });
+      expect(r.ok).toBe(true);
+      expect(overrideEvents()[0]).toMatchObject({ evidenceSource: "runtime_hook", rawEvent: "Notification", rawSubtype: "elicitation_dialog" });
+    });
   });
 });
