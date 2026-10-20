@@ -24,6 +24,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0015](0015-pane-read-failure-unavailable.md) | A failed tmux pane read is unavailable, never pane_missing | in-progress | daemon, tmux, seat identity | cortex mesh flap, cw.4.2 |
 | [0016](0016-transient-observation-unavailable.md) | A transient or ambiguous native observation is unavailable, never a mismatch | in-progress | daemon, seat identity, native process proof | CER-2982 |
 | [0017](0017-secret-seat-env-channel.md) | A secret-named seat value reaches its runtime without any argv | planned | daemon, tmux, seat launch, managed Claude launch | 0013 item 9 follow-up |
+| [0018](0018-permission-before-selection.md) | Permission prompts are classified before selection prompts; an interact override never answers one | in-progress | daemon, transport, rig send | SEC-189 |
 
 ## Requirements Syntax (EARS)
 
