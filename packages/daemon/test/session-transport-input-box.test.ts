@@ -901,7 +901,7 @@ describe("SessionTransport with transport.verify_input_box", () => {
         seedCanonicalRig(runtime);
         const eventBus = new EventBus(db);
         const activity = new AgentActivityStore({ db, eventBus });
-        activity.recordHookEvent({ runtime, sessionName: SESSION, hookEvent: "PermissionRequest", subtype: "Bash" });
+        activity.recordHookEvent({ runtime, sessionName: SESSION, hookEvent: "Notification", subtype: "elicitation_dialog" });
         const { tmux, log } = phasedTmux({ frames });
         const result = await new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, eventBus, agentActivityStore: activity,
           sleep: async () => {}, ...(setting === undefined ? {} : { verifyInputBox: () => setting }) })
@@ -933,7 +933,7 @@ describe("SessionTransport with transport.verify_input_box", () => {
         seedCanonicalRig(runtime);
         const eventBus = new EventBus(db);
         const activity = new AgentActivityStore({ db, eventBus });
-        activity.recordHookEvent({ runtime, sessionName: SESSION, hookEvent: "PermissionRequest", subtype: "Bash" });
+        activity.recordHookEvent({ runtime, sessionName: SESSION, hookEvent: "Notification", subtype: "elicitation_dialog" });
         const { tmux, log } = phasedTmux({ frames });
         const result = await new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, eventBus, agentActivityStore: activity,
           sleep: async () => {}, ...(setting === undefined ? {} : { verifyInputBox: () => setting }) })
@@ -962,7 +962,7 @@ describe("SessionTransport with transport.verify_input_box", () => {
         seedCanonicalRig(runtime);
         const eventBus = new EventBus(db);
         const activity = new AgentActivityStore({ db, eventBus });
-        activity.recordHookEvent({ runtime, sessionName: SESSION, hookEvent: "PermissionRequest", subtype: "Bash" });
+        activity.recordHookEvent({ runtime, sessionName: SESSION, hookEvent: "Notification", subtype: "elicitation_dialog" });
         const { tmux, log } = phasedTmux({ frames });
         const result = await new SessionTransport({ db, rigRepo, sessionRegistry, tmuxAdapter: tmux, eventBus, agentActivityStore: activity,
           sleep: async () => {}, ...(setting === undefined ? {} : { verifyInputBox: () => setting }) })

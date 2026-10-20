@@ -108,10 +108,16 @@ const IDLE_TERMINAL_COMMANDS = new Set(["zsh", "bash", "sh", "fish", "nu", "tmux
 const PERMISSION_PROMPT_PATTERNS = [
   /\bDo you want to (?:proceed|continue|trust|allow|make|apply|create|run|delete|overwrite|edit)\b/i,
   /\bDo you trust the\b/i,
-  // Codex v0.139.0 command-approval render (qa-codex-approval-render-research-20260627): the selector
-  // (`› N.`) is already caught above; these question lines make the fallback robust if it scrolls out.
+  // Codex v0.139.0 command-approval render (qa-codex-approval-render-research-20260627). These are
+  // checked BEFORE the selector pattern (SEC-189): an approval dialog's own numbered selector must read
+  // as a permission prompt, not as a generic selection prompt an override may answer.
   /\bWould you like to run the following command\b/i,
   /\bAllow Codex to run\b/i,
+  // Further approval questions found in the installed runtimes (see spec 0018): Codex 0.163.0 patch,
+  // permission-grant, terminal-input and network approvals.
+  /\bWould you like to (?:make the following edits|grant these permissions)/i,
+  /\bWould you like to send input to (?:the existing terminal|terminal [^?\n]{1,40})\?/i,
+  /\bDo you want to approve network access\b/i,
 ];
 
 // OPR.0.4.1.10 — how many trailing non-blank lines to scan for an interactive-prompt SIGNATURE (the
@@ -141,6 +147,13 @@ function trimPaneLines(paneContent: string): string[] {
 function truncateEvidence(text: string): string {
   const compact = text.replace(/\s+/g, " ").trim();
   return compact.length > 240 ? `${compact.slice(0, 237)}...` : compact;
+}
+
+/** The override audit keeps the detected evidence line, never the full pane: at most 120 characters. */
+function truncateAuditEvidence(evidence: string | null | undefined): string | null {
+  if (!evidence) return null;
+  const compact = evidence.replace(/\s+/g, " ").trim();
+  return compact.length > 120 ? `${compact.slice(0, 117)}...` : compact;
 }
 
 function findPatternEvidence(lines: string[], patterns: RegExp[]): string | null {
@@ -324,6 +337,14 @@ function draftComposerLine(lines: string[], verdict: PaneActivityClassification)
   return lines[last]!.trim();
 }
 
+/** SEC-189: readiness that is a permission or command-approval prompt, from pane or hook evidence.
+ *  A `--dangerously-interact` send never answers one: a digit key selects an option at once. */
+export function readinessIsPermissionPrompt(readiness: Pick<AgentActivity, "reason" | "rawEvent" | "rawSubtype">): boolean {
+  if (readiness.reason === "permission_prompt" || readiness.reason === "permission_request_pending" || readiness.reason === "permission_request_unverified") return true;
+  if (readiness.rawEvent === "PermissionRequest" || readiness.rawEvent === "PermissionPromptConfirmed") return true;
+  return readiness.rawEvent === "Notification" && readiness.rawSubtype === "permission_prompt";
+}
+
 export function classifyPaneActivity(paneContent: string, options: ClassifyPaneOptions = {}): PaneActivityClassification {
   const lastNonBlank = trimPaneLines(paneContent);
   if (lastNonBlank.length === 0) {
@@ -342,6 +363,19 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
   const idleStatusBarLine = IDLE_STATUS_BAR_PATTERNS.some((pattern) => pattern.test(lastLine))
     ? lastLine
     : null;
+  // SEC-189: checked BEFORE the selection prompt, so a permission dialog with its numbered selector
+  // visible is a permission prompt. OPR.0.4.1.10 (FR-1c): a permission/confirmation question is
+  // attention even when its selector is not in view — checked before the idle short-circuits so a permission block above an idle-looking
+  // footer never reads as idle (which would let a default send land on it).
+  const permissionPromptEvidence = findPatternEvidence(promptScanLines, PERMISSION_PROMPT_PATTERNS);
+  if (permissionPromptEvidence) {
+    return {
+      state: "attention",
+      reason: "permission_prompt",
+      evidence: permissionPromptEvidence,
+    };
+  }
+
   const claudeComposer = findClaudeComposer(paneContent, options);
   const oldQuestionEnd = promptScanLines.lastIndexOf(CLAUDE_QUESTION_FOOTER);
   // A complete later empty composer with a recognized Claude bar makes the preceding question history.
@@ -358,18 +392,6 @@ export function classifyPaneActivity(paneContent: string, options: ClassifyPaneO
       state: "attention",
       reason: "selection_prompt",
       evidence: selectionPromptEvidence,
-    };
-  }
-
-  // OPR.0.4.1.10 (FR-1c): a permission/confirmation question is attention even when its selector is
-  // not in view — checked before the idle short-circuits so a permission block above an idle-looking
-  // footer never reads as idle (which would let a default send land on it).
-  const permissionPromptEvidence = findPatternEvidence(promptScanLines, PERMISSION_PROMPT_PATTERNS);
-  if (permissionPromptEvidence) {
-    return {
-      state: "attention",
-      reason: "permission_prompt",
-      evidence: permissionPromptEvidence,
     };
   }
 
@@ -2465,6 +2487,7 @@ export class SessionTransport {
     // the positive-picker guard (FR-4 — the footgun separation). The advisory is carried on the
     // success result via `warning` so the honest telemetry is surfaced.
     let sendAdvisory: string | undefined;
+    let overrideReadiness: AgentActivity | undefined;
     const promptOverride = waitForIdleMs === undefined && Boolean(opts?.dangerouslyInteract);
     if (waitForIdleMs === undefined) {
       const readiness = await this.classifySendReadiness({
@@ -2473,10 +2496,26 @@ export class SessionTransport {
         attachmentType: sessionMeta.attachmentType,
         binding: observed?.binding,
       });
+      overrideReadiness = readiness;
 
       // Explicit interaction selects key input even when readiness cannot recognize the prompt.
       // Only bypassing a positive picker requires a successful audit; other states already sent.
       if (opts?.dangerouslyInteract) {
+        // SEC-189: refuse before the audit record and before any input.
+        if (readiness.state === "needs_input" && readinessIsPermissionPrompt(readiness)) {
+          return {
+            ok: false,
+            sessionName,
+            reason: "permission_prompt_override_refused",
+            activity: readiness,
+            error: `Refused: '${sessionName}' is at a permission or approval prompt (${readiness.reason}). --dangerously-interact never answers permission or approval prompts: a person must answer them in the pane. No text was sent.`,
+          };
+        }
+        // SEC-189: whatever the readiness state (a running or elicitation hook, or an unknown pane, can hide a
+        // permission dialog), one fresh pane read must show no permission prompt before any input. An
+        // unreadable pane cannot prove that, so it refuses too.
+        const earlyRefusal = await this.overridePanePermissionRefusal(sessionName, readiness);
+        if (earlyRefusal) return earlyRefusal;
         if (readiness.state === "needs_input" && (!opts.reason || opts.reason.trim().length === 0)) {
           return {
             ok: false,
@@ -2568,6 +2607,13 @@ export class SessionTransport {
     const copyModeFailure = await leavePaneMode("No text was sent.");
     if (copyModeFailure) return observe({ ...copyModeFailure, ...(waitMode ? waitEvidence : {}) });
 
+    // SEC-189: the input boundary. A dialog can be raised during the awaits above, so an override send reads
+    // the pane again; this is the last await before the text is written.
+    if (promptOverride) {
+      const boundaryRefusal = await this.overridePanePermissionRefusal(sessionName, overrideReadiness);
+      if (boundaryRefusal) return observe(boundaryRefusal);
+    }
+
     // 3. Deliver ordinary messages as paste, audited prompt answers as key input.
     if (observed) observed.sentHash = hashSentText(text);
     const textResult = await this.runStage(
@@ -2612,6 +2658,12 @@ export class SessionTransport {
       const pane = await this.runStage("session_transport.prompt_override_pre_submit_capture",
         () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
       if (runtime === "claude-code" && bindingChanged()) return observe(changedRecipient(true));
+      // SEC-189: a permission prompt on screen at the submit boundary: no Enter.
+      if (pane && classifyPaneActivity(pane).reason === "permission_prompt") {
+        return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
+          ...(inputBoxRuntime ? { inputBox: INPUT_BOX_UNCHECKED } : {}),
+          warning: [sendAdvisory, "prompt-override: a permission or approval prompt is on screen at the submit boundary; Enter was not sent. A person must answer it in the pane."].filter(Boolean).join(" ") });
+      }
       if (!promptAnswerStaged(pane, text, runtime)) {
         return observe({ ok: true, sessionName, sent: true, verified: false, outcome: "rendered-unconfirmed", promptInteraction: "unverified",
           ...(inputBoxRuntime ? { inputBox: INPUT_BOX_UNCHECKED } : {}),
@@ -3124,6 +3176,33 @@ export class SessionTransport {
     return `a recent activity hook exists but the live pane probe could not confirm idle (possible identity mismatch between the seat env, the DB, and the stored payload)`;
   }
 
+  /** SEC-189: one fresh pane read for an override send. A permission prompt on screen, or a pane that cannot be
+   *  read, is a refusal; null means the read shows no permission prompt. Used before the audit row and again at
+   *  the input boundary, where it is the last await before the text is written. */
+  private async overridePanePermissionRefusal(sessionName: string, readiness: AgentActivity | undefined): Promise<SendResult | null> {
+    const pane = await this.runStage("session_transport.prompt_override_pre_input_capture",
+      () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+    if (pane === null || pane === undefined) {
+      return {
+        ok: false,
+        sessionName,
+        reason: "permission_check_unavailable",
+        activity: readiness,
+        error: `Refused: the pane of '${sessionName}' could not be read, so an override cannot prove no permission prompt is on screen. No text was sent.`,
+      };
+    }
+    if (classifyPaneActivity(pane).reason === "permission_prompt") {
+      return {
+        ok: false,
+        sessionName,
+        reason: "permission_prompt_override_refused",
+        activity: readiness,
+        error: `Refused: '${sessionName}' shows a permission or approval prompt on screen. --dangerously-interact never answers permission or approval prompts: a person must answer them in the pane. No text was sent.`,
+      };
+    }
+    return null;
+  }
+
   // Record actor/reason with the actual readiness, never a fabricated prompt classification.
   // Report an unavailable sink to the caller: a positive-picker override still fails closed,
   // while other readiness states keep their existing accepted-send behavior with an advisory.
@@ -3146,6 +3225,9 @@ export class SessionTransport {
         detectedState: input.readiness.state,
         detectedReason: input.readiness.reason,
         evidenceSource: input.readiness.evidenceSource,
+        evidence: truncateAuditEvidence(input.readiness.evidence),
+        ...(input.readiness.evidenceSource === "runtime_hook"
+          ? { rawEvent: input.readiness.rawEvent ?? null, rawSubtype: input.readiness.rawSubtype ?? null } : {}),
         overrideReason: input.overrideReason,
       });
       return { ok: true };
