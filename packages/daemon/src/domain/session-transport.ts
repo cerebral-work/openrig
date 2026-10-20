@@ -113,6 +113,10 @@ const PERMISSION_PROMPT_PATTERNS = [
   // as a permission prompt, not as a generic selection prompt an override may answer.
   /\bWould you like to run the following command\b/i,
   /\bAllow Codex to run\b/i,
+  // Further approval questions found in the installed runtimes (see spec 0018): Codex 0.163.0 patch,
+  // permission-grant, terminal-input and network approvals.
+  /\bWould you like to (?:make the following edits|grant these permissions|send input to (?:the|terminal))/i,
+  /\bDo you want to approve network access\b/i,
 ];
 
 // OPR.0.4.1.10 — how many trailing non-blank lines to scan for an interactive-prompt SIGNATURE (the
@@ -2503,6 +2507,31 @@ export class SessionTransport {
             activity: readiness,
             error: `Refused: '${sessionName}' is at a permission or approval prompt (${readiness.reason}). --dangerously-interact never answers permission or approval prompts: a person must answer them in the pane. No text was sent.`,
           };
+        }
+        // SEC-189: whatever the readiness state (a running or elicitation hook, or an unknown pane, can hide a
+        // permission dialog), one fresh pane read must show no permission prompt before any input. An
+        // unreadable pane cannot prove that, so it refuses too.
+        if (sessionMeta.attachmentType !== "external_cli") {
+          const preInput = await this.runStage("session_transport.prompt_override_pre_input_capture",
+            () => this.tmuxAdapter.capturePaneContent(sessionName, 50)).catch(() => null);
+          if (preInput === null || preInput === undefined) {
+            return {
+              ok: false,
+              sessionName,
+              reason: "permission_check_unavailable",
+              activity: readiness,
+              error: `Refused: the pane of '${sessionName}' could not be read, so an override cannot prove no permission prompt is on screen. No text was sent.`,
+            };
+          }
+          if (classifyPaneActivity(preInput).reason === "permission_prompt") {
+            return {
+              ok: false,
+              sessionName,
+              reason: "permission_prompt_override_refused",
+              activity: readiness,
+              error: `Refused: '${sessionName}' shows a permission or approval prompt on screen. --dangerously-interact never answers permission or approval prompts: a person must answer them in the pane. No text was sent.`,
+            };
+          }
         }
         if (readiness.state === "needs_input" && (!opts.reason || opts.reason.trim().length === 0)) {
           return {

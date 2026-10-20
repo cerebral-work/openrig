@@ -130,12 +130,23 @@ describe("explicit prompt answer delivery", () => {
 
   it.each([null, "Working...", "❯ green\n────────────────────\nenter to submit",
     "❯ green please but not this\n────────────────────\nenter to submit"])("does not guess submission from unavailable, consumed or partial input (%#)", async capture => {
-    const f = fixture("text"); f.state.capture = capture;
+    // The first read is the pre-input permission check (default pane); the pre-submit read returns the case.
+    const f = fixture("text"); const first = f.tmux.capturePaneContent.bind(f.tmux); let reads = 0;
+    f.tmux.capturePaneContent = async (...args: Parameters<typeof first>) => { if (++reads === 1) return first(...args); f.state.capture = capture; return first(...args); };
     const result = await f.transport.send(f.name, "green please", { dangerouslyInteract: true, reason: "answer the text field" });
     expect(result).toMatchObject({ ok: true, sent: true, verified: false, outcome: "rendered-unconfirmed" });
     expect(f.state.received).toEqual(["green please"]);
     expect(f.state.submitted).toEqual([]);
     expect(f.state.commands.some(a => a[1] === "send-keys")).toBe(false);
+  });
+
+  it("SEC-189: an unreadable pane before any input refuses the override and sends nothing", async () => {
+    const f = fixture("text");
+    f.tmux.capturePaneContent = async () => { throw new Error("capture unavailable"); };
+    const result = await f.transport.send(f.name, "green", { dangerouslyInteract: true, reason: "answer the text field" });
+    expect(result).toMatchObject({ ok: false, reason: "permission_check_unavailable" });
+    expect(f.state.received).toEqual([]);
+    expect(f.state.commands.some(a => a[1] === "send-keys" || a[1] === "paste-buffer")).toBe(false);
   });
 
   it.each([";", "answer;", "answer\\;", "--", "Enter", "é🙂", "x".repeat(163840)])("preserves answer bytes outside argv and tmux command parsing (%#)", async answer => {
@@ -151,7 +162,8 @@ describe("explicit prompt answer delivery", () => {
 
   it("reports a failed post-input capture as unverified without a trailing Enter", async () => {
     const f = fixture("text");
-    f.tmux.capturePaneContent = async () => { throw new Error("capture unavailable"); };
+    const first = f.tmux.capturePaneContent.bind(f.tmux); let reads = 0;
+    f.tmux.capturePaneContent = async (...args: Parameters<typeof first>) => { if (++reads === 1) return first(...args); throw new Error("capture unavailable"); };
     const result = await f.transport.send(f.name, "green", { dangerouslyInteract: true, reason: "answer the text field" });
     expect(result).toMatchObject({ ok: true, sent: true, verified: false, outcome: "rendered-unconfirmed" });
     expect(f.state.received).toEqual(["green"]);

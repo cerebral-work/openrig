@@ -1039,14 +1039,108 @@ describe("OPR.0.4.1.10 rig send prompt/permission guard (keystone)", () => {
       const { sendText, sendKeys } = spies();
       let captures = 0;
       const t = makeTransport(mockTmux({
-        capturePaneContent: async () => (++captures <= 1 ? ASK_USER_QUESTION_PICKER : CLAUDE_PERMISSION_DIALOG),
+        capturePaneContent: async () => (++captures <= 2 ? ASK_USER_QUESTION_PICKER : CLAUDE_PERMISSION_DIALOG),
         sendText, sendKeys,
       }));
       const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "pick" });
       expect(r.ok).toBe(true);
       expect(r.outcome).toBe("rendered-unconfirmed");
       expect(r.warning).toContain("permission");
+      // The pre-submit check is a further layer: the answer was typed before the dialog appeared, but no Enter followed.
+      expect(sendText).toHaveBeenCalledTimes(1);
+      expect(sendText).toHaveBeenCalledWith("dev-impl@my-rig", "1", undefined, { bracketed: false });
       expect(sendKeys).not.toHaveBeenCalled();
+    });
+
+    // Fix-forward: the override reads the pane before any input, whatever the readiness state.
+    function expectRefusedUntouched(r: { ok: boolean; reason?: string }, reason: string, sendText: ReturnType<typeof vi.fn>, sendKeys: ReturnType<typeof vi.fn>) {
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe(reason);
+      expect(sendText).not.toHaveBeenCalled();
+      expect(sendKeys).not.toHaveBeenCalled();
+      expect(overrideEvents()).toEqual([]);
+    }
+
+    it.each(["UserPromptSubmit", "PreToolUse"])("(j) a fresh %s hook (running) over a permission dialog: override refused, nothing typed", async hookEvent => {
+      agentActivityStore.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => CLAUDE_PERMISSION_DIALOG, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+    });
+
+    it("(k) unknown readiness over a permission dialog: override refused, nothing typed", async () => {
+      let n = 0;
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => (++n === 1 ? UNRECOGNIZED_PANE : CLAUDE_PERMISSION_DIALOG), sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+    });
+
+    it("(c) a fresh elicitation hook over a permission dialog: override refused, nothing typed", async () => {
+      agentActivityStore.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent: "Notification", subtype: "elicitation_dialog" });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => CLAUDE_PERMISSION_DIALOG, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "answer" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+    });
+
+    it.each([
+      ["a thrown capture", async () => { throw new Error("tmux gone"); }],
+      ["a null capture", async () => null],
+    ])("an override with %s is refused as permission_check_unavailable, nothing typed", async (_label, capture) => {
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: capture as () => Promise<string | null>, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "pick" });
+      expectRefusedUntouched(r, "permission_check_unavailable", sendText, sendKeys);
+      expect((r as { error?: string }).error).toContain("No text was sent.");
+    });
+
+    it.each([15_001, 600_000])("a stale (%sms) Codex PermissionRequest over an unrecognized pane: override refused", async ageMs => {
+      const fixedNow = new Date("2026-10-11T05:00:00.000Z");
+      const seat = seedCodexSeat();
+      seedCodexHook(fixedNow, "PermissionRequest", ageMs, seat);
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => UNRECOGNIZED_PANE, sendText, sendKeys }), { now: () => fixedNow });
+      const r = await t.send(seat, "1", { dangerouslyInteract: true, reason: "approve" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+    });
+
+    it("a stale Claude PermissionRequest through the 'pane unrecognized' spread: override refused", async () => {
+      const fixedNow = new Date("2026-10-08T06:47:16.000Z");
+      agentActivityStore.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent: "PermissionRequest",
+        occurredAt: new Date(fixedNow.getTime() - 600_000).toISOString() });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => UNRECOGNIZED_PANE, sendText, sendKeys }), { now: () => fixedNow });
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+      expect(r.activity?.reason).toContain("pane unrecognized");
+    });
+
+    it("a PermissionPromptConfirmed hook: override refused", async () => {
+      agentActivityStore.recordHookEvent({ runtime: "claude-code", sessionName: "dev-impl@my-rig", hookEvent: "PermissionPromptConfirmed" });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => "❯ \n  ⏵⏵ accept edits on", sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "approve" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+    });
+
+    it("an AskUserQuestion whose text contains a permission phrase is refused (intended: permission wording wins)", async () => {
+      const pane = ["Do you want to proceed with the migration?", "", "❯ 1. Yes", "  2. No"].join("\n");
+      expect(classifyPaneActivity(pane)).toMatchObject({ reason: "permission_prompt" });
+      const { sendText, sendKeys } = spies();
+      const t = makeTransport(mockTmux({ capturePaneContent: async () => pane, sendText, sendKeys }));
+      const r = await t.send("dev-impl@my-rig", "1", { dangerouslyInteract: true, reason: "pick" });
+      expectRefusedUntouched(r, "permission_prompt_override_refused", sendText, sendKeys);
+    });
+
+    it.each([
+      "Would you like to make the following edits?",
+      "Would you like to grant these permissions?",
+      "Would you like to send input to the existing terminal?",
+      "Do you want to approve network access to example.org?",
+    ])("classifies the Codex approval question %j as permission_prompt", question => {
+      expect(classifyPaneActivity([question, "", "› 1. Yes", "  2. No"].join("\n"))).toMatchObject({ reason: "permission_prompt" });
     });
 
     it("CONTROL: a real AskUserQuestion picker stays selection_prompt and keeps the audited override", async () => {
