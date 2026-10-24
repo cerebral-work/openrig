@@ -155,8 +155,8 @@ it("bounds concurrent traces, expires observation only, distinguishes duplicate 
 });
 
 it("uses the existing event-loop tick without changing health snapshot semantics", () => {
-  let mono = 0; let wall = 1000; const tick = vi.fn(() => { throw Error("sink failure"); });
-  const monitor = new EventLoopMonitor({ autoStart: false, now: () => wall, monotonicNow: () => mono, onTick: tick });
-  mono = 700; wall = 800; monitor.recordTick();
+  let mono = 0; const tick = vi.fn(() => { throw Error("sink failure"); });
+  const monitor = new EventLoopMonitor({ autoStart: false, monotonicNow: () => mono, onTick: tick });
+  mono = 700; monitor.recordTick();
   expect(tick).toHaveBeenCalledWith(700, 0); expect(monitor.snapshot().lastTickAgeMs).toBe(0); monitor.stop();
 });
