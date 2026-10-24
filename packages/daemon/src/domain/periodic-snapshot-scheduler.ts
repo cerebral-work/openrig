@@ -151,10 +151,10 @@ export class PeriodicSnapshotScheduler {
       ).run();
       // Bound high-frequency usage_samples and watchdog_history to a 7-day rolling window.
       this.deps.db.prepare(
-        `DELETE FROM usage_samples WHERE captured_at < datetime('now', '-7 days')`
+        `DELETE FROM usage_samples WHERE captured_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')`
       ).run();
       this.deps.db.prepare(
-        `DELETE FROM watchdog_history WHERE evaluated_at < datetime('now', '-7 days')`
+        `DELETE FROM watchdog_history WHERE evaluated_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')`
       ).run();
     } catch {
       // Best-effort telemetry hygiene: never fail the periodic snapshot tick.
