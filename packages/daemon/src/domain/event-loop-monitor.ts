@@ -84,15 +84,17 @@ export interface EventLoopSnapshot {
   lagP99Ms: number;
   /** Event-loop utilization ratio (0..1) over the monitor's lifetime. */
   utilization: number;
-  /** Wall-clock ms since the last recorded tick (grows while the loop stalls). */
+  /**
+   * Monotonic ms since the last recorded tick (grows while the loop stalls).
+   * Measured on the monotonic clock so a wall-clock step never reads as a
+   * stall (spec 0019, CER-3096).
+   */
   lastTickAgeMs: number;
   /** Verdict from {@link evaluateEventLoopHealthy}. */
   healthy: boolean;
 }
 
 export interface EventLoopMonitorOptions {
-  /** Injectable clock for deterministic tests. Defaults to Date.now. */
-  now?: () => number;
   /** Histogram resolution (ms). Defaults to {@link EVENT_LOOP_DELAY_RESOLUTION_MS}. */
   resolutionMs?: number;
   /** lastTick refresh interval (ms). Defaults to {@link EVENT_LOOP_TICK_INTERVAL_MS}. */
@@ -104,6 +106,7 @@ export interface EventLoopMonitorOptions {
   autoStart?: boolean;
   /** Optional diagnostic observation on the existing tick; never a new timer. */
   onTick?: (at: number, previous: number) => void;
+  /** Injectable monotonic clock (ms) for deterministic tests. Defaults to performance.now. */
   monotonicNow?: () => number;
 }
 
@@ -111,10 +114,8 @@ const NS_PER_MS = 1_000_000;
 
 export class EventLoopMonitor {
   private readonly histogram: ReturnType<typeof monitorEventLoopDelay>;
-  private readonly now: () => number;
   private readonly tickIntervalMs: number;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private lastTickAt: number;
   private eluBaseline: EventLoopUtilization;
   private started = false;
   private monotonicTick: number;
@@ -122,7 +123,6 @@ export class EventLoopMonitor {
   private readonly onTick?: (at: number, previous: number) => void;
 
   constructor(opts: EventLoopMonitorOptions = {}) {
-    this.now = opts.now ?? Date.now;
     this.monotonicNow = opts.monotonicNow ?? (() => performance.now());
     this.monotonicTick = this.monotonicNow();
     this.onTick = opts.onTick;
@@ -130,7 +130,6 @@ export class EventLoopMonitor {
     this.histogram = monitorEventLoopDelay({
       resolution: opts.resolutionMs ?? EVENT_LOOP_DELAY_RESOLUTION_MS,
     });
-    this.lastTickAt = this.now();
     this.eluBaseline = performance.eventLoopUtilization();
     if (opts.autoStart !== false) this.start();
   }
@@ -141,7 +140,6 @@ export class EventLoopMonitor {
     this.started = true;
     this.histogram.enable();
     this.eluBaseline = performance.eventLoopUtilization();
-    this.lastTickAt = this.now();
     this.monotonicTick = this.monotonicNow();
     this.timer = setInterval(() => this.recordTick(), this.tickIntervalMs);
     // A monitor tick must never keep the daemon alive on its own.
@@ -150,7 +148,6 @@ export class EventLoopMonitor {
 
   /** Refresh the last-tick timestamp. Exposed for deterministic tests. */
   recordTick(): void {
-    this.lastTickAt = this.now();
     const previous = this.monotonicTick;
     this.monotonicTick = this.monotonicNow();
     try { this.onTick?.(this.monotonicTick, previous); } catch { /* Health never depends on diagnostics. */ }
@@ -160,7 +157,7 @@ export class EventLoopMonitor {
     const lagMeanMs = Number.isFinite(this.histogram.mean) ? this.histogram.mean / NS_PER_MS : 0;
     const lagP99Ms = this.histogram.percentile(99) / NS_PER_MS;
     const elu = performance.eventLoopUtilization(this.eluBaseline);
-    const lastTickAgeMs = Math.max(0, this.now() - this.lastTickAt);
+    const lastTickAgeMs = Math.max(0, this.monotonicNow() - this.monotonicTick);
     return {
       lagMeanMs,
       lagP99Ms,

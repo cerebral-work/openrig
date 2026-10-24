@@ -25,6 +25,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0016](0016-transient-observation-unavailable.md) | A transient or ambiguous native observation is unavailable, never a mismatch | in-progress | daemon, seat identity, native process proof | CER-2982 |
 | [0017](0017-secret-seat-env-channel.md) | A secret-named seat value reaches its runtime without any argv | planned | daemon, tmux, seat launch, managed Claude launch | 0013 item 9 follow-up |
 | [0018](0018-permission-before-selection.md) | Permission prompts are classified before selection prompts; an interact override never answers one | in-progress | daemon, transport, rig send | SEC-189 |
+| [0019](0019-event-loop-age-monotonic.md) | Event-loop health measures last-tick age on the monotonic clock; a wall-clock step is not a stall | in-progress |
 
 ## Requirements Syntax (EARS)
 
