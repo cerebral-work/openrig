@@ -223,4 +223,39 @@ describe("resolveIdentityVerifiedClaudeRecord — occupant boot_at is a SQLite U
       else process.env.TZ = originalTz;
     }
   });
+
+  it("accepts observedPid when SeatIdentityReconciler records the child claude PID instead of the parent shell panePid", async () => {
+    const sessionId = "f16594c5-179a-4be7-bf5e-fd759b2b87a3";
+    const out = await resolveIdentityVerifiedClaudeRecord(
+      {
+        sessionName: "seat@rig",
+        generation: "generation-current",
+        occupantBootAt: "2026-09-04T02:00:00.000Z",
+        binding: { tmuxSession: "seat@rig", tmuxPane: "%1" },
+        identity: {
+          verdict: "verified",
+          sessionName: "seat@rig",
+          observedAt: "2026-09-04T02:30:00.000Z",
+          evidence: { registeredPane: "%1", observedPid: 20 },
+        },
+        sidecar: {
+          session_id: sessionId,
+          session_name: "seat@rig",
+          transcript_path: `/transcripts/${sessionId}.jsonl`,
+          sampled_at: "2026-09-04T02:31:00.000Z",
+          occupant_generation: "generation-current",
+        },
+      },
+      {
+        getPanePid: async () => 10,
+        listProcesses: async () => [
+          { pid: 10, ppid: 1, command: "bash" },
+          { pid: 20, ppid: 10, command: `claude --resume ${sessionId}` },
+        ],
+        readThreadIdByPid: () => undefined,
+      },
+      () => true,
+    );
+    expect(out).toMatchObject({ ok: true, id: sessionId, source: "generation-sidecar" });
+  });
 });

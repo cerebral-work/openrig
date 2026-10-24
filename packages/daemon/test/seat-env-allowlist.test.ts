@@ -7,6 +7,7 @@ import {
   SEAT_ENV_ACTIVITY_TOKEN,
   SEAT_ENV_DEFAULT_BASE,
   SEAT_ENV_DENY_KUBECONFIG,
+  SEAT_ENV_KEYS_INTERNAL,
   seatEnvAllowlistApplies,
   seatEnvKeeps,
   seatEnvPolicyFromSettings,
@@ -64,9 +65,11 @@ describe("seat env allow-list (spec 0013)", () => {
     expect(seatEnvKeeps("db_password", POLICY, ["db_password"])).toBe(false);
   });
 
-  it("keeps the daemon-minted activity token and named exceptions, never OP_SERVICE_ACCOUNT_TOKEN", () => {
+  it("keeps the daemon-minted activity token, internal seat env keys, and named exceptions, never OP_SERVICE_ACCOUNT_TOKEN", () => {
     expect(SEAT_ENV_ACTIVITY_TOKEN).toBe("OPENRIG_ACTIVITY_HOOK_TOKEN");
+    expect(SEAT_ENV_KEYS_INTERNAL).toBe("OPENRIG_SEAT_ENV_KEYS");
     expect(seatEnvKeeps(SEAT_ENV_ACTIVITY_TOKEN, POLICY)).toBe(true);
+    expect(seatEnvKeeps(SEAT_ENV_KEYS_INTERNAL, POLICY)).toBe(true);
     const excepted = { ...POLICY, exceptions: ["EXAMPLE_API_KEY", "OP_SERVICE_ACCOUNT_TOKEN"] };
     expect(seatEnvKeeps("EXAMPLE_API_KEY", excepted)).toBe(true);
     expect(seatEnvKeeps("OP_SERVICE_ACCOUNT_TOKEN", excepted, ["OP_SERVICE_ACCOUNT_TOKEN"])).toBe(false);

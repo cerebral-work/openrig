@@ -127,8 +127,37 @@ export class PeriodicSnapshotScheduler {
           // Per-rig error isolation: one rig's failure never aborts the tick.
         }
       }
+      this.pruneStaleTelemetry();
     } finally {
       this.running = false;
+    }
+  }
+
+  private pruneStaleTelemetry(): void {
+    try {
+      // Remove snapshots belonging to deleted rigs (004_snapshots lacks ON DELETE CASCADE).
+      this.deps.db.prepare(
+        `DELETE FROM snapshots WHERE rig_id NOT IN (SELECT id FROM rigs)`
+      ).run();
+      // Retain only the newest 500 view.changed rows so W2b drain semantics stay intact
+      // without unbounded SQLite growth on high-frequency queue mutations.
+      this.deps.db.prepare(
+        `DELETE FROM events
+         WHERE type = 'view.changed'
+           AND seq < COALESCE(
+             (SELECT seq FROM events WHERE type = 'view.changed' ORDER BY seq DESC LIMIT 1 OFFSET 500),
+             0
+           )`
+      ).run();
+      // Bound high-frequency usage_samples and watchdog_history to a 7-day rolling window.
+      this.deps.db.prepare(
+        `DELETE FROM usage_samples WHERE captured_at < datetime('now', '-7 days')`
+      ).run();
+      this.deps.db.prepare(
+        `DELETE FROM watchdog_history WHERE evaluated_at < datetime('now', '-7 days')`
+      ).run();
+    } catch {
+      // Best-effort telemetry hygiene: never fail the periodic snapshot tick.
     }
   }
 

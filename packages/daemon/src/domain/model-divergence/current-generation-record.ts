@@ -147,15 +147,19 @@ export async function resolveIdentityVerifiedClaudeRecord(
   }
   const panePid = await deps.getPanePid(binding.tmuxPane);
   if (!panePid) return { ok: false, reason: `registered pane ${binding.tmuxPane} has no live pid` };
-  if (panePid !== identity.evidence.observedPid) {
+
+  const processes = await deps.listProcesses();
+  const claudePids = findDescendants(processes, panePid, commandBasenameIs("claude"));
+  // SeatIdentityReconciler records native.process.pid (the child claude PID) when
+  // available, or the top-level pane shell PID when not. Accept either so a
+  // shell-wrapped seat (`bash -> claude`) passes verification as long as the
+  // verified claude process is still a live descendant of the registered pane.
+  if (panePid !== identity.evidence.observedPid && !claudePids.includes(identity.evidence.observedPid)) {
     return {
       ok: false,
       reason: `registered pane pid changed since identity verification (${identity.evidence.observedPid} -> ${panePid})`,
     };
   }
-
-  const processes = await deps.listProcesses();
-  const claudePids = findDescendants(processes, panePid, commandBasenameIs("claude"));
   if (claudePids.length === 0) {
     return { ok: false, reason: `no claude process under verified pane ${binding.tmuxPane}` };
   }
