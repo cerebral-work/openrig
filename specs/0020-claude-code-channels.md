@@ -37,28 +37,47 @@ Claude Code lets an MCP server push inbound messages into a session ("channels",
 - **Identity proof accepts the option.** Both Claude argv parsers in `native-process-lineage.ts` (identity and delivery) accept `--channels` with one or more values, and `--channels=<entry>`. `--channels` with no value, or any unknown flag, is still no proof.
 - **Test isolation:** the hermetic test setup scrubs the env name, so a seat's own setting cannot change the launch commands the suites pin.
 
-## Operator setup (outside OpenRig)
+## Requirements
+
+- REQ-0020-01: With `runtime.claude_code.channels` set to valid entries, every Claude Code launch OpenRig makes (fresh launch, resume, fork and restore; managed argv and shell forms; ordinary, kernel, team-default and full-bypass seats) shall carry exactly one `--channels` option, followed by those entries in order, after the operational flags.
+- REQ-0020-02: With the setting unset, empty, invalid or unreadable, every Claude launch command shall be byte-identical to the command without the setting.
+- REQ-0020-03: Both settings stores shall refuse, at `rig config set`, an empty item and any entry that is not `plugin:<name>@<marketplace>` (including `server:` entries and flags).
+- REQ-0020-04: Launches of other runtimes shall be unchanged by the setting.
+- REQ-0020-05: Both Claude argv parsers in `native-process-lineage.ts` shall prove identity and delivery for a command line carrying `--channels <entries...>` or `--channels=<entry>`.
+- REQ-0020-07: Both Claude argv parsers shall prove nothing for `--channels` with no value or for any unknown flag.
+- REQ-0020-06: The setting shall be read at each launch, so a change applies at each seat's next launch without a daemon restart.
+
+## Plan
+
+1. Write `claude-channels.test.ts` and the lineage tests first. Prove them red: the identity test returned null before the parsers learned `--channels`.
+2. Add the setting to both stores in lockstep (key list, env name, path, default, validator, help, parity tests, route count).
+3. Append `--channels <entries...>` in `operationalLaunchArgs`, read through the settings resolver with a none fallback.
+4. Teach both lineage parsers the option; scrub the env name in the hermetic test setup.
+
+## Test
+
+```bash
+cd packages/daemon && npx vitest run test/claude-channels.test.ts test/native-process-lineage.test.ts test/user-settings-store.test.ts test/user-settings-routes.test.ts
+cd packages/cli && npx vitest run test/config-store-extended.test.ts
+```
+
+- **REQ-0020-01, 02:** `claude-channels.test.ts`, 4 paths × 4 seat kinds (exactly one `--channels`; byte-identical when unset), plus `an empty or invalid value leaves every command as unset`.
+- **REQ-0020-03:** the store tests on both sides (`defaults to none and takes only plugin:<name>@<marketplace> entries`) and `parseClaudeChannels` refusals.
+- **REQ-0020-04:** `the argv form … other runtimes are untouched`.
+- **REQ-0020-05, 07:** the lineage tests `proves the exact Claude identity beside the plugin channels option` and `a channels option with no entry, or beside an unknown flag, proves nothing`, and the identity test in `claude-channels.test.ts`.
+- **REQ-0020-06:** `is read through the real settings resolver at each launch; an unreadable store reads as none`.
+- **Break-once:** removing the identity parser's handling: 3 failures; removing the append: 17 failures; a CLI validator that accepts `server:`: 1 failure.
+- **Live proof before any rollout:** one unattended seat launch with the setting reaches ready, with no prompt in its pane.
+
+## Notes
+
+**Operator setup (outside OpenRig):**
 
 1. Install the channel plugin in the Claude config the seats use.
 2. Add a managed-settings file that sets `channelsEnabled: true` and lists the plugin in `allowedChannelPlugins`. On that machine this replaces Anthropic's default channel allowlist.
 3. `rig config set runtime.claude_code.channels plugin:<name>@<marketplace>`.
 
-## Verification
-
-- **`claude-channels.test.ts`:**
-  - 4 launch paths × 4 seat kinds: the option appears exactly once, and the command is byte-identical when unset;
-  - invalid values read as none;
-  - the argv form; other runtimes untouched;
-  - identity read from a command line carrying the option.
-- **`native-process-lineage.test.ts`:** identity and delivery proof beside `--channels`, in the space, `=` and multi-entry forms. No value, or an unknown flag beside it, is still no proof.
-- **Settings stores on both sides:** default, set, refusals. The settings route count rises to 91.
-- **Break-once:**
-  - removing the identity parser's handling: 3 failures;
-  - removing the append: 17 failures;
-  - a CLI validator that accepts `server:`: 1 failure.
-- **Live proof before any rollout:** one unattended seat launch with the setting reaches ready, with no prompt in its pane.
-
-## Out of scope
+**Out of scope:**
 
 - The `resumeCommand` hint in `rig ps` and `rig ask --wake` (`claude -p`, where Claude ignores channels) do not launch seats.
 - The development-channels flag is not supported, for the reason above.
