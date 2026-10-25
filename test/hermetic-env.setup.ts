@@ -48,6 +48,8 @@ for (const key of [
   "PROVIDER_USAGE_WINDOWS",
   // A seat with input-box verification on must not change what the transport suites verify.
   "TRANSPORT_VERIFY_INPUT_BOX",
+  // Spec 0020: a seat's Claude channels setting must not change the launch commands the suites pin.
+  "RUNTIME_CLAUDE_CODE_CHANNELS",
 ]) {
   delete process.env[`OPENRIG_${key}`];
   delete process.env[`RIGGED_${key}`];

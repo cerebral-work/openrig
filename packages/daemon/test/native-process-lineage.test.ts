@@ -209,6 +209,26 @@ describe("Claude identity with inline settings in ps output", () => {
     expect(await verifyClaudePaneProcess({ ...actual, expectedToken: "different" })).toBeNull();
     expect((await observeClaudeDelivery({ ...actual, expectedToken: "different" })).state).toBe("unknown");
   });
+  // Spec 0020: a managed launch may register plugin channels; the option names no conversation.
+  it.each([
+    `--channels plugin:example-channel@example --session-id ${token}`,
+    `--session-id ${token} --channels plugin:example-channel@example plugin:second@example`,
+    `--channels=plugin:example-channel@example --resume ${token}`,
+  ])("proves the exact Claude identity beside the plugin channels option: %s", async args => {
+    const actual = input(args);
+    expect((await verifyClaudePaneProcess(actual))?.process.pid).toBe(21);
+    expect((await observeClaudeDelivery(actual)).state).toBe("verified");
+    expect(await verifyClaudePaneProcess({ ...actual, expectedToken: "different" })).toBeNull();
+    expect((await observeClaudeDelivery({ ...actual, expectedToken: "different" })).state).toBe("unknown");
+  });
+  it.each([
+    `--channels --session-id ${token}`,
+    `--session-id ${token} --channels`,
+    `--channels plugin:example-channel@example --session-id ${token} --unknown-flag`,
+  ])("a channels option with no entry, or beside an unknown flag, proves nothing: %s", async args => {
+    expect(await verifyClaudePaneProcess(input(args))).toBeNull();
+    expect((await observeClaudeDelivery(input(args))).state).not.toBe("verified");
+  });
   it("preserves an apostrophe in the native Claude executable path", async () => {
     const actual = input(`--settings ${settings[0]![1]} --session-id ${token}`);
     const list = (await actual.listProcesses()).map(r => r.pid === 21 ? { ...r,

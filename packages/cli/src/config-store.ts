@@ -119,6 +119,9 @@ export interface RiggedConfig {
     codex: {
       hooksEnabled: boolean;
     };
+    claudeCode: {
+      channels: string;
+    };
   };
   // Slice 27 — Claude auto-compaction policy. Operator-configurable
   // pre-compaction trigger: when a Claude seat's context usage crosses
@@ -321,6 +324,9 @@ const DEFAULTS = {
     codex: {
       hooksEnabled: true,
     },
+    claudeCode: {
+      channels: "",
+    },
   },
   // Slice 27 — opt-in default-off. Threshold default 80% per spec.
   policies: {
@@ -474,6 +480,8 @@ export const VALID_KEYS = [
   "runtime.codex.hooks_enabled",
   "runtime.readiness_timeout_seconds",
   "runtime.change_env_allowlist",
+  // Spec 0020 (cerebral-work fork): plugin channels every Claude Code seat launch registers (lockstep with the twin).
+  "runtime.claude_code.channels",
   // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10:
   // 7 ConfigStore keys (lockstep with daemon SETTINGS_VALID_KEYS).
   "policies.claude_compaction.enabled",
@@ -595,6 +603,7 @@ export const ENV_MAP: Record<ValidKey, { primary: string; legacy?: string }> = {
   "runtime.codex.hooks_enabled": { primary: "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED" },
   "runtime.readiness_timeout_seconds": { primary: "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS" },
   "runtime.change_env_allowlist": { primary: "OPENRIG_RUNTIME_CHANGE_ENV_ALLOWLIST" },
+  "runtime.claude_code.channels": { primary: "OPENRIG_RUNTIME_CLAUDE_CODE_CHANNELS" },
   // Slice 27 — Claude auto-compaction policy. OPENRIG_X primary only
   // (net-new keys, no legacy).
   "policies.claude_compaction.enabled": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED" },
@@ -694,6 +703,7 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "runtime.codex.hooks_enabled": ["runtime", "codex", "hooksEnabled"],
   "runtime.readiness_timeout_seconds": ["runtime", "readinessTimeoutSeconds"],
   "runtime.change_env_allowlist": ["runtime", "changeEnvAllowlist"],
+  "runtime.claude_code.channels": ["runtime", "claudeCode", "channels"],
   "policies.claude_compaction.enabled": ["policies", "claudeCompaction", "enabled"],
   "policies.claude_compaction.threshold_percent": ["policies", "claudeCompaction", "thresholdPercent"],
   "policies.claude_compaction.pre_compact_instruction": ["policies", "claudeCompaction", "preCompactInstruction"],
@@ -739,6 +749,9 @@ const KEY_TO_PATH: Record<ValidKey, string[]> = {
   "seat_env.kubeconfig": ["seatEnv", "kubeconfig"],
   "seat_env.rigs": ["seatEnv", "rigs"],
 };
+
+/** Spec 0020: a plugin channel entry (lockstep with the twin store's pattern of the same name). */
+const CLAUDE_PLUGIN_CHANNEL = /^plugin:[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
 function isValidKey(key: string): key is ValidKey {
   return (VALID_KEYS as readonly string[]).includes(key);
@@ -981,6 +994,15 @@ const KEY_CONSTRAINTS: Partial<Record<ValidKey, (raw: string, coerced: string | 
     if (bad.length > 0) {
       throw new Error(`Invalid value for runtime.change_env_allowlist: ${bad.join(", ")} must be seat env names (^[A-Z_][A-Z0-9_]*$, not OPENRIG_*)`);
     }
+  },
+  // Spec 0020 (cerebral-work fork): plugin channel entries only. Lockstep with the twin store's parseClaudeChannels.
+  "runtime.claude_code.channels": (raw) => {
+    const items = (raw ?? "").trim() === "" ? [] : (raw ?? "").split(",").map((item) => item.trim());
+    items.forEach((item, index) => {
+      const problem = item === "" ? `item ${index + 1} is empty`
+        : !CLAUDE_PLUGIN_CHANNEL.test(item) ? `"${item}" is not a plugin channel (plugin:<name>@<marketplace>)` : null;
+      if (problem) throw new Error(`Invalid value for runtime.claude_code.channels: ${problem}`);
+    });
   },
   "runtime.readiness_timeout_seconds": (raw, coerced) => {
     if (!/^\d+$/.test(raw.trim()) || typeof coerced !== "number" || !Number.isInteger(coerced) || coerced < 1 || coerced > 600) {
@@ -1296,6 +1318,9 @@ export class ConfigStore {
         changeEnvAllowlist: v("runtime.change_env_allowlist") as string,
         codex: {
           hooksEnabled: v("runtime.codex.hooks_enabled") as boolean,
+        },
+        claudeCode: {
+          channels: v("runtime.claude_code.channels") as string,
         },
       },
       policies: {

@@ -1,7 +1,7 @@
 import type { NodeBinding } from "../domain/runtime-adapter.js";
 import { nonInterruptiveArgs } from "./non-interruptive.js";
 import { isValidThresholdPercent } from "../domain/claude-compaction-enforcer.js";
-import { SettingsStore } from "../domain/user-settings/settings-store.js";
+import { SettingsStore, parseClaudeChannels } from "../domain/user-settings/settings-store.js";
 import { shellQuote } from "./shell-quote.js";
 import { fileURLToPath } from "node:url";
 import { existsSync } from "node:fs";
@@ -43,6 +43,8 @@ export const TEAM_CLAUDE_ASK = [
 type LaunchChoice = Pick<NodeBinding, "kernelAuthority" | "teamPermissionDefault" | "nonInterruptive" | "launchPosture" | "permissionMode"> & {
   /** Whether OpenRig's managed compaction acts on this Claude launch; read from the policy when absent. */
   managedCompaction?: boolean;
+  /** Plugin channels this Claude launch registers; read from runtime.claude_code.channels when absent. */
+  claudeChannels?: string[];
 };
 
 /** OpenRig's managed compaction acts on Claude seats while its policy is on with a threshold the enforcer accepts (it
@@ -54,6 +56,23 @@ export function managedCompactionActive(store: Pick<SettingsStore, "resolveClaud
   } catch {
     return false;
   }
+}
+
+/** Spec 0020 (cerebral-work fork): the plugin channels Claude seats register, read fresh at each launch so a change
+ *  applies at the next launch without a daemon restart. An unreadable or invalid value reads as none, so a bad value
+ *  never stops a seat; the setting's validator refuses one at `rig config set`. */
+export function claudeChannels(store: Pick<SettingsStore, "resolveOne"> = new SettingsStore()): string[] {
+  try {
+    return parseClaudeChannels(String(store.resolveOne("runtime.claude_code.channels").value ?? ""));
+  } catch {
+    return [];
+  }
+}
+
+/** `--channels <entries...>`, or nothing. Every launch path follows the operational flags with more flags, so the
+ *  list ends where Claude's variadic option expects it to. */
+function channelArgs(entries: string[]): string[] {
+  return entries.length > 0 ? ["--channels", ...entries] : [];
 }
 
 /** While managed compaction acts on a Claude session, Claude's own idle compaction is turned off in the session's one
@@ -87,7 +106,11 @@ export function operationalLaunchArgs(runtime: string, choice: LaunchChoice): st
     return ["-c", "check_for_update_on_startup=false", ...nonInterruptiveArgs(runtime,
       choice.kernelAuthority ? { launchPosture: "full_bypass", nonInterruptive: true } : choice)];
   }
-  if (runtime === "claude-code") return withIdleCompactionOff(claudeOperationalArgs(choice), choice.managedCompaction ?? managedCompactionActive());
+  if (runtime === "claude-code") {
+    // Every Claude launch path (fresh, resume, fork, restore; managed and shell) takes its flags from here.
+    return [...withIdleCompactionOff(claudeOperationalArgs(choice), choice.managedCompaction ?? managedCompactionActive()),
+      ...channelArgs(choice.claudeChannels ?? claudeChannels())];
+  }
   return choice.kernelAuthority ? [] : nonInterruptiveArgs(runtime, choice);
 }
 

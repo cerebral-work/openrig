@@ -135,6 +135,7 @@ describe("SettingsStore (User Settings v0)", () => {
       "runtime.codex.hooks_enabled",
       "runtime.readiness_timeout_seconds",
       "runtime.change_env_allowlist",
+      "runtime.claude_code.channels",
       // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10.
       "policies.claude_compaction.enabled",
       "policies.claude_compaction.threshold_percent",
@@ -220,6 +221,17 @@ describe("SettingsStore (User Settings v0)", () => {
     for (const raw of ["lower_case", "OPENRIG_SESSION_NAME", "BAD-NAME"]) {
       expect(() => store.set("runtime.change_env_allowlist", raw), raw).toThrow("runtime.change_env_allowlist");
     }
+  });
+
+  it("runtime.claude_code.channels defaults to none and takes only plugin:<name>@<marketplace> entries", () => {
+    const store = new SettingsStore(configPath);
+    expect(store.resolveOne("runtime.claude_code.channels")).toMatchObject({ value: "", source: "default" });
+    store.set("runtime.claude_code.channels", "plugin:example-channel@example");
+    expect(store.resolveOne("runtime.claude_code.channels")).toMatchObject({ value: "plugin:example-channel@example", source: "file" });
+    for (const raw of ["plugin:a@b,,plugin:c@d", "server:example", "plugin:no-marketplace", "--channels", "--dangerously-load-development-channels"]) {
+      expect(() => store.set("runtime.claude_code.channels", raw), raw).toThrow("runtime.claude_code.channels");
+    }
+    expect(store.resolveOne("runtime.claude_code.channels")).toMatchObject({ value: "plugin:example-channel@example" });
   });
 
   it("defaults the advisor session to the kernel's advisor seat", () => {

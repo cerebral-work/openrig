@@ -150,6 +150,8 @@ export const SETTINGS_VALID_KEYS = [
   "runtime.codex.hooks_enabled",
   "runtime.readiness_timeout_seconds",
   "runtime.change_env_allowlist",
+  // Spec 0020 (cerebral-work fork): plugin channels every Claude Code seat launch registers (lockstep with the twin).
+  "runtime.claude_code.channels",
   // Slice 27 — Claude auto-compaction policy. SC-29 EXCEPTION #10:
   // 7 keys (lockstep with cli/src/config-store.ts VALID_KEYS).
   // Opt-in default-off; daemon ContextMonitor reads `enabled` +
@@ -291,6 +293,7 @@ const ENV_MAP: Record<SettingsValidKey, { primary: string; legacy?: string }> = 
   "runtime.codex.hooks_enabled": { primary: "OPENRIG_RUNTIME_CODEX_HOOKS_ENABLED" },
   "runtime.readiness_timeout_seconds": { primary: "OPENRIG_RUNTIME_READINESS_TIMEOUT_SECONDS" },
   "runtime.change_env_allowlist": { primary: "OPENRIG_RUNTIME_CHANGE_ENV_ALLOWLIST" },
+  "runtime.claude_code.channels": { primary: "OPENRIG_RUNTIME_CLAUDE_CODE_CHANNELS" },
   // Slice 27 — Claude auto-compaction policy. Net-new keys; OPENRIG_X
   // primary only.
   "policies.claude_compaction.enabled": { primary: "OPENRIG_POLICIES_CLAUDE_COMPACTION_ENABLED" },
@@ -389,6 +392,7 @@ const KEY_TO_PATH: Record<SettingsValidKey, string[]> = {
   "runtime.codex.hooks_enabled": ["runtime", "codex", "hooksEnabled"],
   "runtime.readiness_timeout_seconds": ["runtime", "readinessTimeoutSeconds"],
   "runtime.change_env_allowlist": ["runtime", "changeEnvAllowlist"],
+  "runtime.claude_code.channels": ["runtime", "claudeCode", "channels"],
   "policies.claude_compaction.enabled": ["policies", "claudeCompaction", "enabled"],
   "policies.claude_compaction.threshold_percent": ["policies", "claudeCompaction", "thresholdPercent"],
   "policies.claude_compaction.pre_compact_instruction": ["policies", "claudeCompaction", "preCompactInstruction"],
@@ -670,6 +674,7 @@ function getDefaultValue(key: SettingsValidKey, workspaceRoot: string): string |
     case "runtime.codex.hooks_enabled": return true;
     case "runtime.readiness_timeout_seconds": return 30;
     case "runtime.change_env_allowlist": return "CLAUDE_CONFIG_DIR,CODEX_HOME";
+    case "runtime.claude_code.channels": return "";
     // Slice 27 — Claude auto-compaction policy defaults. Opt-in
     // default-off; threshold 80% per spec. Pre/post defaults point at
     // the canonical restore skill; compact_instruction is intentionally
@@ -841,6 +846,14 @@ const KEY_CONSTRAINTS: Partial<Record<SettingsValidKey, (raw: string, coerced: s
       .filter((name) => !/^[A-Z_][A-Z0-9_]*$/.test(name) || name.startsWith("OPENRIG_"));
     if (bad.length > 0) {
       throw new Error(`Invalid value for runtime.change_env_allowlist: ${bad.join(", ")} must be seat env names (^[A-Z_][A-Z0-9_]*$, not OPENRIG_*)`);
+    }
+  },
+  // Spec 0020 (cerebral-work fork): plugin channel entries only. Lockstep with the twin store.
+  "runtime.claude_code.channels": (raw) => {
+    try {
+      parseClaudeChannels(raw ?? "");
+    } catch (error) {
+      throw new Error(`Invalid value for runtime.claude_code.channels: ${(error as Error).message}`);
     }
   },
   "runtime.readiness_timeout_seconds": (raw, coerced) => {
@@ -1442,3 +1455,18 @@ export function parseNamedPairs(raw: string): NamedPair[] {
   }
   return Array.from(out.entries()).map(([name, path]) => ({ name, path }));
 }
+
+/** Spec 0020 (cerebral-work fork): runtime.claude_code.channels, comma-separated `plugin:<name>@<marketplace>` entries;
+ *  "" is none. Only plugin entries: a policy allowlist can admit a plugin, while a bare `server:` channel loads only
+ *  through the development flag, whose confirmation stops every unattended launch. Throws on an empty or other item. */
+export function parseClaudeChannels(raw: string): string[] {
+  if (raw.trim() === "") return [];
+  const items = raw.split(",").map((item) => item.trim());
+  items.forEach((item, index) => {
+    if (item === "") throw new Error(`item ${index + 1} is empty`);
+    if (!CLAUDE_PLUGIN_CHANNEL.test(item)) throw new Error(`"${item}" is not a plugin channel (plugin:<name>@<marketplace>)`);
+  });
+  return items;
+}
+
+const CLAUDE_PLUGIN_CHANNEL = /^plugin:[A-Za-z0-9][A-Za-z0-9._-]*@[A-Za-z0-9][A-Za-z0-9._-]*$/;

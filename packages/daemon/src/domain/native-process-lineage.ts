@@ -200,8 +200,14 @@ function claudeSessionToken(args: string[]): string | null {
       if (args[index + 1] && !args[index + 1]!.startsWith("-")) index += 1;
       continue;
     }
+    // Spec 0020: the plugin channels a managed launch registers, one or more values.
+    if (arg === "--channels") {
+      if (!args[index + 1] || args[index + 1]!.startsWith("-")) return null;
+      while (args[index + 1] && !args[index + 1]!.startsWith("-")) index += 1;
+      continue;
+    }
     if (["--permission-mode", "--model", "--name", "--effort"].includes(arg)) { index += 1; continue; }
-    if (/^--(?:permission-mode|model|name|settings|effort)=/.test(arg)
+    if (/^--(?:permission-mode|model|name|settings|effort|channels)=/.test(arg)
       || arg.startsWith("--remote-control=") || arg === "--dangerously-skip-permissions") continue;
     if (arg === "--fork-session") { fork = true; continue; }
     const identity = arg.match(/^--(session-id|resume)(?:=(.*))?$/);
@@ -233,7 +239,13 @@ function claudeSessionIdentity(args: string[]): string | null | { unparsed: true
       if (args[index + 1] && !args[index + 1]!.startsWith("-")) index += 1;
       continue;
     }
-    if (/^--(?:permission-mode|model|name|settings|effort)=/.test(arg)
+    // Spec 0020: the plugin channels a managed launch registers, one or more values.
+    if (arg === "--channels") {
+      if (!args[index + 1] || args[index + 1]!.startsWith("-")) return unparsed;
+      while (args[index + 1] && !args[index + 1]!.startsWith("-")) index += 1;
+      continue;
+    }
+    if (/^--(?:permission-mode|model|name|settings|effort|channels)=/.test(arg)
       || arg.startsWith("--remote-control=") || arg === "--dangerously-skip-permissions") continue;
     if (arg === "--fork-session") { fork = true; continue; }
     const identity = arg.match(/^--(session-id|resume)(?:=(.*))?$/);
