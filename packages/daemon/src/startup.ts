@@ -993,7 +993,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // (repo currently empty as of 2026-05-10; vendored
   // copy is the source of truth at v0).
   try {
-    const { PluginVendorService } = await import("./domain/plugin-vendor-service.js");
+    const { PluginVendorService, vendorAuthorityVersion } = await import("./domain/plugin-vendor-service.js");
     const vendoredAssetsDir = nodePath.resolve(import.meta.dirname, "../assets/plugins");
     const userPluginsDir = getDefaultOpenRigPath("plugins");
     const realFs = {
@@ -1051,7 +1051,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // OpenRig marker and is left as it is.
     try {
       const { getDaemonVersion } = await import("./domain/daemon-version.js");
-      vendorService.ensureSkillDirGlobally(nodePath.resolve(import.meta.dirname, "../assets/skills/rigs"), "rigs", getDaemonVersion(), [
+      vendorService.ensureSkillDirGlobally(nodePath.resolve(import.meta.dirname, "../assets/skills/rigs"), "rigs", vendorAuthorityVersion(getDaemonVersion()), [
         nodePath.join(os.homedir(), ".claude", "skills"),
         nodePath.join(os.homedir(), ".agents", "skills"),
       ]);
