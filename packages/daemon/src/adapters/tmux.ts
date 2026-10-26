@@ -1013,11 +1013,16 @@ export class TmuxAdapter {
       const allowlist = await this.seatEnvAllowlistFor(name);
       if (allowlist) {
         const kept = await this.applySeatEnvAllowlist(exactTarget(name, "session"), Object.keys(seatEnv), allowlist, createStep);
-        createStep.name = "restart the pane";
-        if (!/^%\d+$/.test(created)) throw new Error("new-session reported no pane id");
-        const respawn = ["tmux", "respawn-pane", "-k", "-t", created];
-        if (cwd != null) respawn.push("-c", cwd);
-        await this.run(respawn, posixJoinArgv(respawn));
+        // A scoped launch started the pane from `env -i` with its own selection, through a private file the pane
+        // removes as it starts. Restarting it would re-run that start command with the file gone, and the pane would
+        // exit at once. Only a pane that inherited the session environment is restarted (as upstream does below).
+        if (!scopedCommand) {
+          createStep.name = "restart the pane";
+          if (!/^%\d+$/.test(created)) throw new Error("new-session reported no pane id");
+          const respawn = ["tmux", "respawn-pane", "-k", "-t", created];
+          if (cwd != null) respawn.push("-c", cwd);
+          await this.run(respawn, posixJoinArgv(respawn));
+        }
         warnings.push(...kept);
         return warnings.length ? { ok: true, warnings } : { ok: true };
       }
