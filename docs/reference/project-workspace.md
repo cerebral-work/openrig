@@ -108,6 +108,24 @@ ownership receipt. A later seat start with no project-world input preserves it;
 an explicit install whose `install.skills` is empty clears it. This keeps
 "project not supplied" distinct from "project deliberately selects no skills."
 
+Before refreshing a skill copy, don't take `rig skill audit` as the answer. The
+audit reports declared provenance, date freshness (its `stale` is a verified date
+past 90 days or one with no evidence source) and copy hashes. It doesn't say
+whether a copy is safe to refresh, and two copies with different hashes aren't
+evidence of a deliberate fork. For a managed copy in a working folder, the
+read-only check is `rig skill loadout --runtime <claude-code|codex> --cwd
+<target> --project-root <project> --json`, without `--apply`. It reports
+`current`; `stale`, still OpenRig's last projection, so `--apply` can refresh it;
+`conflicting`; `shadowed`; or `missing`. Read the detail of `conflicting` and
+`shadowed`: `conflicting` can mean the bytes differ or that the target couldn't
+be inspected, which leaves any difference unknown, and a confirmed difference
+doesn't prove a deliberate local edit. A seat's own skills, kept outside the
+project (0.7.1 and later), are listed with where they're stored by
+`rig skill loadout --seat <session|self> --json`; that read doesn't classify
+them. A global or untracked copy has no install
+record, so its origin stays unknown: ask the skill's owner, and don't move global
+skills into a project just to get one.
+
 ## Work-install project selection
 
 `rig context work-install` picks one project from the catalog at
@@ -167,6 +185,12 @@ The read API adds `GET /api/scopes/projects` and optional `project` and
 `projectRoot` parameters to scopes, execution and slice-detail reads. Slice
 detail also requires the selected mission directory. Existing reads without a
 project parameter keep their legacy contract.
+
+`GET /api/scopes?counts=1` is the light list: each mission's slices with only
+their `dirName`, `id`, `displayName`, `status`, `stage` and `locks` (and
+`sourcePath` for a selected project), read from each slice's node file alone. It
+leaves out readiness and proof pairing, which are most of the work and bytes of
+the default list. `detail=1` takes precedence when both are given.
 
 ## UI Mapping
 

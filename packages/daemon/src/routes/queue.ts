@@ -1,4 +1,8 @@
-import { Hono } from "hono";
+import type { SessionRegistry } from "../domain/session-registry.js";
+import { Hono, type Context } from "hono";
+import { classifierOccupant } from "../domain/classification-sources.js";
+import { OCCUPANT_GENERATION_HEADER, runtimeSwitchCustodyRefusal } from "./runtime-switch-custody.js";
+import type { ClassifierLeaseManager } from "../domain/classifier-lease-manager.js";
 import { streamSSE } from "hono/streaming";
 import type { EventBus } from "../domain/event-bus.js";
 import type {
@@ -17,14 +21,18 @@ import { type OutboxHandler } from "../domain/outbox-handler.js";
 import { aggregateAttention } from "../domain/feed/attention-aggregator.js";
 import type { AttentionItem } from "../domain/feed/attention-aggregator.js";
 import { loadHostRegistry, resolveHost } from "../domain/hosts/hosts-registry-reader.js";
+import { eligibleQueueBindings, ineligibleBindingDetail, loadLearnedHostBindings } from "../domain/hosts/learned-host-bindings.js";
 import { getSelfHostId, resolvesToLocalHost } from "../domain/hosts/fanout-contract.js";
 import { remoteJsonRequest } from "../domain/hosts/remote-daemon-http.js";
 import type { SettingsStore } from "../domain/user-settings/settings-store.js";
-import { deriveCurrentWork, deriveRole, deriveWorkCandidates, type RoleOrientation } from "../domain/current-work.js";
+import { deriveCurrentWork, deriveCurrentWorkChoice, deriveRole, deriveWorkCandidates, type CurrentWorkRow, type MissionsRootResolver, type RoleOrientation } from "../domain/current-work.js";
+import { listProjects, projectCatalogPaths } from "../domain/workspace/project-read.js";
+import { readProjectCatalog } from "../domain/workspace/project-catalog.js";
 import { WhoamiAmbiguousError, type WhoamiService } from "../domain/whoami-service.js";
 import type Database from "better-sqlite3";
+import { HumanModeService } from "../domain/gateway/human-operating-modes.js";
 import type { HumanQuestion } from "../domain/human-questions.js";
-import { queryLimit } from "./query-limit.js";
+import { queryLimit, SQL_LIMIT_BOUND } from "./query-limit.js";
 
 /**
  * Coordination L3 — Queue HTTP routes (PL-004 Phase A).
@@ -74,6 +82,28 @@ export function queueRoutes(): Hono {
 
   function getRepo(c: { get: (key: string) => unknown }): QueueRepository {
     return c.get("queueRepo" as never) as QueueRepository;
+  }
+  /** Optional stream-application fence; ordinary queue calls have no new check. */
+  function classificationRefusal(c: Context, actor: string, binding: unknown): Response | null {
+    if (binding === undefined) return null;
+    const b = binding as { leaseId?: unknown; expectedOccupant?: unknown } | null;
+    if (!b || typeof b.leaseId !== "string" || !b.leaseId || typeof b.expectedOccupant !== "string" || !b.expectedOccupant)
+      return c.json({ error: "invalid_classification_binding" }, 400);
+    const db = c.get("db" as never) as Database.Database;
+    if (classifierOccupant(db, actor)?.generation !== b.expectedOccupant)
+      return c.json({ error: "occupant_changed" }, 409);
+    try {
+      (c.get("classifierLeaseManager" as never) as ClassifierLeaseManager).requireActiveHolder(actor, b.leaseId);
+      return null;
+    } catch (error) {
+      return c.json({ error: (error as { code?: string }).code ?? "no_active_lease" }, 409);
+    }
+  }
+  /** Slice 16: a runtime switch's own predecessor or not-yet-committed successor doesn't act as the seat. */
+  function switchCustody(c: Context, actor: string): Response | null {
+    const db = c.get("db" as never) as Database.Database | undefined;
+    const refusal = db ? runtimeSwitchCustodyRefusal(db, actor, c.req.header(OCCUPANT_GENERATION_HEADER)) : null;
+    return refusal ? c.json(refusal.body, refusal.status) : null;
   }
   function destinationAdvisory(c: { get: (key: string) => unknown }, sessionRef: string) {
     // This observation runs after the write commits. An unavailable lookup
@@ -267,8 +297,18 @@ export function queueRoutes(): Hono {
     });
     const reg = registryLoader();
     if (!reg.ok) return fail(reg.error, "registry");
-    const resolved = resolveHost(reg.registry, hostId);
-    if (!resolved.ok) return fail(resolved.error, "unknown-host");
+    // #1642: this daemon's own learned bindings (its home's host-bindings.json) let a host's self-id
+    // name one of its registry entries, but only bindings that still match their entry. Any other
+    // binding leaves the refusal in place, before anything is forwarded, with the reason it isn't used.
+    const bindingsLoader =
+      (c.get("hostBindingsLoader" as never) as (() => ReturnType<typeof loadLearnedHostBindings>) | undefined) ??
+      loadLearnedHostBindings;
+    const learned = bindingsLoader();
+    const resolved = resolveHost(reg.registry, hostId, eligibleQueueBindings(reg.registry, learned));
+    if (!resolved.ok) {
+      const unused = ineligibleBindingDetail(reg.registry, learned, hostId);
+      return fail(unused ? `${resolved.error} ${unused}` : resolved.error, "unknown-host");
+    }
     if (resolved.host.transport !== "http") {
       return fail(
         `host '${hostId}' is SSH-declared; cross-host queue writes require an http-transport registry entry (url; bearer optional)`,
@@ -291,12 +331,15 @@ export function queueRoutes(): Hono {
       case "bearer":
         return fail(res.detail, "auth-failed");
       case "timeout":
+        // The write was sent, so the origin may still commit it after this deadline: its outcome is
+        // unknown, never a failed write. The caller reconciles by the row's ID before any retry.
         return fail(
           res.phase === "body"
             ? `remote queue write timed out: response headers arrived (HTTP ${res.status}) but the body never completed`
-            : `remote queue write timed out after ${QUEUE_FORWARD_TIMEOUT_MS}ms`,
+            : `remote queue write timed out after ${QUEUE_FORWARD_TIMEOUT_MS}ms; the remote may still commit it`,
           "unreachable",
           res.status,
+          "indeterminate",
         );
       case "network":
         return fail(res.detail, "unreachable", res.status, res.outcome);
@@ -366,6 +409,7 @@ export function queueRoutes(): Hono {
       nudge?: boolean;
       /** How the sender's identity was established, recorded on the source close as a local handoff records it. */
       identityProvenance?: string | null;
+      humanAlert?: boolean;
     },
     createSuccessor: (forwardBody: Record<string, unknown>) => Promise<{ ok: true; payload: unknown } | { ok: false; response: Response }> =
       (forwardBody) => forwardQueueWrite(c, hostId, "/api/queue/create", forwardBody),
@@ -422,6 +466,7 @@ export function queueRoutes(): Hono {
       ...(body.summary !== undefined ? { summary: body.summary } : {}),
       ...(body.evidenceRef !== undefined ? { evidenceRef: body.evidenceRef } : {}),
       ...(body.nudge !== undefined ? { nudge: body.nudge } : {}),
+      ...(body.humanAlert !== undefined ? { humanAlert: body.humanAlert } : {}),
     };
 
     // (3) Successor-create FIRST — origin-owns-the-record; failure leaves the
@@ -465,7 +510,8 @@ export function queueRoutes(): Hono {
   }
   function createSuccessorInProcess(c: { get: (key: string) => unknown; json: (body: unknown, status?: number) => Response }) {
     return async (forwardBody: Record<string, unknown>): Promise<{ ok: true; payload: unknown } | { ok: false; response: Response }> => {
-      const input = forwardBody as unknown as QueueCreateInput;
+      // wakeTrigger is internal (a row OpenRig creates itself); a forwarded body never carries it.
+      const { wakeTrigger: _internal, ...input } = forwardBody as unknown as QueueCreateInput;
       const refusal = createInputRefusal(c, input.sourceSession, input);
       if (refusal) return { ok: false, response: refusal };
       try {
@@ -484,6 +530,7 @@ export function queueRoutes(): Hono {
     const body = await c.req.json<{
       qitemId?: string;
       sourceSession?: string;
+      classificationBinding?: unknown;
       destinationSession?: string;
       body?: string;
       priority?: QueuePriority;
@@ -493,6 +540,7 @@ export function queueRoutes(): Hono {
       chainOfRecord?: string[];
       targetRepo?: string;
       humanIntent?: "decision" | "update" | null;
+      humanAlert?: boolean;
       humanDetail?: string | null;
       replyTo?: string | null;
       humanQuestions?: HumanQuestion[] | null; // shape validated by the repository (invalid_human_questions)
@@ -512,6 +560,7 @@ export function queueRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "queue create", bodyClaim: body.sourceSession });
     if (!identity.ok) return identity.response;
     const sourceSession = identity.session;
+    { const held = switchCustody(c, sourceSession); if (held) return held; }
     // Required destination and body, then PL-007: validate target_repo against
     // source rig's workspace.repos[].
     // GUARD FIXBACK (OPR.0.4.6.MH3 review of 86ba8b42, Finding 1): this runs
@@ -531,6 +580,8 @@ export function queueRoutes(): Hono {
     // before the first forward (Q-a) so every retry carries the same id. No
     // local row is ever written on the cross-host path.
     if (typeof body.hostId === "string" && !resolvesToLocalHost(body.hostId, getSelfHostId())) {
+      if (body.classificationBinding !== undefined)
+        return c.json({ error: "invalid_classification_binding", message: "Classifier-bound effects belong to this daemon's local queue." }, 400);
       const mintedId = body.qitemId ?? newQitemId();
       const { hostId: _dropped, ...rest } = body;
       const forwardBody: Record<string, unknown> = {
@@ -547,6 +598,8 @@ export function queueRoutes(): Hono {
     }
 
     try {
+      const fence = classificationRefusal(c, sourceSession, body.classificationBinding);
+      if (fence) return fence;
       const item = await getRepo(c).create({
         qitemId: body.qitemId,
         sourceSession,
@@ -559,13 +612,14 @@ export function queueRoutes(): Hono {
         chainOfRecord: body.chainOfRecord,
         targetRepo: body.targetRepo,
         humanIntent: body.humanIntent,
+        humanAlert: body.humanAlert,
         humanDetail: body.humanDetail,
         replyTo: body.replyTo,
         humanQuestions: body.humanQuestions,
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,
-        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
+        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header named the actor here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
       const advisory = destinationAdvisory(c, item.destinationSession);
       return c.json({ ...item, ...(advisory ? { advisories: [advisory] } : {}) }, 201);
@@ -582,6 +636,7 @@ export function queueRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "queue claim", bodyClaim: body.destinationSession });
     if (!identity.ok) return identity.response;
     const destinationSession = identity.session;
+    { const held = switchCustody(c, destinationSession); if (held) return held; }
     try {
       const item = getRepo(c).claim({ qitemId, destinationSession, identityProvenance: resolveRecordedProvenance(c, identity) });
       return c.json(item);
@@ -598,6 +653,7 @@ export function queueRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "queue unclaim", bodyClaim: body.destinationSession });
     if (!identity.ok) return identity.response;
     const destinationSession = identity.session;
+    { const held = switchCustody(c, destinationSession); if (held) return held; }
     try {
       const item = getRepo(c).unclaim(qitemId, destinationSession, body.reason ?? "manual", resolveRecordedProvenance(c, identity));
       return c.json(item);
@@ -620,7 +676,8 @@ export function queueRoutes(): Hono {
   // Closure vocabulary:
   //   - handed_off_to    delivered to next stage; acceptance pending
   //                      that stage's verdict on its own qitem
-  //   - blocked_on       waiting on a named blocker (closureTarget)
+  //   - blocked_on       active state=blocked park record, never state=done;
+  //                      rig queue block <id> --on <child> waits on a qitem
   //   - denied           the source seat refuses the work
   //   - canceled         work no longer needed (no follow-on)
   //   - no-follow-on     completed in place; no further routing
@@ -634,6 +691,7 @@ export function queueRoutes(): Hono {
     const qitemId = c.req.param("qitemId");
     const body = await c.req.json<{
       actorSession?: string;
+      classificationBinding?: unknown;
       state?: QueueState;
       reopen?: boolean;
       transitionNote?: string;
@@ -653,8 +711,11 @@ export function queueRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "queue update", bodyClaim: body.actorSession });
     if (!identity.ok) return identity.response;
     const actorSession = identity.session;
+    { const held = switchCustody(c, actorSession); if (held) return held; }
 
     try {
+      const fence = classificationRefusal(c, actorSession, body.classificationBinding);
+      if (fence) return fence;
       const item = getRepo(c).update({
         qitemId,
         actorSession,
@@ -674,7 +735,7 @@ export function queueRoutes(): Hono {
         wakeAfterSeconds: body.wakeAfterSeconds,
         summary: body.summary,
         evidenceRef: body.evidenceRef,
-        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
+        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header named the actor here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
       return c.json(item);
     } catch (err) {
@@ -699,6 +760,7 @@ export function queueRoutes(): Hono {
       summary?: string | null;
       evidenceRef?: string | null;
       nudge?: boolean;
+      humanAlert?: boolean;
       // OPR.0.4.6.MH3 FR-1: the out-of-band host envelope (BR-1). Absent /
       // "" / "local" = today's local transactional path, byte-identical.
       hostId?: string;
@@ -707,6 +769,7 @@ export function queueRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "queue handoff", bodyClaim: body.fromSession });
     if (!identity.ok) return identity.response;
     const fromSession = identity.session;
+    { const held = switchCustody(c, fromSession); if (held) return held; }
     if (!body.toSession) return c.json({ error: "toSession is required" }, 400);
 
     // PL-007 — GUARD FIXBACK (Finding 1): an EXPLICIT targetRepo validates
@@ -730,6 +793,7 @@ export function queueRoutes(): Hono {
       summary: body.summary,
       evidenceRef: body.evidenceRef,
       nudge: body.nudge,
+      humanAlert: body.humanAlert,
       // The source close is request-authored, so it carries the same stamp the local path records.
       identityProvenance: resolveRecordedProvenance(c, identity),
     };
@@ -756,7 +820,8 @@ export function queueRoutes(): Hono {
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: (body as { nudge?: boolean }).nudge,
-        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
+        humanAlert: body.humanAlert,
+        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header named the actor here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
       const advisory = destinationAdvisory(c, result.created.destinationSession);
       return c.json({ ...result, ...(advisory ? { advisories: [advisory] } : {}) }, 201);
@@ -783,6 +848,7 @@ export function queueRoutes(): Hono {
       targetRepo?: string;
       summary?: string | null;
       evidenceRef?: string | null;
+      humanAlert?: boolean;
       // OPR.0.4.6.MH3 FR-1: the out-of-band host envelope (BR-1).
       hostId?: string;
     }>().catch(() => ({} as never));
@@ -790,6 +856,7 @@ export function queueRoutes(): Hono {
     const identity = requireSenderIdentity(c, { verb: "queue handoff-and-complete", bodyClaim: body.fromSession });
     if (!identity.ok) return identity.response;
     const fromSession = identity.session;
+    { const held = switchCustody(c, fromSession); if (held) return held; }
     if (!body.toSession) return c.json({ error: "toSession is required" }, 400);
 
     // PL-007 — GUARD FIXBACK (Finding 1): same source-host-authority ordering
@@ -811,6 +878,7 @@ export function queueRoutes(): Hono {
       summary: body.summary,
       evidenceRef: body.evidenceRef,
       nudge: body.nudge,
+      humanAlert: body.humanAlert,
       // The source close is request-authored, so it carries the same stamp the local path records.
       identityProvenance: resolveRecordedProvenance(c, identity),
     };
@@ -837,13 +905,50 @@ export function queueRoutes(): Hono {
         summary: body.summary,
         evidenceRef: body.evidenceRef,
         nudge: body.nudge,
-        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
+        humanAlert: body.humanAlert,
+        identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header named the actor here, else claimed:v1 (resolveRecordedProvenance degrades)
       });
       const advisory = destinationAdvisory(c, result.created.destinationSession);
       return c.json({ ...result, ...(advisory ? { advisories: [advisory] } : {}) }, 201);
     } catch (err) {
       return errorResponse(c, err);
     }
+  });
+
+  // A decision made on the person's behalf, inside the decision room of the mode they have on. Recorded by the agent that
+  // asked, on the ask's own row, beside the person's answers and never as one; refused when there's no room to decide in.
+  app.post("/:qitemId/delegated-decision", async (c) => {
+    const qitemId = c.req.param("qitemId");
+    const body = await c.req.json<{ applicationId?: unknown; choices?: unknown; reason?: unknown; reversible?: unknown; actor?: string }>().catch(() => ({} as never));
+    const identity = requireSenderIdentity(c, { verb: "record a delegated decision", bodyClaim: body.actor ?? null });
+    if (!identity.ok) return identity.response;
+    if (typeof body.applicationId !== "string" || !body.applicationId.trim()) {
+      return c.json({ error: "application_required", message: "pass the applicationId from reading the person's decision room, so the decision is judged against that room" }, 400);
+    }
+    if (typeof body.reversible !== "boolean") {
+      return c.json({ error: "reversible_required", message: "say whether this decision can be undone (reversible: true or false)" }, 400);
+    }
+    const db = c.get("db" as never) as Database.Database | undefined;
+    const repo = getRepo(c);
+    const modes = db ? new HumanModeService({ db }) : null;
+    const choices = Array.isArray(body.choices)
+      ? body.choices.filter((ch): ch is { questionId?: string | null; chosen: string } => typeof ch === "object" && ch !== null && typeof (ch as { chosen?: unknown }).chosen === "string")
+      : [];
+    const result = repo.recordDelegatedDecision({
+      qitemId,
+      actorSession: identity.session,
+      expectedApplicationId: body.applicationId.trim(),
+      // Read inside the recorder's transaction, so a mode ending meanwhile can't have a decision recorded under it.
+      currentApplication: (entityId) => {
+        const current = modes?.current(entityId);
+        return current ? { applicationId: current.applicationId, entityId: current.entityId, modeName: current.modeName, decisionRoom: current.settings.decisionRoom } : null;
+      },
+      choices,
+      reason: typeof body.reason === "string" ? body.reason : "",
+      reversible: body.reversible,
+    });
+    if (result.status === "refused") return c.json({ error: result.reason, message: result.message }, result.reason === "not-found" ? 404 : 409);
+    return c.json({ ok: true, item: result.item });
   });
 
   // POST /:qitemId/fallback
@@ -884,12 +989,62 @@ export function queueRoutes(): Hono {
     } catch {
       missionsRoot = null;
     }
+    // Catalogued projects own their missions roots only when exactly one project
+    // tag names a healthy catalog entry. Every other project-tag case falls back
+    // to the configured root and records why, so whoami never turns an unusable
+    // catalog hint into a confident wrong-project answer.
+    let catalogStatus: "missing" | "usable" | "unavailable" = "missing";
+    let projectMissionsRoots = new Map<string, { root: string | null; error?: string }>();
+    let catalogPath: string | null = null;
+    try {
+      catalogPath = projectCatalogPaths(c).catalog;
+    } catch {
+      // No workspace root configured: there is no catalog to consult.
+      catalogPath = null;
+    }
+    if (catalogPath) try {
+      const entries = readProjectCatalog(catalogPath);
+      if (entries) {
+        catalogStatus = "usable";
+        projectMissionsRoots = new Map(listProjects(c).projects.map((project) => [project.id, {
+          root: project.error ? null : project.missionsRoot,
+          error: project.error,
+        }]));
+      }
+    } catch {
+      catalogStatus = "unavailable";
+    }
+    const currentWorkRoot: MissionsRootResolver = (row: CurrentWorkRow) => {
+      const projectIds = [...new Set((row.tags ?? []).flatMap((tag) => tag.split(",").map((part) => part.trim()))
+        .filter((tag) => tag.startsWith("project:") && tag.slice("project:".length).trim())
+        .map((tag) => tag.slice("project:".length).trim()))];
+      if (projectIds.length === 0) return { root: missionsRoot };
+      if (projectIds.length !== 1) {
+        return { root: missionsRoot, reason: `multiple project tags (${projectIds.join(", ")}); used configured root` };
+      }
+      const projectId = projectIds[0]!;
+      if (catalogStatus !== "usable") {
+        return { root: missionsRoot, reason: `project:${projectId} could not be used because the workspace catalog is ${catalogStatus === "missing" ? "not configured" : "unavailable"}; used configured root` };
+      }
+      const project = projectMissionsRoots.get(projectId);
+      if (!project) return { root: missionsRoot, reason: `project:${projectId} is not in the project catalogue; used configured root` };
+      if (project.error || !project.root) return { root: missionsRoot, reason: `project:${projectId} is unavailable in the project catalogue; used configured root` };
+      return { root: project.root };
+    };
     // Deliberately NOT position.asDestination.recent: that is a capped, mixed-state display
     // projection, so a second in-progress baton past the cap would be invisible and the
     // ambiguity refusal would degrade into a confident wrong answer. The derivation reads
     // the unbounded in-progress set, which makes it independent of recentLimit.
     const inProgress = repo.listInProgressForDestination(session);
-    const derived = deriveCurrentWork(inProgress, missionsRoot);
+    const derived = deriveCurrentWork(inProgress, currentWorkRoot);
+    const lookups = {
+      getRow: (qitemId: string) => repo.getById(qitemId) ?? null,
+      continuationOf: (qitemId: string) => repo.currentParkContinuation(qitemId),
+    };
+    // When no single work node is settled, the plain answer names every in-progress
+    // candidate and asks the agent to choose, rather than a count alone.
+    const choice = deriveCurrentWorkChoice(derived, inProgress, currentWorkRoot, lookups, missionsRoot);
+    const choiceField = choice ? { currentWorkChoice: choice } : {};
     let role: RoleOrientation = { state: "unknown", reason: "calling node unavailable", files: [] };
     try {
       const whoamiService = c.get("whoamiService" as never) as WhoamiService | undefined;
@@ -922,17 +1077,18 @@ export function queueRoutes(): Hono {
       const nextTruncated = next.length > WORK_CANDIDATE_LIST_LIMIT;
       const workCandidates = deriveWorkCandidates(
         [...inProgress, ...held.slice(0, WORK_CANDIDATE_LIST_LIMIT), ...next.slice(0, WORK_CANDIDATE_LIST_LIMIT)],
-        missionsRoot,
+        currentWorkRoot,
         {
           getRow: (qitemId) => repo.getById(qitemId) ?? null,
           continuationOf: (qitemId) => repo.currentParkContinuation(qitemId),
         },
+        missionsRoot,
       );
-      return c.json({ ...position, ...derived, role,
+      return c.json({ ...position, ...derived, ...choiceField, role,
         // heldAndNextTruncated stays for trace scripts that predate the per-list flags.
         workCandidates: { ...workCandidates, heldTruncated, nextTruncated, heldAndNextTruncated: heldTruncated || nextTruncated } });
     }
-    return c.json({ ...position, ...derived, role });
+    return c.json({ ...position, ...derived, ...choiceField, role });
   });
 
   // GET /list — list with filters. MUST precede /:qitemId so the literal path wins.
@@ -991,9 +1147,20 @@ export function queueRoutes(): Hono {
     const rig = c.req.query("rig") || undefined;
     const activeOnly = c.req.query("activeOnly") === "1";
     const attention = c.req.query("attention") === "1";
+    // Follow-through reads: a handoff's successor, and items updated since a time. Rows store ts_updated as
+    // toISOString(), so the time is normalized to that form before it's compared.
+    const handedOffFrom = c.req.query("handedOffFrom") || undefined;
+    const updatedSinceRaw = c.req.query("updatedSince") || undefined;
+    const updatedSinceMs = updatedSinceRaw === undefined ? undefined : Date.parse(updatedSinceRaw);
+    if (updatedSinceMs !== undefined && Number.isNaN(updatedSinceMs)) {
+      return c.json({ error: "updated_since_invalid", message: `updatedSince must be an ISO-8601 time (got "${updatedSinceRaw}")` }, 400);
+    }
+    const updatedSince = updatedSinceMs === undefined ? undefined : new Date(updatedSinceMs).toISOString();
 
+    // Trim each name so "pending, in-progress" matches like "pending,in-progress". A blank name
+    // stays in the filter (it matches no row), so a filter of only commas or spaces stays explicit.
     const state: QueueState[] | undefined = stateRaw
-      ? (stateRaw.split(",") as QueueState[])
+      ? (stateRaw.split(",").map((s) => s.trim()) as QueueState[])
       : attention
         ? ["pending", "in-progress", "blocked"]
         : undefined;
@@ -1009,6 +1176,8 @@ export function queueRoutes(): Hono {
         compact,
         rig,
         activeOnly,
+        handedOffFrom,
+        updatedSince,
       });
       return c.json(items);
     }
@@ -1035,10 +1204,14 @@ export function queueRoutes(): Hono {
       destinationSession,
       sourceSession,
       targetRepo,
+      handedOffFrom,
+      updatedSince,
     });
     // Defense-in-depth: refine with the JS predicate so the SQL
-    // LIKE superset cannot leak a malformed destination through.
-    const filtered = items.filter(isAttentionItem);
+    // LIKE superset cannot leak a malformed destination through. An ask to a registered person addressed as a seat or
+    // an alias is a member by its classification, as listAttention selected it.
+    const repo = getRepo(c);
+    const filtered = items.filter((item) => isAttentionItem(item) || repo.isCurrentHumanAsk(item.qitemId));
     return c.json(filtered);
   });
 
@@ -1051,6 +1224,10 @@ export function queueRoutes(): Hono {
     const rig = q.rig || undefined;
     const limitRaw = q.limit !== undefined ? Number.parseInt(q.limit, 10) : undefined;
     const limit = limitRaw !== undefined && Number.isInteger(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
+    // findOverdue binds the limit into SQL; refuse a value SQLite cannot bind rather than answer 500.
+    if (limit !== undefined && limit >= SQL_LIMIT_BOUND) {
+      return c.json({ error: "limit must be an integer" }, 400);
+    }
     const compact = q.compact === "1" || q.compact === "true";
     const items = getRepo(c).findOverdue({ rig, limit, compact });
     return c.json(items);
@@ -1177,7 +1354,7 @@ export function queueRoutes(): Hono {
   // ---- Inbox routes (mailbox) ----
 
   app.post("/inbox/drop", async (c) => {
-    // P18 sender-provenance: the sender is DERIVED from the authenticated transport header (stamped
+    // P18 sender-provenance: the sender is DERIVED from the transport header (stamped
     // once by the CLI from the seat env), NEVER from the request body. senderSession/authenticatedSender
     // are intentionally NOT read from the body — a body-supplied identity is forgeable false history in
     // the channel of record (inbox_entries.sender_session → absorb → the receiver's queue).
@@ -1286,7 +1463,7 @@ export function queueRoutes(): Hono {
       tags: body.tags,
       urgency: body.urgency,
       auditPointer: body.auditPointer,
-      identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header proved it here, else claimed:v1 (resolveRecordedProvenance degrades)
+      identityProvenance: resolveRecordedProvenance(c, identity), // P21 §4 era-stamp: transport:v1 if the header named the actor here, else claimed:v1 (resolveRecordedProvenance degrades)
     });
     return c.json(entry, 201);
   });
@@ -1296,7 +1473,8 @@ export function queueRoutes(): Hono {
     if (!senderSession) return c.json({ error: "senderSession is required" }, 400);
     const parsed = queryLimit(c);
     if (!parsed.ok) return parsed.response;
-    return c.json(getOutbox(c).listForSender(senderSession, parsed.limit));
+    const sessions = c.get("sessionRegistry" as never) as SessionRegistry | undefined;
+    return c.json(getOutbox(c).listForSender(senderSession, parsed.limit, sessions?.sessionAddresses(senderSession)));
   });
 
   return app;

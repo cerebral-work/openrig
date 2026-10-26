@@ -77,7 +77,7 @@ Line numbers below are at cerebral `583fa40e`.
   - The daemon resolves the directory to an absolute path (item 2) and creates it with mode 0700 if absent.
   - It then checks it with `lstat` before each use: a directory, not a symlink, owned by the daemon's uid, mode exactly 0700.
   - Otherwise it refuses the launch, naming the directory and what failed, and writes nothing.
-- **tmux never carries the value.** `createSession` and `respawnPane` get only the non-secret launch variables. 0013 item 9's guard stays, as a backstop that refuses a secret-named variable reaching `-e`.
+- **tmux never carries the value.** `createSession` and `respawnPane` get only the non-secret launch variables. 0013 item 9's guard stays, as a backstop that refuses a secret-named variable reaching `-e`. It does not refuse a secret-named variable that comes from the daemon's own environment (the provider-auth allow-list and the activity token). Those values reach tmux only through the private source-file config that upstream v0.7.2 uses, and never on argv. The guard still refuses seat env, `envOverride` and a seat value that overrides a daemon value.
 - Every launch that should have the value gets it from its own staged script: fresh launch, resume, handover successor, restart-in-place. A pane shell started by `respawn-pane` without a launch has none.
 
 ### 2. The managed Claude launch reads the value from a file, not argv

@@ -1,9 +1,12 @@
+import type { CodexPermissionEnvelope, CodexPermissionContinuity, CodexRebuildPermissions } from "./codex-rebuild-permissions.js";
+import { parseSqliteUtcMs } from "./sqlite-time.js";
+import { lstartToMinTs } from "./codex-thread-id.js";
 import type Database from "better-sqlite3";
 import { readSeatEffort } from "./seat-effort.js";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { ulid } from "ulid";
 import type { RigRepository } from "./rig-repository.js";
-import type { SessionRegistry } from "./session-registry.js";
+import { SessionAddressConflict, type SessionRegistry } from "./session-registry.js";
 import type { DiscoveryRepository } from "./discovery-repository.js";
 import type { EventBus } from "./event-bus.js";
 import type { TmuxAdapter } from "../adapters/tmux.js";
@@ -39,7 +42,9 @@ import { AppliedLaunchObservationStore } from "./applied-launch-observation-stor
 import { findOtherSessionOwner } from "./session-owner.js";
 import { DeliveryGuardError } from "./seat-delivery-guard.js";
 import { SettingsStore } from "./user-settings/settings-store.js";
-import { seatCorePluginDir, withCorePlugin } from "./claude-core-plugin-env.js";
+import { seatCodexCorePluginDir, seatCorePluginDir, withPluginDirs } from "./claude-core-plugin-env.js";
+import { seatSkillPluginDirForNode } from "./seat-skill-storage.js";
+import { recordConversationPromptForNode, recordForkConversationPromptForNode, seatLaunchAdditionsForLaunch } from "./seat-launch-additions.js";
 
 /** A bounded labeled-from-record recap of the predecessor's last exchanges + the record path,
  *  resolved from the predecessor's provider transcript (claude transcript_path / codex rollout_path).
@@ -107,7 +112,7 @@ interface PreparedRuntimeChange {
   launchOverride: ReturnType<NativePermissionStore["launchOverride"]>;
   adapter: RuntimeAdapter;
   startup:
-    | { kind: "member"; member: RigSpecPodMember; config: MemberConfig; plan: ProjectionPlan; files: ResolvedStartupFile[];
+    | { kind: "member"; rigId: string; qualifiedId: string; rigRoot: string; member: RigSpecPodMember; config: MemberConfig; plan: ProjectionPlan; files: ResolvedStartupFile[];
         actions: StartupAction[]; preLaunchFiles: ResolvedStartupFile[]; postLaunchFiles: ResolvedStartupFile[] }
     | { kind: "saved"; context: RevertBefore["startupContext"] };
   specPath: string | null;
@@ -209,16 +214,18 @@ export interface SeatHandoverMutationResult {
    *  reason — recorded, never silently dropped. Absent for fresh/discovered. */
   sourceOutcome?:
     | { mode: "fork"; forkedFrom: string; forkId?: "captured" | "pending"; limit?: string }
-    | { mode: "rebuild"; primedArtifacts: Array<{ address: string; label: string }>; gaps: string[]; emptyChainReason?: string };
+    | { mode: "rebuild"; primedArtifacts: Array<{ address: string; label: string }>; gaps: string[]; emptyChainReason?: string; permissions?: CodexPermissionContinuity };
   /** Spec 0005 — the committed runtime change or revert; acceptance by the successor is observed after commit. */
   runtimeChange?: RuntimeChangeSummary & { changeId: string; acceptance: "pending" };
+  /** OPR.0.7.0.9: a seat launch addition the successor launched without (missing or refused), named. */
+  launchAdditionNotes?: string[];
 }
 
 export type SeatHandoverResult =
   | { ok: true; plan: SeatHandoverPlan & { runtimeChange?: RuntimeChangeSummary } }
   | { ok: true; result: SeatHandoverMutationResult }
   | { ok: false; code: "missing_reason" | "invalid_source" | "successor_creation_not_implemented" | "source_not_supported" | "resume_token_unavailable" | "fork_source_not_found"; message: string; guidance: string }
-  | { ok: false; code: "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
+  | { ok: false; code: "address_conflict" | "current_occupant_required" | "discovered_not_active" | "successor_tmux_absent" | "successor_already_managed" | "successor_is_current" | "runtime_mismatch"; message: string; guidance: string }
   | { ok: false; code: "discovered_not_found"; message: string; guidance: string }
   | { ok: false; code: "tmux_probe_failed" | "handover_commit_failed" | "handover_committed_swap_undeclared" | "handover_committed_with_error" | "successor_create_failed" | "context_delivery_failed"; message: string; guidance: string }
   | { ok: false; code: "runtime_declare_not_pending" | "runtime_declare_failed"; message: string; guidance: string }
@@ -238,6 +245,7 @@ interface NodeRow {
   // #75: the seat's authored reasoning effort (nodes.effort). The successor binding reads the shared
   // resolver (OPR.0.7.0.7: a saved seat choice first), not this column alone.
   effort: string | null;
+  advisor: string | null;
 }
 
 interface SessionRow {
@@ -260,6 +268,7 @@ interface SeatHandoverServiceDeps {
   eventBus: EventBus;
   tmuxAdapter: TmuxAdapter;
   successorLauncher?: SuccessorSessionLauncher;
+  codexPermissions?: { currentCodexPermissions(nodeId: string, sessionName: string, cwd: string): Promise<CodexRebuildPermissions> };
   now?: () => Date;
   /** OpenRig identity/activity env stamped onto a created successor session,
    *  mirroring the launch identity env. Defaults to {} (the three core identity
@@ -346,6 +355,7 @@ interface SeatHandoverServiceDeps {
 }
 
 export class SeatHandoverService {
+  private codexPermissions: SeatHandoverServiceDeps["codexPermissions"];
   private db: Database.Database;
   private statusService: SeatStatusService;
   private planner: SeatHandoverPlanner;
@@ -377,6 +387,7 @@ export class SeatHandoverService {
     if (deps.db !== deps.sessionRegistry.db) throw new Error("SeatHandoverService: sessionRegistry must share the same db handle");
     if (deps.db !== deps.discoveryRepo.db) throw new Error("SeatHandoverService: discoveryRepo must share the same db handle");
     if (deps.db !== deps.eventBus.db) throw new Error("SeatHandoverService: eventBus must share the same db handle");
+    this.codexPermissions = deps.codexPermissions;
     this.db = deps.db;
     this.rigRepo = deps.rigRepo;
     this.memberStartup = deps.memberStartup ?? null;
@@ -517,7 +528,7 @@ export class SeatHandoverService {
     const toSelection = before.permission ? { runtime: before.permission.runtime as NativePermissionSelection["runtime"], mode: before.permission.mode } : null;
     let launchOverride: ReturnType<NativePermissionStore["launchOverride"]>;
     try {
-      launchOverride = new NativePermissionStore(this.db).launchOverride(node.id, before.runtime!, toSelection);
+      launchOverride = new NativePermissionStore(this.db).launchOverride(node.id, before.runtime!, { selection: toSelection, codexProfile: before.codexConfigProfile ?? null });
     } catch (error) {
       return { ok: false, code: "runtime_change_invalid", message: `Permission selection: ${(error as Error).message}`, guidance: "Inspect the recorded permission selection." };
     }
@@ -596,6 +607,19 @@ export class SeatHandoverService {
         message: `Seat "${input.seatRef}" has no session row to supersede.`,
         guidance: "Inspect the seat with: rig seat status <seat>",
       };
+    }
+
+    if (parsed.source.mode !== "discovered") {
+      // Preserve the existing exact-owner refusal before testing the new address.
+      const owner = this.lookupManagedOwner(latestSession.session_name, node.id, true);
+      if (owner) return { ok: false, code: "successor_already_managed",
+        message: `Successor tmux session "${latestSession.session_name}" is already managed by ${owner.logical_id}@${owner.rig_name}.`,
+        guidance: "Use an unclaimed discovered successor session." };
+      try { this.sessionRegistry.assertAddressAvailable(node.id, latestSession.session_name); }
+      catch (error) {
+        if (!(error instanceof SessionAddressConflict)) throw error;
+        return { ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; no successor was started." };
+      }
     }
 
     const operator = input.operator?.trim() || null;
@@ -702,6 +726,12 @@ export class SeatHandoverService {
     //    not a bare shell, before it can commit.
     // Seam B Guard-F1: an ORGANIC seat has no node provenance — the inherited rig
     // attachment still carries to the successor (continuity of the same seat).
+    let observedCodexPermissions: CodexRebuildPermissions | undefined;
+    if (parsed.source.mode === "rebuild" && node.runtime === "codex") {
+      try { observedCodexPermissions = await this.codexPermissions?.currentCodexPermissions(node.id, latestSession.session_name, node.cwd ?? "")
+        ?? { state: "unverified", reason: "No native predecessor permission reader is available." }; }
+      catch { observedCodexPermissions = { state: "unverified", reason: "The native predecessor permission read failed." }; }
+    }
     const successorPosture = this.rigRepo.getNodePolicyProvenance(node.id)?.launchPosture
       ?? this.rigRepo.getRigPolicyProvenance(statusResult.status.rig_id)?.launchPosture
       ?? "floor"; // R2 terminal: absence = the locked floor on the continuity edge too
@@ -725,18 +755,58 @@ export class SeatHandoverService {
     }
     // The successor must carry its own generation from its first byte. This reservation writes no
     // ledger row; commit consumes it, while every failed pre-commit branch remains unregistered.
+    let codexRebuildPermissions: CodexPermissionEnvelope | undefined;
+    let permissionContinuity: CodexPermissionContinuity | undefined;
+    if (observedCodexPermissions) {
+      const observed = observedCodexPermissions;
+      if (observed.state === "observed") {
+        const selection = new NativePermissionStore(this.db).read(node.id);
+        const selectedAt = selection ? parseSqliteUtcMs(selection.updatedAt) : NaN;
+        const started = (lstartToMinTs(observed.processStartedAt) ?? Infinity) * 1000;
+        // The existing audit also covers clearing a choice and applying a policy: neither leaves
+        // a timestamp in node_permission_selections after an inherit/reset.
+        const changed = this.db.prepare(`SELECT created_at FROM events WHERE node_id = ?
+          AND type IN ('node.permissions_changed', 'node.policy_changed') ORDER BY seq DESC LIMIT 1`)
+          .get(node.id) as { created_at: string } | undefined;
+        const changedAt = changed ? parseSqliteUtcMs(changed.created_at) : NaN;
+        // A saved choice made since this process started is for the successor, even if the
+        // predecessor took a later turn. The same-second ordering is not distinguishable.
+        if ((selection && (!Number.isFinite(selectedAt) || selectedAt >= started))
+          || (changed && (!Number.isFinite(changedAt) || changedAt >= started))
+          || (!!node.codex_config_profile?.trim() && node.codex_config_profile.trim() !== observed.profile)) {
+          permissionContinuity = { state: "selection_used", detail: "The current saved permission choice or declared successor profile was used instead of carrying the predecessor policy. Native successor permissions are unverified." };
+        } else {
+          codexRebuildPermissions = observed.envelope;
+          permissionContinuity = { state: "emitted", detail: "The observed predecessor approval and sandbox policy was emitted for the successor, without fresh-launch grants. Native successor equivalence is not verified." };
+        }
+      } else permissionContinuity = { state: "unverified", detail: `${observed.reason} Existing launch behaviour was used; permissions were not verified or carried.` };
+    }
     const occupantGeneration = this.sessionRegistry.reserveOccupantGeneration();
-    const corePluginDir = seatCorePluginDir(change ? { id: node.id, runtime: change.to.runtime } : node, this.db, undefined, this.pluginsDir);
+    // Spec 0005: a runtime change starts the target runtime's seat, so the plugin directories follow the target.
+    const targetNode = change ? { id: node.id, runtime: change.to.runtime } : node;
+    const corePluginDir = seatCorePluginDir(targetNode, this.db, undefined, this.pluginsDir);
     if (change) change.progress.step = "create-successor";
+    // OPR.0.7.0.13 — the successor is the same seat, so it gets the same skill storage.
+    const seatSkillDir = targetNode.runtime === "claude-code" ? seatSkillPluginDirForNode(this.db, node.id) : undefined;
+    // OPR.0.7.0.9: the seat's own launch additions reach the successor as they do any launch; a missing or refused
+    // copy is named on the result.
+    const seatAdditions = targetNode.runtime === "claude-code" ? seatLaunchAdditionsForLaunch(this.db, node.id) : { missing: [] as string[], refused: [] as string[] };
+    const additionPluginDirs = seatAdditions.additions?.pluginDirs ?? [];
+    const launchAdditionNotes = [
+      ...seatAdditions.missing.map((file) => `seat_launch_addition_missing: ${file} is not in this seat's storage; the successor launched without it`),
+      ...seatAdditions.refused.map((reason) => `seat_launch_addition_refused: ${reason}; the successor launched without it`),
+    ];
+    const codexCorePluginDir = seatCodexCorePluginDir(targetNode, this.db, undefined, this.pluginsDir);
     const launch = await this.successorLauncher.createSuccessor({
       // Seam B: the successor is the SAME seat continuing — persisted policy posture carries.
       // 0.5.2-07 model fidelity: carry the seat's SPEC-pinned model so the successor launch reads the
       // spec (else the running topology drifts from the founder-designed one at every handover).
       // A4-profile: likewise carry the codex config profile (adapter emits -p) — the restore path
       // already threads it; handover must too, or a profile-pinned codex seat reverts at handover.
-      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined, seatEnv: withCorePlugin(this.rigRepo.getEffectiveSeatEnv(node.id), corePluginDir), ...(corePluginDir && node.cwd ? { seatProjectDir: node.cwd } : {}),
-        // Spec 0005: a runtime change launches the target's values instead.
-        ...(change ? { runtime: change.to.runtime, cwd: change.to.cwd, model: change.to.model, effort: change.to.effort ?? undefined, codexConfigProfile: change.toCodexProfile ?? undefined, seatEnv: withCorePlugin(mergeSeatEnv(this.rigRepo.getRigEnv(statusResult.status.rig_id), change.to.env), corePluginDir), ...(corePluginDir && change.to.cwd ? { seatProjectDir: change.to.cwd } : {}) } : {}) },
+      node: { id: node.id, runtime: node.runtime, cwd: node.cwd, ...(codexRebuildPermissions ? { codexRebuildPermissions } : {}), ...(seatAdditions.additions ? { launchAdditions: seatAdditions.additions } : {}), claudePermissions: permissionOverride.claudePermissions, kernelAuthority: permissionOverride.kernelAuthority, teamPermissionDefault: permissionOverride.teamPermissionDefault, nonInterruptive: this.rigRepo.getRigNonInterruptive(statusResult.status.rig_id), launchPosture: effectivePosture, ...(effectivePermissionMode ? { permissionMode: effectivePermissionMode } : {}), model: node.model, effort: readSeatEffort(this.db, node.id)?.effective ?? undefined, advisor: node.advisor ?? undefined, codexConfigProfile: node.codex_config_profile ?? undefined, seatEnv: withPluginDirs(this.rigRepo.getEffectiveSeatEnv(node.id), [corePluginDir, seatSkillDir, ...additionPluginDirs]), ...((corePluginDir || codexCorePluginDir) && node.cwd ? { seatProjectDir: node.cwd } : {}),
+        // Spec 0005: a runtime change launches the target's values instead. The predecessor runtime's Codex permission
+        // envelope and the launch additions of a runtime that is not Claude's do not carry to a different runtime.
+        ...(change ? { runtime: change.to.runtime, cwd: change.to.cwd, model: change.to.model, effort: change.to.effort ?? undefined, codexConfigProfile: change.toCodexProfile ?? undefined, codexRebuildPermissions: undefined, ...(change.to.runtime === "claude-code" ? {} : { launchAdditions: undefined }), seatEnv: withPluginDirs(mergeSeatEnv(this.rigRepo.getRigEnv(statusResult.status.rig_id), change.to.env), [corePluginDir, seatSkillDir, ...additionPluginDirs]), ...((corePluginDir || codexCorePluginDir) && change.to.cwd ? { seatProjectDir: change.to.cwd } : {}) } : {}) },
       departingSessionName: latestSession.session_name,
       occupantGeneration,
       // OPR.0.5.5.5: a fork-sourced successor launches as a NATIVE FORK of the
@@ -839,6 +909,14 @@ export class SeatHandoverService {
     const launchToken = forkSource
       ? (forkOwnId ? { token: forkOwnId, resumeType: launch.resumeType } : null)
       : (launchedId ? { token: launchedId, resumeType: launch.resumeType } : null);
+    // OPR.0.7.0.9: the successor's conversation start: a fresh one starts with today's prompt; a fork inherits its
+    // parent's recorded start (or none).
+    if (seatAdditions.additions?.appendSystemPromptFile && launchToken) {
+      try {
+        if (forkSource) recordForkConversationPromptForNode(this.db, node.id, launchToken.token, forkSource.value);
+        else recordConversationPromptForNode(this.db, node.id, launchToken.token);
+      } catch { /* best-effort: without it, a later resume reports unknown */ }
+    }
     if (parsed.source.mode === "fork" && forkSource) {
       // A fork whose own conversation id wasn't captured at launch commits with no resume token and
       // says so: its exact resumability isn't established until the id is recorded.
@@ -872,7 +950,7 @@ export class SeatHandoverService {
       } else {
         emptyChainReason = "artifacts" in chain ? "the durable chain resolved to zero artifacts" : chain.emptyReason;
       }
-      sourceOutcome = { mode: "rebuild", primedArtifacts, gaps, ...(emptyChainReason ? { emptyChainReason } : {}) };
+      sourceOutcome = { mode: "rebuild", primedArtifacts, gaps, ...(permissionContinuity ? { permissions: permissionContinuity } : {}), ...(emptyChainReason ? { emptyChainReason } : {}) };
       const delivered = await this.deliverRebuildPrimingPacket(launch.tmuxSession, {
         seatRef: input.seatRef,
         reason,
@@ -914,6 +992,7 @@ export class SeatHandoverService {
       occupantGeneration,
       appliedLaunch: launch.appliedLaunch ?? null,
       sourceOutcome,
+      launchAdditionNotes,
       cleanup: () => this.successorLauncher.cleanup(launch.tmuxSession, launch.discoveredId),
       change,
     });
@@ -944,6 +1023,7 @@ export class SeatHandoverService {
     appliedLaunch: AppliedLaunchObservation | null;
     /** OPR.0.5.5.5 — per-source execution outcome, threaded onto the result. */
     sourceOutcome?: SeatHandoverMutationResult["sourceOutcome"];
+    launchAdditionNotes?: string[];
     cleanup: (() => Promise<void>) | null;
     /** Spec 0005 — the runtime change or revert this handover commits, if any. */
     change: PreparedRuntimeChange | null;
@@ -1009,6 +1089,12 @@ export class SeatHandoverService {
       });
     }
 
+    try { this.sessionRegistry.assertAddressAvailable(input.node.id, discovered.tmuxSession); }
+    catch (error) {
+      if (!(error instanceof SessionAddressConflict)) throw error;
+      return fail({ ok: false, code: "address_conflict", message: error.message, guidance: "Choose another member name; this discovered session was not bound." });
+    }
+
     let tmuxPresent: boolean;
     try {
       tmuxPresent = await this.tmuxAdapter.hasSession(discovered.tmuxSession);
@@ -1044,6 +1130,7 @@ export class SeatHandoverService {
       appliedLaunch: input.appliedLaunch,
       sourceOutcome: input.sourceOutcome,
       change: input.change,
+      launchAdditionNotes: input.launchAdditionNotes,
     });
     // A commit that landed is never unwound (review r2 follow-up): only a commit that did not land goes through fail().
     if (!committed.ok) return committed.code === "handover_committed_swap_undeclared" ? committed : fail(committed);
@@ -1079,7 +1166,7 @@ export class SeatHandoverService {
   }): Promise<void> {
     try {
       const derived = await deriveResumeToken(
-        { runtime: input.runtime, sessionName: input.sessionName },
+        { runtime: input.runtime, sessionName: input.sessionName, nodeId: input.nodeId },
         this.captureDeps,
       );
       if (derived.outcome === "exempt" || derived.outcome === "noop") return;
@@ -1382,7 +1469,7 @@ export class SeatHandoverService {
       if (member.model !== toModel) return mismatch(`The spec declares model ${member.model ?? "(none)"}, not ${toModel}.`);
       if (toEffort && member.effort !== toEffort) return mismatch(`The spec declares effort ${member.effort ?? "(none)"}, not ${toEffort}.`);
       if (toEnv && !sameEnv(member.env, toEnv)) return mismatch("The spec's member env differs from --to-env.");
-      const declared = this.memberStartup.resolveMemberConfig({ rigSpec, rigRoot, pod, member });
+      const declared = this.memberStartup.resolveMemberConfig({ rigId: input.status.rig_id, rigSpec, rigRoot, pod, member });
       if (!declared.ok) return startupFailed(declared.error);
       if (toCwd && declared.configResult.config.cwd !== toCwd) return mismatch(`The spec's member cwd is ${declared.configResult.config.cwd}, not ${toCwd}.`);
       targetCwd = declared.configResult.config.cwd;
@@ -1394,11 +1481,11 @@ export class SeatHandoverService {
     if (targetEnv && Object.keys(targetEnv).length === 0) targetEnv = null;
 
     // Q4 (A): the target member's startup resolves now; its side effects run only once the change executes.
-    const config = this.memberStartup.resolveMemberConfig({ rigSpec, rigRoot, pod, member, cwdOverride: targetCwd ?? undefined });
+    const config = this.memberStartup.resolveMemberConfig({ rigId: input.status.rig_id, rigSpec, rigRoot, pod, member, cwdOverride: targetCwd ?? undefined });
     if (!config.ok) return startupFailed(config.error);
     targetCwd = config.configResult.config.cwd;
     const planned = this.memberStartup.planMemberStartup({
-      rigId: input.status.rig_id, rigSpec, rigRoot, pod, member,
+      rigId: input.status.rig_id, nodeId: node.id, qualifiedId: input.status.logical_id, rigSpec, rigRoot, pod, member,
       configResult: config.configResult, resolveResult: config.resolveResult, adapter,
       launchResult: { binding: { tmuxSession: input.latestSession.session_name }, warnings: [] },
       canonicalSessionName: input.latestSession.session_name, keptSkillWarnings: [],
@@ -1420,7 +1507,7 @@ export class SeatHandoverService {
       : { runtime: toRuntime as NativePermissionSelection["runtime"], mode: toPermissions };
     let launchOverride: ReturnType<NativePermissionStore["launchOverride"]>;
     try {
-      launchOverride = new NativePermissionStore(this.db).launchOverride(node.id, toRuntime, toSelection);
+      launchOverride = new NativePermissionStore(this.db).launchOverride(node.id, toRuntime, { selection: toSelection, codexProfile });
     } catch (error) {
       return invalid(`Permission selection: ${(error as Error).message}`, "Choose --to-permissions floor, full_bypass or inherit.");
     }
@@ -1432,7 +1519,7 @@ export class SeatHandoverService {
       toAuthoredEffort: authoredEffort, toEffortChoice: effortChoice, toCodexProfile: codexProfile,
       toPermissionRow: toSelection ? { runtime: toSelection.runtime, mode: toSelection.mode, actor: operator, reason: `runtime change: ${approval}` } : null,
       launchOverride, adapter,
-      startup: { kind: "member", member, config, plan: planned.plan, files, actions, preLaunchFiles, postLaunchFiles },
+      startup: { kind: "member", rigId: input.status.rig_id, qualifiedId: input.status.logical_id, rigRoot, member, config, plan: planned.plan, files, actions, preLaunchFiles, postLaunchFiles },
       specPath: nodePath.resolve(r.spec.path), specSha256: createHash("sha256").update(r.spec.yaml).digest("hex"),
       approval, operator, before, resumeToken: null,
       leftovers: this.runtimeLeftovers(node.runtime, node.cwd),
@@ -1487,7 +1574,9 @@ export class SeatHandoverService {
   /** Q4 (A): the target member's skills, projection and pre-launch files, into the target cwd, before the launch. */
   private async startTargetMember(change: PreparedRuntimeChange, nodeId: string, sessionName: string): Promise<{ ok: true } | { ok: false; message: string }> {
     if (change.startup.kind !== "member") return { ok: true };
-    const skills = this.memberStartup!.reconcileMemberSkills(change.startup.config.configResult, sessionName);
+    const skills = this.memberStartup!.reconcileMemberSkills(change.startup.config.configResult, sessionName, {
+      rigId: change.startup.rigId, qualifiedId: change.startup.qualifiedId, rigRoot: change.startup.rigRoot, member: change.startup.member,
+    });
     if (!skills.ok) return { ok: false, message: skills.error };
     const binding = this.targetBinding(change, nodeId, sessionName, null);
     try {
@@ -1640,7 +1729,7 @@ export class SeatHandoverService {
 
   private lookupNode(status: SeatStatus): NodeRow {
     return this.db.prepare(
-      "SELECT id, runtime, cwd, model, codex_config_profile, effort FROM nodes WHERE rig_id = ? AND logical_id = ?"
+      "SELECT id, runtime, cwd, model, codex_config_profile, effort, advisor FROM nodes WHERE rig_id = ? AND logical_id = ?"
     ).get(status.rig_id, status.logical_id) as NodeRow;
   }
 
@@ -1669,6 +1758,7 @@ export class SeatHandoverService {
     appliedLaunch: AppliedLaunchObservation | null;
       sourceOutcome?: SeatHandoverMutationResult["sourceOutcome"];
     change: PreparedRuntimeChange | null;
+      launchAdditionNotes?: string[];
   }): SeatHandoverResult {
     const handoverAt = this.now().toISOString();
     const tx = this.db.transaction(() => {
@@ -1773,6 +1863,7 @@ export class SeatHandoverService {
         reason: input.reason,
         operator: input.operator,
         ...(input.sourceOutcome ? { sourceOutcome: input.sourceOutcome } : {}),
+        ...(input.launchAdditionNotes?.length ? { launchAdditionNotes: input.launchAdditionNotes } : {}),
       });
       const runtimeRecord = input.change
         ? this.recordCommittedChange(input.change, input.status, input.reason, this.sessionRegistry.currentOccupantTenure(input.node.id)?.generationUuid ?? null)
@@ -1885,6 +1976,7 @@ export class SeatHandoverService {
         ...(input.change && committed.runtimeRecord
           ? { runtimeChange: { ...this.summarizeRuntimeChange(input.change), changeId: committed.runtimeRecord.changeId, acceptance: "pending" as const } }
           : {}),
+        ...(input.launchAdditionNotes?.length ? { launchAdditionNotes: input.launchAdditionNotes } : {}),
         sideEffects: {
           departingSessionKilled: false,
           startupContextDelivered: input.contextDelivered,

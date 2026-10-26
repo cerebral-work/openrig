@@ -100,7 +100,7 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
   // the launch env.
   it.skipIf(process.platform === "win32").each([
     ["head: the real builder", false],
-    ["base shape: the token in the launch env", true],
+    ["token in the launch env: upstream's launcher forwards values on stdin, so it still never reaches argv", true],
   ] as const)("the managed launch's env -i argv holds no token and no secret-named value (%s)", async (_label, baseShape) => {
     const root = createTmuxTestRoot("managed-argv-");
     try {
@@ -124,12 +124,10 @@ describe("no secret value on a tmux argv (spec 0013 item 9)", () => {
       const envLine = stderr.split("\n").find((line) => line.includes("/usr/bin/env -i")) ?? "";
       expect(envLine).not.toBe(""); // control: the trace caught env -i's argv
       const secretAssignments = (envLine.match(/\b([A-Za-z_][A-Za-z0-9_]*)=/g) ?? []).map((m) => m.slice(0, -1)).filter((name) => SEAT_ENV_SECRET_NAME.test(name));
-      if (baseShape) {
-        expect(envLine).toContain(token);
-      } else {
-        expect(envLine).not.toContain(token);
-        expect(secretAssignments).toEqual([]);
-      }
+      // Since the v0.7.2 merge, ClaudeManagedLaunch passes session values on stdin, so even a token in the launch env
+      // stays off env -i's argv. Both rows hold the invariant; the control above proves the trace sees that line.
+      expect(envLine).not.toContain(token);
+      expect(secretAssignments).toEqual([]);
     } finally {
       removeTmuxTestRoot(root);
     }

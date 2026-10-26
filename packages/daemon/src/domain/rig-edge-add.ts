@@ -92,7 +92,7 @@ export function removeRigEdge(
   const matching = rig.edges.filter((e) => e.sourceId === source.id && e.targetId === target.id && e.kind === input.kind);
   if (matching.length === 0) return notFound;
   // A row another caller deleted between the read and this transaction is skipped, with no event for it.
-  const removed = rigRepo.db.transaction(() => matching.flatMap((edge) => rigRepo.removeEdge(edge.id)
+  const removed = rigRepo.db.transaction(() => matching.flatMap((edge) => rigRepo.removeEdgeById(edge.id)
     ? [{ edge, event: eventBus.persistWithinTransaction({ type: "rig.edge_removed", rigId: input.rigId, edgeId: edge.id,
       from: input.from, to: input.to, kind: input.kind, by: input.by }) }]
     : []))();

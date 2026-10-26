@@ -1,90 +1,164 @@
 import { Command } from "commander";
-import { DaemonClient } from "../client.js";
+import { DaemonClient, DaemonResponseError, type DaemonResponse } from "../client.js";
 import { getDaemonStatus, getDaemonUrl, daemonStatusGuard } from "../daemon-lifecycle.js";
+import { readSelectedHost } from "../host-selection.js";
+import { resolveRigHandle } from "../rig-handle.js";
 import { realDeps } from "./daemon.js";
 import type { StatusDeps } from "./status.js";
 
-interface EdgeAddResult {
-  ok: boolean;
-  status?: "created" | "exists" | "removed";
-  edge?: { id: string; sourceId: string; targetId: string; kind: string };
-  /** rig edge remove: every row that matched (from, to, kind); the table allows duplicates. */
-  edges?: Array<{ id: string; sourceId: string; targetId: string; kind: string }>;
-  code?: string;
-  error?: string;
+interface EdgeEnd {
+  logicalId: string;
+  nodeId: string;
 }
 
-// Spec 0008: add an edge between two seats that already exist in a rig. Writes one edge row and
-// relaunches nothing. For edges to a pod being added, use the `crossPodEdges` key of `rig expand`.
+interface EdgeSuccess {
+  ok: true;
+  rigId: string;
+  outcome: "would_add" | "added" | "present" | "would_remove" | "removed";
+  edge: { id?: string; kind: string; from: EdgeEnd; to: EdgeEnd };
+  rollback?: string;
+  routing?: {
+    orchestrator?: { seat: string; from: string | null; to: string | null };
+    representative?: { from: string | null; to: string | null };
+  };
+}
+
+type EdgeOpResult =
+  | EdgeSuccess
+  | { ok: false; code: string; message: string; candidates?: string[] };
+
+const NO_EDGE_ROUTE = "This daemon has no edge route. Upgrade it to a version with `rig edge`, then retry.";
+
+function report(result: EdgeOpResult, opts: { json?: boolean }): void {
+  if (opts.json) console.log(JSON.stringify(result, null, 2));
+  else if (!result.ok) console.error(`${result.code}: ${result.message}`);
+  else {
+    const { edge } = result;
+    const line = `${edge.kind} ${edge.from.logicalId} -> ${edge.to.logicalId}`;
+    const id = edge.id ? `  edge ${edge.id}` : "";
+    switch (result.outcome) {
+      case "would_add":
+        console.log(`plan     add ${line} in rig ${result.rigId}`);
+        console.log(`         from node ${edge.from.nodeId}, to node ${edge.to.nodeId}`);
+        console.log("         nothing written (--plan)");
+        break;
+      case "added":
+        console.log(`added    ${line}${id}`);
+        console.log(`         rollback: ${result.rollback}`);
+        break;
+      case "present":
+        console.log(`present  ${line}${id} (already there; nothing written)`);
+        break;
+      case "would_remove":
+        console.log(`plan     remove ${line}${id} from rig ${result.rigId}`);
+        console.log("         nothing written (--plan)");
+        break;
+      case "removed":
+        console.log(`removed  ${line}${id}`);
+        break;
+    }
+    const { orchestrator, representative } = result.routing ?? {};
+    if (orchestrator) {
+      console.log(`         routing: ${orchestrator.seat}'s orchestrator (its stuck-row findings and recovery) is now ${orchestrator.to ?? "none"}, was ${orchestrator.from ?? "none"}`);
+    }
+    if (representative) {
+      console.log(`         routing: the rig's representative (where a person's Slack message in the rig's mapped channel goes, unless that channel names an inbound seat) is now ${representative.to ?? "none, so such a message goes to Slack's inbound destination"}, was ${representative.from ?? "none"}`);
+    }
+    if (result.outcome === "added" || result.outcome === "removed") {
+      console.log(`         capture this topology with \`rig snapshot ${result.rigId}\`; restore uses the selected snapshot`);
+    }
+  }
+  if (!result.ok) process.exitCode = 1;
+}
+
 export function edgeCommand(depsOverride?: StatusDeps): Command {
-  const cmd = new Command("edge").description("Manage edges between existing seats of a rig");
+  const cmd = new Command("edge").description("Add or remove typed edges between existing seats");
   const getDeps = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
+
+  const run = async (
+    rigHandle: string,
+    opts: { json?: boolean },
+    send: (client: DaemonClient, rigId: string) => Promise<DaemonResponse<EdgeOpResult>>,
+  ) => {
+    const deps = getDeps();
+    const status = await getDaemonStatus(deps.lifecycleDeps);
+    if (!daemonStatusGuard(status, { json: opts.json })) return;
+    const client = deps.clientFactory(getDaemonUrl(status));
+    const resolution = await resolveRigHandle(client, rigHandle);
+    const selectedHost = readSelectedHost();
+    // Match rig add: names copied from a selected remote must not silently
+    // mutate a same-named rig on the local daemon. Explicit local IDs still work.
+    if (selectedHost !== "local" && (resolution.kind === "ambiguous" || (resolution.kind === "resolved" && resolution.byName))) {
+      report({
+        ok: false, code: "remote_host_selected",
+        message: `Host '${selectedHost}' is selected, but rig edge only targets the local daemon. Run it on that host or pass an explicit local rig ID (rig host select local; rig ps --json).`,
+      }, opts);
+      return;
+    }
+    if (resolution.kind === "ambiguous") {
+      report({
+        ok: false, code: "rig_ambiguous", candidates: resolution.ids,
+        message: `'${rigHandle}' matches ${resolution.ids.length} rigs. Re-run with one of these IDs: ${resolution.ids.join(", ")}.`,
+      }, opts);
+      return;
+    }
+    if (resolution.kind === "not_found") {
+      report({ ok: false, code: "rig_not_found", message: `rig '${rigHandle}' not found; list active rigs with rig ps --json, or use an archived rig's exact ID` }, opts);
+      return;
+    }
+    const rigId = resolution.kind === "resolved" ? resolution.id : rigHandle;
+    let result: EdgeOpResult;
+    try {
+      const response = await send(client, rigId);
+      result = response.data;
+      // Older daemons have used both JSON not_found and plain-text 404 pages.
+      if (response.status === 404 && (!result || !("code" in result))) {
+        result = { ok: false, code: "edge_route_missing", message: NO_EDGE_ROUTE };
+      }
+    } catch (err) {
+      if (!(err instanceof DaemonResponseError) || err.status !== 404) throw err;
+      result = { ok: false, code: "edge_route_missing", message: NO_EDGE_ROUTE };
+    }
+    report(result, opts);
+  };
 
   cmd
     .command("add")
-    .description("Add an edge between two existing nodes (no relaunch; rig ID and sessions are kept)")
-    .argument("<rig-id>", "ID of the target rig")
-    .argument("<from>", "Logical id of the source node, e.g. orch.lead")
-    .argument("<to>", "Logical id of the target node, e.g. dev.build")
-    .requiredOption("--kind <kind>", "Edge kind: delegates_to, spawned_by, can_observe, collaborates_with or escalates_to")
+    .description("Ensure one edge between two existing seats; an existing edge is unchanged")
+    .argument("<rig>", "Target rig name or ID")
+    .argument("[from]", "Source seat logical ID, such as orch.lead")
+    .argument("[to]", "Target seat logical ID, such as review.reviewer")
+    .option("--kind <kind>", "delegates_to, spawned_by, can_observe, collaborates_with or escalates_to")
+    .option("--plan", "Validate the request and show the change without writing")
     .option("--json", "JSON output for agents")
-    .action(async (rigId: string, from: string, to: string, opts: { kind: string; json?: boolean }) => {
-      const deps = getDeps();
-      const status = await getDaemonStatus(deps.lifecycleDeps);
-      if (!daemonStatusGuard(status)) return;
+    .addHelpText("after", `
+Examples:
+  rig edge add my-rig orch.lead review.reviewer --kind delegates_to
+  rig edge add my-rig orch.lead review.reviewer --kind delegates_to --plan --json
 
-      const client = deps.clientFactory(getDaemonUrl(status));
-      const res = await client.post<EdgeAddResult>(`/api/rigs/${encodeURIComponent(rigId)}/edges`, { from, to, kind: opts.kind });
-      const data = res.data;
-
-      if (opts.json) {
-        console.log(JSON.stringify(data, null, 2));
-        if (res.status >= 400 || !data.ok) process.exitCode = 1;
+Endpoints are fully qualified logical IDs for both same-pod and cross-pod edges.
+Run it once per edge. A repeat reports the existing edge and its ID, and writes
+nothing. No seats or sessions are changed.`)
+    .action(async (rig: string, from: string | undefined, to: string | undefined, opts: { kind?: string; plan?: boolean; json?: boolean }) => {
+      if (!from || !to || !opts.kind) {
+        report({ ok: false, code: "validation_failed", message: "Supply from, to and --kind" }, opts);
         return;
       }
-      if (res.status >= 400 || !data.ok) {
-        console.error(data.error ?? `Edge add failed (HTTP ${res.status})`);
-        process.exitCode = 1;
-        return;
-      }
-      console.log(data.status === "exists"
-        ? `Edge ${opts.kind} ${from} -> ${to} already exists`
-        : `Added ${opts.kind} edge ${from} -> ${to}`);
+      const body = { from, to, kind: opts.kind, plan: opts.plan === true };
+      await run(rig, opts, (client, rigId) => client.post<EdgeOpResult>(`/api/rigs/${encodeURIComponent(rigId)}/edges`, body));
     });
 
-  // CER-2981: remove one edge, the reverse of add. Deletes one edge row and relaunches nothing; the daemon records who
-  // removed it. An absent edge is an error, never success.
   cmd
     .command("remove")
-    .description("Remove an edge between two existing nodes (no relaunch; rig ID and sessions are kept)")
-    .argument("<rig-id>", "ID of the target rig")
-    .argument("<from>", "Logical id of the source node, e.g. orch.lead")
-    .argument("<to>", "Logical id of the target node, e.g. dev.build")
-    .requiredOption("--kind <kind>", "Edge kind: delegates_to, spawned_by, can_observe, collaborates_with or escalates_to")
+    .description("Remove exactly one edge, by the ID that rig edge add returned")
+    .argument("<rig>", "Target rig name or ID")
+    .argument("<edge-id>", "Edge ID")
+    .option("--plan", "Show what would change and write nothing")
     .option("--json", "JSON output for agents")
-    .action(async (rigId: string, from: string, to: string, opts: { kind: string; json?: boolean }) => {
-      const deps = getDeps();
-      const status = await getDaemonStatus(deps.lifecycleDeps);
-      if (!daemonStatusGuard(status)) return;
-
-      const client = deps.clientFactory(getDaemonUrl(status));
-      const query = new URLSearchParams({ from, to, kind: opts.kind });
-      const res = await client.delete<EdgeAddResult>(`/api/rigs/${encodeURIComponent(rigId)}/edges?${query}`);
-      const data = res.data;
-
-      if (opts.json) {
-        console.log(JSON.stringify(data, null, 2));
-        if (res.status >= 400 || !data.ok) process.exitCode = 1;
-        return;
-      }
-      if (res.status >= 400 || !data.ok) {
-        console.error(data.error ?? `Edge remove failed (HTTP ${res.status})`);
-        process.exitCode = 1;
-        return;
-      }
-      const rows = data.edges?.length ?? 1;
-      console.log(`Removed ${opts.kind} edge ${from} -> ${to}${rows > 1 ? ` (${rows} duplicate rows)` : ""}`);
-    });
+    .action((rig: string, edgeId: string, opts: { plan?: boolean; json?: boolean }) =>
+      run(rig, opts, (client, rigId) => client.delete<EdgeOpResult>(
+        `/api/rigs/${encodeURIComponent(rigId)}/edges/${encodeURIComponent(edgeId)}${opts.plan ? "?plan=1" : ""}`,
+      )));
 
   return cmd;
 }
