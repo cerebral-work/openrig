@@ -21,9 +21,25 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  full-suite:
+  suite:
+    name: suite (${{ matrix.ws }} ${{ matrix.shard }}/${{ matrix.shards }})
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # One job per shard. The daemon suite is most of the time (about 19 of 26 minutes serially), so it takes
+        # five shards and the cli two. A workspace that `npm run test:workspaces` names and that is missing here
+        # has no report, so the compare job fails closed.
+        include:
+          - { ws: packages/daemon, shard: 1, shards: 5 }
+          - { ws: packages/daemon, shard: 2, shards: 5 }
+          - { ws: packages/daemon, shard: 3, shards: 5 }
+          - { ws: packages/daemon, shard: 4, shards: 5 }
+          - { ws: packages/daemon, shard: 5, shards: 5 }
+          - { ws: packages/cli, shard: 1, shards: 2 }
+          - { ws: packages/cli, shard: 2, shards: 2 }
+          - { ws: packages/tui, shard: 1, shards: 1 }
     steps:
       - uses: actions/checkout@v4
         with:
@@ -34,31 +50,65 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - uses: dtolnay/rust-toolchain@stable
       - run: |
           command -v tmux >/dev/null 2>&1 || { sudo apt-get update && sudo apt-get install -y tmux; }
           tmux -V
       - run: npm ci
       - name: Build the packages the suites import
         run: npm run build
-      - name: Run each workspace suite
+      - name: Run this shard
+        env:
+          WS: ${{ matrix.ws }}
+          SHARD: ${{ matrix.shard }}
+          SHARDS: ${{ matrix.shards }}
         run: |
           reports="$RUNNER_TEMP/full-suite"
           mkdir -p "$reports" "$RUNNER_TEMP/suite-home"
-          workspaces=$(cargo xtask suite-baseline workspaces)
-          for ws in $workspaces; do
-            name="${ws##*/}"
-            echo "::group::$ws"
-            rc=0
-            # A clean environment: test code sees no runner variables. A failing workspace doesn't stop the next.
-            env -i HOME="$RUNNER_TEMP/suite-home" PATH="$PATH" TERM=xterm-256color CI=true TMPDIR="$RUNNER_TEMP" \
-              FULL_SUITE_UNHANDLED_OUT="$reports/$name.unhandled.json" \
-              npm run test -w "$ws" -- --reporter=default --reporter=json --outputFile="$reports/$name.json" \
-              --reporter="$GITHUB_WORKSPACE/.github/full-suite/unhandled-reporter.mjs" || rc=$?
-            echo "$rc" > "$reports/$name.exit"
-            echo "::endgroup::"
-            echo "$ws exited $rc"
-          done
+          name="${WS##*/}"
+          base="$name.shard${SHARD}of${SHARDS}"
+          shard_args=()
+          if [ "$SHARDS" -gt 1 ]; then shard_args=("--shard=${SHARD}/${SHARDS}"); fi
+          rc=0
+          # A clean environment: test code sees no runner variables. A failing shard doesn't fail the job: the
+          # compare job reads the exit code and the report.
+          env -i HOME="$RUNNER_TEMP/suite-home" PATH="$PATH" TERM=xterm-256color CI=true TMPDIR="$RUNNER_TEMP" \
+            FULL_SUITE_UNHANDLED_OUT="$reports/$base.unhandled.json" \
+            npm run test -w "$WS" -- "${shard_args[@]}" --reporter=default --reporter=json --outputFile="$reports/$base.json" \
+            --reporter="$GITHUB_WORKSPACE/.github/full-suite/unhandled-reporter.mjs" || rc=$?
+          echo "$rc" > "$reports/$base.exit"
+          echo "$WS shard $SHARD/$SHARDS exited $rc"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: full-suite-shard-${{ strategy.job-index }}
+          path: ${{ runner.temp }}/full-suite/
+          if-no-files-found: error
+
+  compare:
+    needs: suite
+    # Runs when the shards failed too: a failed test is a report, not an infrastructure error. A cancelled run skips it.
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: full-suite-shard-*
+          merge-multiple: true
+          path: ${{ runner.temp }}/shards
+      - name: Join the shard reports
+        run: |
+          mkdir -p "$RUNNER_TEMP/full-suite"
+          node .github/full-suite/merge-shards.mjs "$RUNNER_TEMP/shards" "$RUNNER_TEMP/full-suite"
+          ls "$RUNNER_TEMP/full-suite"
       - name: Compare with the Linux baseline
         run: cargo xtask suite-baseline check --reports "$RUNNER_TEMP/full-suite"
       - uses: actions/upload-artifact@v4

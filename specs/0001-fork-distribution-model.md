@@ -32,10 +32,11 @@ references: []
      - It has no `push` trigger, so a merge doesn't run the suite again.
    - **The steps:**
      - checkout; the repo's Node (22); tmux, installed with `apt-get` when missing; `npm ci`; then `npm run build`, because the suites import built packages, as `tests.yml` does before its suites.
-     - **The suites:** each workspace that `test:workspaces` names (`cargo xtask suite-baseline workspaces` reads the list from `package.json`) runs through its own `test` script. Each run writes vitest's JSON report, plus an unhandled-error count from `.github/full-suite/unhandled-reporter.mjs`: the JSON report doesn't record unhandled errors.
+     - **The suites:** each workspace that `test:workspaces` names runs through its own `test` script, in parallel jobs. A matrix in the workflow splits the daemon suite into five vitest shards and the cli suite into two; the tui suite is one job. A workspace that `cargo xtask suite-baseline workspaces` reads from `package.json` and the matrix lacks has no report, so the check fails (REQ-0001-18). Each run writes vitest's JSON report, plus an unhandled-error count from `.github/full-suite/unhandled-reporter.mjs`: the JSON report doesn't record unhandled errors.
      - The suites run under `env -i`, with a temporary `HOME`, `PATH`, `TERM`, `CI`, `TMPDIR` and the reporter's output path, so test code sees no runner credentials.
-     - Each workspace's exit code is recorded, and a failing workspace doesn't stop the next one. The reports are uploaded whatever the outcome.
-     - The job's timeout is 60 minutes.
+     - Each shard's exit code is recorded, and a failing shard doesn't stop the others. The shard reports are uploaded whatever the outcome.
+     - **The join:** a `compare` job downloads the shard reports and runs `.github/full-suite/merge-shards.mjs`, which writes the one report triple per workspace that the check reads. It refuses a missing shard, a shard count that differs between shards, a test file in two shards and an unreadable file. The compare job runs after failed shards too, and not after a cancelled run.
+     - Each shard job's timeout is 60 minutes, and the compare job's is 20.
    - **The check:** `cargo xtask suite-baseline check` compares the reports with the known-failure baseline, `.github/full-suite-baseline.json`.
      - **An entry's key** is its file, relative to the repository root, and its test: the describe titles and the test title joined with ` > `.
        - A file that fails without a failed test (an import error, a failed hook) has the test `(file)`.
