@@ -61,7 +61,7 @@ references: []
 - REQ-0001-04: When a change is started, the author shall cut its feature branch from `cerebral`.
 - REQ-0001-05: When a feature branch is ready, the author shall open a pull request into `cerebral`.
 - REQ-0001-06: When a release is cut, the maintainer shall tag the `cerebral` commit as `cw-v<version>`.
-- REQ-0001-07: When upstream publishes a new release tag, the maintainer shall bring `cerebral` up to that tag by rebase, or by merging the tag when a rebase would rewrite the history of `cerebral`. The pull request shall state which method was used and why.
+- REQ-0001-07: When upstream publishes a new release tag, the maintainer shall bring `cerebral` up to that tag by rebase, or by merging the tag when a rebase would rewrite the history of `cerebral`. The pull request states which method was used and why.
 - REQ-0001-08: If a rebase or merge of an upstream tag conflicts, then the maintainer shall resolve it in favour of upstream unless the estate change is intentionally retained.
 - REQ-0001-09: Where a change is generally useful, the maintainer shall offer a clean copy to upstream from an `up/<feature>` branch cut from `upstream/main`.
 - REQ-0001-10: The branch-hygiene gate shall reject any current branch that is not `main`, `cerebral`, `gitbutler/workspace`, or a `<type>/<slug>` branch.
