@@ -56,10 +56,13 @@ describe("queue whoami role binding", () => {
     return (await response.json()).role;
   }
   // ---------- session names shared across rigs (spec 0009; revenant's gap 2) ----------
-  function leadSeat(rigName: string, opts: { archived?: boolean } = {}) {
+  // `shared`: the registry now refuses a second live seat with the same address (SessionAddressConflict), so a
+  // database that already holds two live rigs sharing it, the state this spec reads, is written as the row directly.
+  function leadSeat(rigName: string, opts: { archived?: boolean; shared?: boolean } = {}) {
     const rig = f.rigRepo.createRig(rigName);
     const node = f.rigRepo.addNode(rig.id, "orch.lead", { runtime: "claude-code", cwd: root }).id;
-    f.sessionRegistry.registerSession(node, `orch-lead@${rigName}`);
+    if (opts.shared) f.db.prepare("INSERT INTO sessions (id, node_id, session_name) VALUES (?, ?, ?)").run(`shared-${node}`, node, `orch-lead@${rigName}`);
+    else f.sessionRegistry.registerSession(node, `orch-lead@${rigName}`);
     if (opts.archived) f.rigRepo.archiveRig(rig.id);
     return { rigId: rig.id, node };
   }
@@ -79,7 +82,7 @@ describe("queue whoami role binding", () => {
 
   it("two live rigs share a session: the role names rig_ambiguous and both rigs (spec 0009)", async () => {
     const one = leadSeat("twin");
-    const two = leadSeat("twin");
+    const two = leadSeat("twin", { shared: true });
     const answer = await role("orch-lead@twin");
     expect(answer.state).toBe("unknown");
     expect(answer.reason).toContain("rig_ambiguous");
@@ -89,7 +92,7 @@ describe("queue whoami role binding", () => {
 
   it("the caller's node id disambiguates its own session, and only its own (spec 0009)", async () => {
     const one = leadSeat("twin");
-    leadSeat("twin");
+    leadSeat("twin", { shared: true });
     record(one.node, [file("one.md")]);
     expect(await roleWithNode("orch-lead@twin", one.node)).toMatchObject({ state: "present", files: [{ path: "one.md" }] });
     // A node whose session is someone else's does not stand in for the caller.

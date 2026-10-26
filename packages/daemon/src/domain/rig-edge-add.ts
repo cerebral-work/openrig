@@ -6,57 +6,17 @@
 import type { RigRepository } from "./rig-repository.js";
 import type { EventBus } from "./event-bus.js";
 import { VALID_EDGE_KINDS } from "./rigspec-schema.js";
-import { computeLaunchOrder } from "./rigspec-instantiator.js";
+import { addRigEdge as addRigEdgeOp, type EdgeOpOutcome } from "./rig-edge-ops.js";
 import type { Edge } from "./types.js";
 
-export type AddRigEdgeResult =
-  | { ok: true; status: "created" | "exists"; edge: Edge }
-  | { ok: false; code: "rig_not_found" | "rig_archived" | "node_not_found" | "invalid_kind" | "self_edge" | "cycle"; error: string };
-
+/** Spec 0008 / CER-3001: add one edge and record rig.edge_added in the insert's transaction. The checks, the idempotent
+ *  repeat and the write are `rig-edge-ops`'s, the one path the POST route also takes. */
 export function addRigEdge(
   rigRepo: RigRepository,
   eventBus: EventBus,
   input: { rigId: string; from: string; to: string; kind: string; by: { session: string; provenance: string } | null },
-): AddRigEdgeResult {
-  const rig = rigRepo.getRig(input.rigId);
-  if (!rig) return { ok: false, code: "rig_not_found", error: `Rig ${input.rigId} not found` };
-  if (!rigRepo.findUnarchivedRigsByName(rig.rig.name).some((r) => r.id === input.rigId)) {
-    return { ok: false, code: "rig_archived", error: `Rig ${input.rigId} is archived; edges are added to live rigs only` };
-  }
-  if (!VALID_EDGE_KINDS.has(input.kind)) {
-    return { ok: false, code: "invalid_kind", error: `Unknown edge kind "${input.kind}" (valid: ${[...VALID_EDGE_KINDS].join(", ")})` };
-  }
-  const byLogicalId = new Map(rig.nodes.map((n) => [n.logicalId, n]));
-  const source = byLogicalId.get(input.from);
-  const target = byLogicalId.get(input.to);
-  if (!source || !target) {
-    const missing = [source ? null : input.from, target ? null : input.to].filter(Boolean).join(" and ");
-    return { ok: false, code: "node_not_found", error: `No node ${missing} in rig ${input.rigId}` };
-  }
-  if (source.id === target.id) {
-    return { ok: false, code: "self_edge", error: `Self-edge not allowed: ${input.from} -> ${input.to}` };
-  }
-  const existing = rig.edges.find((e) => e.sourceId === source.id && e.targetId === target.id && e.kind === input.kind);
-  if (existing) return { ok: true, status: "exists", edge: existing };
-  const logicalById = new Map(rig.nodes.map((n) => [n.id, n.logicalId]));
-  const edges = rig.edges.flatMap((e) => {
-    const from = logicalById.get(e.sourceId);
-    const to = logicalById.get(e.targetId);
-    return from && to ? [{ from, to, kind: e.kind }] : [];
-  });
-  try {
-    computeLaunchOrder(rig.nodes.map((n) => ({ id: n.logicalId })), [...edges, { from: input.from, to: input.to, kind: input.kind }]);
-  } catch (err) {
-    return { ok: false, code: "cycle", error: `Edge ${input.from} -> ${input.to} (${input.kind}) would close a launch-order cycle. ${(err as Error).message}` };
-  }
-  // CER-3001: the insert and its rig.edge_added event (shaped like rig.edge_removed) commit together, or neither does.
-  const { edge, event } = rigRepo.db.transaction(() => {
-    const created = rigRepo.addEdge(input.rigId, source.id, target.id, input.kind);
-    return { edge: created, event: eventBus.persistWithinTransaction({ type: "rig.edge_added", rigId: input.rigId, edgeId: created.id,
-      from: input.from, to: input.to, kind: input.kind, by: input.by }) };
-  })();
-  eventBus.notifySubscribers(event);
-  return { ok: true, status: "created", edge };
+): EdgeOpOutcome {
+  return addRigEdgeOp(rigRepo, { rigId: input.rigId, from: input.from, to: input.to, kind: input.kind, record: { eventBus, by: input.by } });
 }
 
 export type RemoveRigEdgeResult =
@@ -92,7 +52,7 @@ export function removeRigEdge(
   const matching = rig.edges.filter((e) => e.sourceId === source.id && e.targetId === target.id && e.kind === input.kind);
   if (matching.length === 0) return notFound;
   // A row another caller deleted between the read and this transaction is skipped, with no event for it.
-  const removed = rigRepo.db.transaction(() => matching.flatMap((edge) => rigRepo.removeEdge(edge.id)
+  const removed = rigRepo.db.transaction(() => matching.flatMap((edge) => rigRepo.removeEdgeById(edge.id)
     ? [{ edge, event: eventBus.persistWithinTransaction({ type: "rig.edge_removed", rigId: input.rigId, edgeId: edge.id,
       from: input.from, to: input.to, kind: input.kind, by: input.by }) }]
     : []))();

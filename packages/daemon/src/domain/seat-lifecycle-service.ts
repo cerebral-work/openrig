@@ -1,15 +1,19 @@
+import { readClaudePermissionRules, validateClaudePermissionRules } from "./claude-permission-rules.js";
+import { parseTerminalPolicy, TerminalPolicyRefusal, TerminalPolicyStore, type TerminalAction } from "./terminal-policy.js";
 import type { NativeProcessLister } from "./native-process-lineage.js";
+import type { CurrentModelReader } from "./model-divergence/current-model-reader.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
 import type { EventBus } from "./event-bus.js";
-import type { TmuxAdapter, SessionProbe } from "../adapters/tmux.js";
+import type { TmuxAdapter, SessionProbe, StopPhase } from "../adapters/tmux.js";
 import { shellQuote } from "../adapters/shell-quote.js";
+import { EFFORT_SHAPE, piThinkingValue } from "../adapters/pi-runner-protocol.js";
 import type { NodeInventoryEntry, PersistedEvent } from "./types.js";
 import { deriveCanonicalFromEntry, getNodeInventory } from "./node-inventory.js";
 import { deriveSessionName, parseSessionName } from "./session-name.js";
 import type { NodeLauncher } from "./node-launcher.js";
-import type { StartupOrchestrator } from "./startup-orchestrator.js";
+import type { PendingStartupContext, StartupOrchestrator } from "./startup-orchestrator.js";
 import type { RuntimeAdapter, ResolvedStartupFile } from "./runtime-adapter.js";
 import type { ProjectionEntry, ProjectionPlan } from "./projection-planner.js";
 import type { StartupAction } from "./types.js";
@@ -21,6 +25,11 @@ import { observeSolePane } from "./pane-binding-observation.js";
 import { createHash } from "node:crypto";
 import { NativePermissionStore } from "./native-permission-store.js";
 import { validateNativePermissionSelection, unresolvedClaudePermissionModes } from "./native-permission-selection.js";
+import fs from "node:fs";
+import path from "node:path";
+import { resolveConcreteHint, type NodeBinding } from "./runtime-adapter.js";
+import { ProjectionManifestStore } from "./projection-manifest-store.js";
+import { planCwdPreparation } from "./seat-cwd-preparation.js";
 import { resolvePermissionPolicyAttachment, validatePermissionPolicyRef } from "./permission-policy/policy-ref.js";
 import type { ArbitratedSeatState } from "./activity-taxonomy.js";
 import type { PaneCutoverTiming } from "./pane-cutover.js";
@@ -37,6 +46,10 @@ import {
   CodexInPlaceRestart, type InPlaceCodexLauncher, type InPlaceRestartIo, type InPlaceRestartRefusal,
   type InPlaceRestartReport, type InPlaceRestartTarget, type InPlaceVerifyResult,
 } from "./seat-restart-in-place.js";
+import { CommunityHarnessRuntimeAdapter, seatAdapter } from "../adapters/community-harness-runtime-adapter.js";
+import { sessionCommunityHarnessSelect } from "./session-registry.js";
+import { seatLaunchAdditionsReport } from "./seat-launch-additions.js";
+import { seatSkillPaths } from "./seat-skill-storage.js";
 
 /**
  * S5 (OPR.0.5.4.7) — the seat-lifecycle verb surface: set-model, single-seat stop,
@@ -76,6 +89,8 @@ export interface SeatLifecycleDeps {
   inPlaceRestartDaemonStartedAt?: Date;
   /** Where a session's native transcript is (the context-usage store); without it native effort is NOT VERIFIED. */
   transcripts?: { readSidecar(sessionName: string): { ok: true; data: { transcript_path?: string | null; session_id?: string | null } } | { ok: false }; readCodexTranscriptPath(threadId: string): string | null };
+  /** The identity-verified current Pi runner and its own session file; without it a Pi seat's launch and native effort are unknown. */
+  piRecords?: Pick<CurrentModelReader, "currentPiRecord">;
 }
 
 interface ResolvedSeat {
@@ -86,10 +101,18 @@ interface ResolvedSeat {
 export interface SeatRefusal {
   ok: false;
   code:
+    | "terminal_policy_refused"
+    | "terminal_policy_unavailable"
     | "seat_ref_required"
     | "seat_not_found"
     | "seat_ambiguous"
     | "missing_model"
+    | "missing_cwd"
+    | "invalid_cwd"
+    | "cwd_check_failed"
+    | "cwd_persistence_failed"
+    | "cwd_configuration_changed"
+    | "cwd_destination_conflict"
     | "missing_reason"
     | "permission_selection_refused"
     | "no_session"
@@ -115,7 +138,12 @@ export interface SeatRefusal {
     | "invalid_effort"
     | "effort_unsupported_runtime"
     | "effort_unavailable"
-    | "invalid_policy";
+    | "invalid_policy"
+    | "invalid_stop_precondition"
+    | "guard_unavailable"
+    | "guard_target_changed"
+    | "selection_changed"
+    | "stop_uncertain";
   message: string;
   guidance?: string;
   matches?: Array<{ rig_name: string; logical_id: string; current_occupant: string | null }>;
@@ -134,6 +162,18 @@ export interface SeatDescriptor {
 export type SetModelResult =
   | { ok: true; seat: SeatDescriptor; from: string | null; to: string; changed: boolean }
   | SeatRefusal;
+
+export type SetCwdResult =
+  | { ok: true; seat: SeatDescriptor; from: string | null; to: string; changed: boolean;
+      effect: "next_launch"; warnings: string[] }
+  | (SeatRefusal & { warnings?: string[] });
+
+interface SetCwdInput {
+  seatRef: string;
+  cwd: string;
+  reason: string;
+  operator?: string | null;
+}
 
 export type SetPolicyResult =
   | { ok: true; seat: SeatDescriptor; from: string | null; to: string; launchPosture: "floor" | "full_bypass" | "auto"; changed: boolean; effect: string }
@@ -183,7 +223,19 @@ export type SetEffortResult =
 
 export type StopSeatResult =
   | { ok: true; seat: SeatDescriptor; sessionName: string; sessionId: string }
-  | SeatRefusal;
+  | (SeatRefusal & { partialEffect?: boolean; stopPhase?: StopPhase });
+
+/** The narrow identity reviewed before an optional checked stop. */
+export interface StopPrecondition { nodeId: string; sessionId: string | null }
+
+/** Reject malformed explicit values so they never fall through to an unchecked stop. */
+function validStopPrecondition(value: unknown): value is StopPrecondition {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Record<string, unknown>;
+  return Object.keys(record).sort().join(",") === "nodeId,sessionId"
+    && typeof record.nodeId === "string" && !!record.nodeId.trim()
+    && (record.sessionId === null || typeof record.sessionId === "string" && !!record.sessionId.trim());
+}
 
 export type CleanSeatResult =
   | { ok: true; seat: SeatDescriptor; actions: { sessionsExited: string[]; bindingCleared: boolean } }
@@ -199,6 +251,7 @@ export type LaunchFreshResult =
       generation: string;
       model: string | null;
       effort?: string | null;
+      advisor?: string | null;
       startupPolicyHash: string;
       supersededSessionIds: string[];
       warnings?: string[];
@@ -216,6 +269,7 @@ interface LatestSessionRow {
   session_name: string;
   status: string;
   origin: string;
+  community_harness?: string | null;
 }
 
 interface PersistedStartupContextRow {
@@ -225,7 +279,7 @@ interface PersistedStartupContextRow {
   runtime: string | null;
 }
 
-interface ParsedStartupContext {
+export interface ParsedStartupContext {
   plan: ProjectionPlan;
   resolvedStartupFiles: ResolvedStartupFile[];
   startupActions: StartupAction[];
@@ -249,6 +303,7 @@ export class SeatLifecycleService {
   private readonly inPlaceRestartTiming?: Partial<PaneCutoverTiming>;
   private readonly inPlaceRestartDaemonStartedAt?: Date;
   private readonly transcripts: SeatLifecycleDeps["transcripts"] | null;
+  private readonly piRecords: SeatLifecycleDeps["piRecords"] | null;
 
   constructor(deps: SeatLifecycleDeps) {
     if (deps.db !== deps.rigRepo.db) throw new Error("SeatLifecycleService: rigRepo must share the same db handle");
@@ -269,6 +324,49 @@ export class SeatLifecycleService {
     this.inPlaceRestartTiming = deps.inPlaceRestartTiming;
     this.inPlaceRestartDaemonStartedAt = deps.inPlaceRestartDaemonStartedAt;
     this.transcripts = deps.transcripts ?? null;
+    this.piRecords = deps.piRecords ?? null;
+  }
+
+  private terminalPolicyCheck(nodeId: string, action: TerminalAction, operator?: string | null) {
+    try {
+      const decision = new TerminalPolicyStore(this.db).check(nodeId, action, { source: "caller", session: operator ?? null });
+      return { ok: true as const, ...decision };
+    } catch (error) {
+      const refusal: SeatRefusal = { ok: false, code: error instanceof TerminalPolicyRefusal ? "terminal_policy_refused" : "terminal_policy_unavailable",
+        message: (error as Error).message,
+        ...(error instanceof TerminalPolicyRefusal ? { actorClass: error.actorClass } : {}) };
+      return refusal;
+    }
+  }
+
+  setTerminalPolicy(input: { seatRef: string; preset: unknown; helpers?: unknown; exceptions?: unknown;
+    reason: string; actor: string; rigDefault?: boolean }) {
+    const required = this.requireReason(input.reason);
+    if (required) return required;
+    if (!input.actor.trim()) return { ok: false as const, code: "actor_required", message: "Supply the caller identity or --operator for the audit." };
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    let config: ReturnType<typeof parseTerminalPolicy>;
+    try { config = parseTerminalPolicy(input); }
+    catch (error) { return { ok: false as const, code: "invalid_terminal_policy", message: (error as Error).message }; }
+    try {
+      const store = new TerminalPolicyStore(this.db);
+      const seat = this.describe(resolved);
+      let persisted: PersistedEvent | null = null;
+      this.db.transaction(() => {
+        store.write(seat.nodeId, config, input.actor.trim(), input.reason.trim(), input.rigDefault);
+        persisted = this.eventBus.persistWithinTransaction({ type: "node.terminal_policy_changed", rigId: seat.rigId,
+          nodeId: seat.nodeId, scope: input.rigDefault ? "rig_default" : "seat", config,
+          actor: input.actor.trim(), reason: input.reason.trim() });
+      })();
+      if (persisted) this.eventBus.notifySubscribers(persisted);
+      return { ok: true as const, seat, config,
+        effect: input.rigDefault ? "Saved for newly added seats in this rig only; existing seats are unchanged."
+          : "Saved for managed compaction and future saved model/effort changes. No input, relaunch, native permission or interruption-level change.",
+        account: store.account(seat.nodeId, resolved.entry.runtime ?? null) };
+    } catch (error) {
+      return { ok: false as const, code: "terminal_policy_unavailable" as const, message: (error as Error).message };
+    }
   }
 
   async setModel(input: { seatRef: string; model: string; reason: string; operator?: string | null }): Promise<SetModelResult> {
@@ -290,9 +388,12 @@ export class SeatLifecycleService {
 
     let persisted: PersistedEvent | null = null;
     const tx = this.db.transaction(() => {
+      const decision = this.terminalPolicyCheck(seat.nodeId, "model", input.operator);
+      if (!decision.ok) return decision;
       this.rigRepo.setNodeModel(resolved.nodeId, model);
       persisted = this.eventBus.persistWithinTransaction({
         type: "node.model_changed",
+        actorClass: decision.actorClass,
         rigId: seat.rigId,
         nodeId: seat.nodeId,
         logicalId: seat.logicalId,
@@ -302,10 +403,118 @@ export class SeatLifecycleService {
         operator: input.operator ?? null,
       });
     });
-    tx();
+    const refused = tx();
+    if (refused) return refused;
     if (persisted) this.eventBus.notifySubscribers(persisted);
 
     return { ok: true, seat, from, to: model, changed: true };
+  }
+
+  /**
+   * Save an existing seat's launch directory for its next fresh launch or rebuild handover, keeping its identity,
+   * address, queue and history. Like set-model it validates, then persists the cwd and an audited event in one
+   * transaction. Before that, set-cwd's read-only preflight policy refuses the change when the new directory holds an
+   * operator-edited, unrecorded-and-different or doubly sourced copy that launch would place there. It creates the
+   * folder and writes no startup files: launch does that, as it does today. The running occupant keeps its directory
+   * until it's relaunched.
+   */
+  async setCwd(input: SetCwdInput): Promise<SetCwdResult> {
+    const required = this.requireReason(input.reason);
+    if (required) return required;
+    if (!input.cwd?.trim()) return { ok: false, code: "missing_cwd", message: "An absolute working directory is required (--cwd)." };
+    if (!path.isAbsolute(input.cwd) || input.cwd.includes("\0")) {
+      return { ok: false, code: "invalid_cwd", message: "The working directory must be an absolute path on the daemon's host." };
+    }
+    let to = path.resolve(input.cwd);
+    if (to === path.parse(to).root) {
+      return { ok: false, code: "invalid_cwd", message: "Choose a project directory, not a filesystem root, for managed startup files." };
+    }
+    const resolved = this.resolveSeat(input.seatRef);
+    if ("code" in resolved) return resolved;
+    const seat = this.describe(resolved);
+    const node = this.rigRepo.getRig(seat.rigId)?.nodes.find(candidate => candidate.id === seat.nodeId);
+    if (!node) return { ok: false, code: "seat_not_found", message: "The seat no longer exists.", guidance: SEAT_LOOKUP_GUIDANCE };
+    const from = node.cwd;
+    try {
+      fs.mkdirSync(to, { recursive: true });
+      to = fs.realpathSync(to);
+      if (to === path.parse(to).root || !fs.statSync(to).isDirectory()) throw new Error("Destination must be a project directory.");
+    } catch (error) {
+      return { ok: false, code: "invalid_cwd", message: `Cannot use the requested working directory: ${(error as Error).message}` };
+    }
+    const startup = this.readStartupContext(node.id, to);
+    if (!startup.ok) return startup.refusal;
+    if (!node.runtime || startup.context.runtime !== node.runtime) {
+      return { ok: false, code: "startup_context_runtime_mismatch", message: "The saved startup context belongs to a different runtime." };
+    }
+    // Resolved as launch resolves it, so a recorded community harness finds its adapter too.
+    const adapter = seatAdapter(this.runtimeAdapters, node.runtime, this.latestSession(node.id)?.community_harness);
+    if (!adapter) return { ok: false, code: "runtime_adapter_missing", message: "The configured runtime adapter is unavailable." };
+
+    const warnings: string[] = [];
+    // The filesystem startup files the next fresh launch would deliver (never send_text or actions), with legacy auto
+    // hints resolved, for the read-only destination check.
+    const files: ResolvedStartupFile[] = [];
+    // A community harness takes no startup files at launch (its adapter delivers none), so there's nothing to check.
+    const takesStartupFiles = !(adapter instanceof CommunityHarnessRuntimeAdapter);
+    for (const file of takesStartupFiles ? startup.context.resolvedStartupFiles : []) {
+      if (!file.appliesOn.includes("fresh_start") || file.deliveryHint === "send_text") continue;
+      try {
+        const hint = file.deliveryHint === "auto"
+          ? resolveConcreteHint(file.path, fs.readFileSync(file.absolutePath, "utf8"), file.orientation) : file.deliveryHint;
+        if (hint !== "send_text") files.push({ ...file, deliveryHint: hint });
+      } catch (error) {
+        const detail = `Startup file ${file.path}: ${(error as Error).message}`;
+        if (file.required) return { ok: false, code: "cwd_check_failed", message: detail, warnings };
+        warnings.push(detail);
+      }
+    }
+    const oldBinding = this.sessionRegistry.getBindingForNode(node.id);
+    const binding: NodeBinding = {
+      id: oldBinding?.id ?? `cwd:${node.id}`, nodeId: node.id,
+      attachmentType: oldBinding?.attachmentType ?? "tmux",
+      tmuxSession: oldBinding?.tmuxSession ?? deriveCanonicalFromEntry(resolved.entry),
+      tmuxWindow: null, tmuxPane: null, cmuxWorkspace: null, cmuxSurface: null,
+      updatedAt: oldBinding?.updatedAt ?? new Date().toISOString(), cwd: to,
+    };
+    const inspect = `Inspect the configured directory with: rig seat status ${input.seatRef}`;
+    try {
+      const check = planCwdPreparation({ ...startup.context.plan, cwd: to }, files, binding, adapter, new ProjectionManifestStore(this.db));
+      warnings.push(...check.warnings);
+      if (check.conflicts.length) {
+        warnings.push(...check.conflicts.map(copy => `Protected destination file: ${copy.targetPath}`));
+        return { ok: false, code: "cwd_destination_conflict", warnings,
+          message: "The new directory holds files set-cwd's preflight policy protects; no startup file was written and the cwd was not changed.",
+          guidance: "Use a clean destination, or inspect and move or merge the reported files before retrying." };
+      }
+    } catch (error) {
+      return { ok: false, code: "cwd_check_failed", message: `The new directory couldn't be checked; the cwd was not changed: ${(error as Error).message}`, warnings };
+    }
+
+    let persisted: PersistedEvent | null = null;
+    const changed = from !== to;
+    try {
+      const refusal = this.db.transaction((): SeatRefusal | null => {
+        // Another writer (an import, another connection) must not be silently overwritten.
+        const current = this.resolveSeat(input.seatRef);
+        const currentStartup = this.readStartupContext(node.id, to);
+        if ("code" in current || current.nodeId !== node.id || current.entry.cwd !== from
+          || current.entry.runtime !== node.runtime || !currentStartup.ok || currentStartup.context.hash !== startup.context.hash) {
+          return { ok: false, code: "cwd_configuration_changed", message: "The seat's configuration changed while its new directory was checked; the cwd was not changed.", guidance: inspect };
+        }
+        if (changed) {
+          if (!this.rigRepo.setNodeCwd(node.id, to, from)) throw new Error("The seat's saved working directory changed.");
+          persisted = this.eventBus.persistWithinTransaction({ type: "node.cwd_changed", rigId: seat.rigId,
+            nodeId: node.id, logicalId: seat.logicalId, from, to, reason: input.reason.trim(), operator: input.operator ?? null });
+        }
+        return null;
+      })();
+      if (refusal) return { ...refusal, warnings };
+    } catch (error) {
+      return { ok: false, code: "cwd_persistence_failed", message: `The working directory was not changed: ${(error as Error).message}`, guidance: inspect, warnings };
+    }
+    if (persisted) this.eventBus.notifySubscribers(persisted);
+    return { ok: true, seat, from, to, changed, effect: "next_launch", warnings };
   }
 
   /** OPR.0.7.0.7 — save one seat's effort for its next managed continuation. Like set-model it
@@ -318,7 +527,7 @@ export class SeatLifecycleService {
     if (requested !== null) {
       if (!requested) return { ok: false, code: "missing_effort", message: "An effort level is required (--effort <level>), or pass --clear." };
       // Levels are the runtime's own (they differ by model and client), so only the shape is checked here.
-      if (!/^[A-Za-z][A-Za-z0-9_-]{0,31}$/.test(requested)) {
+      if (!EFFORT_SHAPE.test(requested)) {
         return { ok: false, code: "invalid_effort", message: `"${requested}" isn't an effort level: use the runtime's level name, such as low, medium or high.` };
       }
     }
@@ -326,8 +535,8 @@ export class SeatLifecycleService {
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
     const runtime = resolved.entry.runtime ?? "unknown";
-    if (runtime !== "claude-code" && runtime !== "codex") {
-      return { ok: false, code: "effort_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${runtime}; reasoning effort applies to claude-code and codex seats only.` };
+    if (runtime !== "claude-code" && runtime !== "codex" && runtime !== "pi") {
+      return { ok: false, code: "effort_unsupported_runtime", message: `Seat "${input.seatRef}" runs ${runtime}; reasoning effort applies to claude-code, codex and pi seats only.` };
     }
 
     const from = this.readEffort(seat.nodeId);
@@ -337,11 +546,14 @@ export class SeatLifecycleService {
     let changed = false;
     if (from.choice !== requested) {
       let persisted: PersistedEvent | null = null;
-      this.db.transaction(() => {
+      const refused = this.db.transaction(() => {
+        const decision = this.terminalPolicyCheck(seat.nodeId, "model", input.operator);
+        if (!decision.ok) return decision;
         if (!this.rigRepo.setNodeEffortChoice(seat.nodeId, requested)) return;
         changed = true;
         persisted = this.eventBus.persistWithinTransaction({
           type: "node.effort_changed",
+          actorClass: decision.actorClass,
           rigId: seat.rigId,
           nodeId: seat.nodeId,
           logicalId: seat.logicalId,
@@ -351,6 +563,7 @@ export class SeatLifecycleService {
           operator: input.operator ?? null,
         });
       })();
+      if (refused) return refused;
       if (persisted) this.eventBus.notifySubscribers(persisted);
       if (!changed) {
         return { ok: false, code: "effort_unavailable", message: `The effort choice for seat "${input.seatRef}" was not saved (no node row was updated); nothing changed.` };
@@ -376,8 +589,8 @@ export class SeatLifecycleService {
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
     const runtime = resolved.entry.runtime ?? "unknown";
-    if (runtime !== "claude-code" && runtime !== "codex") {
-      return { ok: false, code: "effort_unsupported_runtime", message: `Seat "${seatRef}" runs ${runtime}; reasoning effort applies to claude-code and codex seats only.` };
+    if (runtime !== "claude-code" && runtime !== "codex" && runtime !== "pi") {
+      return { ok: false, code: "effort_unsupported_runtime", message: `Seat "${seatRef}" runs ${runtime}; reasoning effort applies to claude-code, codex and pi seats only.` };
     }
     const saved = this.readEffort(seat.nodeId);
     if (!saved) {
@@ -394,6 +607,8 @@ export class SeatLifecycleService {
     if (!session || TERMINAL_SESSION_STATUSES.has(session.status) || !target) {
       emitted = { state: "unknown", detail: "The seat has no running session, so no launch to read." };
       observed = { state: "not_verified", detail: "The seat has no running session." };
+    } else if (runtime === "pi") {
+      ({ emitted, observed } = await this.piEffort(seat.nodeId, session.session_name, saved));
     } else {
       const observe = runtime === "claude-code" ? observeClaudePaneRuntime : observeCodexPaneProcess;
       const process = (await observe({ target, tmux: this.tmuxAdapter, ...(this.listProcesses ? { listProcesses: this.listProcesses } : {}) }))?.process;
@@ -411,7 +626,55 @@ export class SeatLifecycleService {
         observed = native.state === "observed" ? { ...native, matchesEmitted: native.value === value } : native;
       }
     }
-    return { ok: true, seat, runtime, requested, saved, emitted, observed, precedence, summary: effortSummary(saved, emitted, observed) };
+    return { ok: true, seat, runtime, requested, saved, emitted, observed, precedence, summary: effortSummary(saved, emitted, observed, runtime) };
+  }
+
+  /** A Pi seat's launch flag and native level, both from the identity-verified current runner: its
+   *  own command line, and the newest assistant record of this launch in its own session file. */
+  private async piEffort(nodeId: string, sessionName: string, saved: EffortResolution): Promise<Pick<EffortReport, "emitted" | "observed">> {
+    if (!this.piRecords) {
+      return {
+        emitted: { state: "unknown", detail: "The seat's Pi runner can't be read here." },
+        observed: { state: "not_verified", detail: "The seat's Pi runner can't be read here, so no turn can be tied to its launch." },
+      };
+    }
+    let selection: Awaited<ReturnType<CurrentModelReader["currentPiRecord"]>>;
+    try {
+      selection = await this.piRecords.currentPiRecord(nodeId, sessionName);
+    } catch {
+      selection = { ok: false, reason: "the pane's processes could not be read" };
+    }
+    if (!selection.ok) {
+      return {
+        emitted: { state: "unknown", detail: `No verified Pi runner for this seat: ${selection.reason}.` },
+        observed: { state: "not_verified", detail: `No verified Pi runner for this seat, so no turn can be tied to its launch: ${selection.reason}.` },
+      };
+    }
+    const tokens = processArgv(selection.command);
+    const flag = emittedEffortFromArgv("pi", tokens);
+    const value = flag.flag === "present" ? flag.value : null;
+    // ps joins argv with spaces: a bare word after the value may be the rest of a value with whitespace.
+    // Scanned as emittedEffortFromArgv does, so a value is never taken for the flag.
+    let after: string | undefined;
+    for (let index = 1; index < tokens.length; index += 1) {
+      if (tokens[index] === "--thinking") { after = tokens[index + 2]; index += 1; }
+      else if (tokens[index]!.startsWith("--thinking=")) after = tokens[index + 1];
+    }
+    const emitted: EffortReport["emitted"] = value !== null && after !== undefined && !after.startsWith("--")
+      ? { state: "unknown", detail: "The launch command's --thinking value can't be read unambiguously (it contains whitespace)." }
+      // Compared with what the launch guard sends for the saved value, not the saved value itself.
+      : { state: "observed", value, pid: selection.pid, startedAt: selection.startedAt, matchesSaved: value === (piThinkingValue(saved.effective) ?? null) };
+    const read = selection.observation;
+    if (!read.ok) return { emitted, observed: { state: "not_verified", detail: `No Pi turn from this launch can be read: ${read.reason}.` } };
+    if (!read.thinkingLevel) {
+      return { emitted, observed: { state: "not_verified", detail: "This Pi doesn't record the thinking level on its turns (Pi 0.99.0 and later do), so the level it ran at can't be shown." } };
+    }
+    // No flag sent: Pi's level comes from the model suffix or its default, so there is nothing to mismatch.
+    return { emitted, observed: {
+      state: "observed", value: read.thinkingLevel, at: read.observedAt ?? "unknown time", source: "Pi session (latest successful assistant turn; error and aborted turns are skipped)", outcome: "recorded",
+      detail: "Pi recorded this level with the turn's request: the session's level after Pi's own cap, not proof the provider applied it.",
+      ...(emitted.state === "observed" && value !== null ? { matchesEmitted: read.thinkingLevel === value } : {}),
+    } };
   }
 
   private lastRequestedEffort(nodeId: string): EffortReport["requested"] {
@@ -483,7 +746,7 @@ export class SeatLifecycleService {
     return probe.state === "present" ? { state: "yes" } : { state: "no", detail: "tmux session absent" };
   }
 
-  async setPermissions(input: { seatRef: string; mode: string; reason: string; actor: string }): Promise<
+  async setPermissions(input: { seatRef: string; mode?: string; rules?: unknown; reason: string; actor: string }): Promise<
     | { ok: true; seat: SeatDescriptor; from: unknown; to: unknown; changed: boolean; effect: string }
     | SeatRefusal
   > {
@@ -495,13 +758,40 @@ export class SeatLifecycleService {
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
     const runtime = resolved.entry.runtime ?? "unknown";
+    if ((input.mode === undefined) === (input.rules === undefined)) return { ok: false, code: "permission_selection_refused", message: "Choose exactly one of mode or rules." };
+    if (input.rules !== undefined) {
+      if (runtime !== "claude-code") return { ok: false, code: "permission_selection_refused", message: "claude_permissions is only supported for claude-code seats." };
+      try {
+        const to = validateClaudePermissionRules(input.rules);
+        let persisted: PersistedEvent | null = null;
+        const result = this.db.transaction(() => {
+          // Read the current record for the audit; malformed old bytes stay visible as such and can be repaired.
+          const row = this.db.prepare("SELECT claude_permissions_json FROM nodes WHERE id = ? AND runtime = 'claude-code'").get(seat.nodeId) as { claude_permissions_json: string | null } | undefined;
+          if (!row) throw new Error("Seat runtime changed; rules were not changed.");
+          let from: unknown = null;
+          try { from = readClaudePermissionRules(this.db, seat.nodeId) ?? null; }
+          catch { from = { state: "invalid", stored: row.claude_permissions_json }; }
+          const changed = JSON.stringify(from) !== JSON.stringify(to);
+          if (changed) {
+            this.db.prepare("UPDATE nodes SET claude_permissions_json = ? WHERE id = ?").run(JSON.stringify(to), seat.nodeId);
+            persisted = this.eventBus.persistWithinTransaction({ type: "node.permission_rules_changed", rigId: seat.rigId,
+              nodeId: seat.nodeId, from, to, actor: input.actor.trim(), reason: input.reason.trim(), effect: "future_launches_only" });
+          }
+          return { ok: true as const, seat, from, to, changed,
+            effect: "Rules apply at the next separately authorized managed launch or resume. The current process, permission mode and history are unchanged. Older readers may ignore these rules; check rollback compatibility and preserve restrictions before downgrading." };
+        })();
+        if (persisted) this.eventBus.notifySubscribers(persisted);
+        return result;
+      } catch (error) { return { ok: false, code: "permission_selection_refused", message: (error as Error).message }; }
+    }
+    const mode = input.mode!;
     try {
-      const dynamic = runtime === "claude-code" && !["floor", "full_bypass", "inherit"].includes(input.mode);
+      const dynamic = runtime === "claude-code" && !["floor", "full_bypass", "inherit"].includes(mode);
       const managed = this.runtimeAdapters["claude-code"]?.claudeManagedLaunch;
       if (dynamic && !managed) await unresolvedClaudePermissionModes();
-      const launch = dynamic ? await managed!.prepare({ nodeId: seat.nodeId, cwd: resolved.entry.cwd ?? undefined }, input.mode) : null;
-      const to = input.mode === "inherit" ? null : dynamic ? { runtime: "claude-code" as const, mode: input.mode }
-        : validateNativePermissionSelection(runtime, input.mode);
+      const launch = dynamic ? await managed!.prepare({ nodeId: seat.nodeId, cwd: resolved.entry.cwd ?? undefined }, mode) : null;
+      const to = mode === "inherit" ? null : dynamic ? { runtime: "claude-code" as const, mode: mode }
+        : validateNativePermissionSelection(runtime, mode);
       const store = new NativePermissionStore(this.db);
       let persisted: PersistedEvent | null = null;
       const result = this.db.transaction(() => {
@@ -510,7 +800,9 @@ export class SeatLifecycleService {
         if (currentRuntime?.runtime !== runtime) throw new Error("Seat runtime changed while checking native options; selection was not changed.");
         const from = store.read(seat.nodeId);
         const changed = from?.runtime !== to?.runtime || from?.mode !== to?.mode;
-        if (changed) {
+        // A Codex re-selection is intent for its next rebuild, even when the saved value is
+        // unchanged. Audit inherit too: a cleared selection has no row to carry its timestamp.
+        if (changed || runtime === "codex") {
           store.write(seat.nodeId, to, input.actor.trim(), input.reason.trim());
           persisted = this.eventBus.persistWithinTransaction({ type: "node.permissions_changed", rigId: seat.rigId,
             nodeId: seat.nodeId, from, to, actor: input.actor.trim(), reason: input.reason.trim(), source: "seat_selection", effect: "future_launches_only" });
@@ -563,7 +855,8 @@ export class SeatLifecycleService {
     const before = this.rigRepo.getNodePolicyProvenance(seat.nodeId);
     const changed = from !== ref || !before || before.origin !== provenance.origin || before.resolvedTarget !== provenance.resolvedTarget
       || before.declaringDir !== provenance.declaringDir || before.launchPosture !== provenance.launchPosture;
-    if (changed) {
+    // Reaffirming the same Codex policy is also a deliberate choice for the next rebuild.
+    if (changed || resolved.entry.runtime === "codex") {
       let persisted: PersistedEvent | null = null;
       this.db.transaction(() => {
         this.rigRepo.setNodePermissionPolicy(seat.nodeId, ref);
@@ -585,9 +878,21 @@ export class SeatLifecycleService {
     return { ok: true, seat, from, to: ref, launchPosture: attachment.launchPosture, changed, effect };
   }
 
-  async stopSeat(input: { seatRef: string; reason: string; operator?: string | null }): Promise<StopSeatResult> {
+  /** Read the current node and latest session without changing seat state. */
+  stopPrecondition(seatRef: string): { contract: "seat-stop.v1"; expected: StopPrecondition } | SeatRefusal {
+    const resolved = this.resolveSeat(seatRef);
+    if ("code" in resolved) return resolved;
+    return { contract: "seat-stop.v1", expected: { nodeId: resolved.nodeId, sessionId: this.latestSession(resolved.nodeId)?.id ?? null } };
+  }
+
+  /** Stop one managed seat; an explicit expected tuple activates strict identity checks. */
+  async stopSeat(input: { seatRef: string; reason: string; operator?: string | null; expected?: unknown }): Promise<StopSeatResult> {
     const required = this.requireReason(input.reason);
     if (required) return required;
+    if ("expected" in input) {
+      if (!validStopPrecondition(input.expected)) return { ok: false, code: "invalid_stop_precondition", message: "expected must contain a nonempty nodeId and a nonempty sessionId or null." };
+      return this.stopSeatChecked(input, input.expected);
+    }
     const resolved = this.resolveSeat(input.seatRef);
     if ("code" in resolved) return resolved;
     const guard = this.tmuxAdapter.deliveryGuard;
@@ -624,6 +929,48 @@ export class SeatLifecycleService {
     }
 
     return this.stopManagedTmuxSeat(resolved, session, input.reason, input.operator, true);
+  }
+
+  /** Hold the existing lifecycle lease from selection validation through terminal and DB effects. */
+  private async stopSeatChecked(
+    input: { seatRef: string; reason: string; operator?: string | null }, expected: StopPrecondition,
+  ): Promise<StopSeatResult> {
+    const guard = this.tmuxAdapter.deliveryGuard;
+    if (!guard) return { ok: false, code: "guard_unavailable", message: "Checked stop requires the delivery guard." };
+    const selection = (): SeatRefusal | null => {
+      const current = this.resolveSeat(input.seatRef);
+      if ("code" in current || current.nodeId !== expected.nodeId || (this.latestSession(current.nodeId)?.id ?? null) !== expected.sessionId) {
+        return { ok: false, code: "selection_changed", message: "The selected seat or latest session changed; review the stop precondition again." };
+      }
+      return null;
+    };
+    const initial = selection();
+    if (initial) return initial;
+    if (expected.sessionId === null) return { ok: false, code: "no_session", message: "The selected seat has no session to stop." };
+    try {
+      return await guard.lifecycle([expected.nodeId], async () => {
+        const stale = selection();
+        if (stale) return stale;
+        guard.checkInput(expected.nodeId);
+        const resolved = this.resolveSeat(input.seatRef);
+        if ("code" in resolved) return { ok: false, code: "selection_changed", message: "The selected seat changed." };
+        const seat = this.describe(resolved);
+        const session = this.latestSession(resolved.nodeId)!;
+        if (session.origin === "claimed") return { ok: false, code: "claimed_session", message: `Session "${session.session_name}" was adopted (origin=claimed), not launched by OpenRig — stop refuses to kill it.`, guidance: "Release an adopted session with: rig unclaim" };
+        const probed = await this.probeLiveness(session.session_name, "stop refuses rather than kill blind");
+        if ("code" in probed) return probed;
+        const afterProbe = selection();
+        if (afterProbe) return afterProbe;
+        guard.checkInput(resolved.nodeId);
+        if (probed.state === "absent") return { ok: false, code: "session_not_live", message: `Session "${session.session_name}" is absent in tmux; there is nothing to stop.`, guidance: "A dead seat with stale records is returned to launchable with: rig seat clean" };
+        return this.stopManagedTmuxSeat(resolved, session, input.reason, input.operator, true, { selection, guard });
+      });
+    } catch (error) {
+      const code = (error as { code?: string }).code;
+      return { ok: false, code: code === "guard_target_changed" || code === "guard_target_unknown" ? "selection_changed"
+        : code === "typing_guard_enabled" || code === "draft_aware_lifecycle" ? "typing_guard_enabled" : "tmux_probe_failed",
+      message: (error as Error).message };
+    }
   }
 
   async cleanSeat(input: { seatRef: string; reason: string; operator?: string | null }): Promise<CleanSeatResult> {
@@ -714,32 +1061,33 @@ export class SeatLifecycleService {
     return { ok: true, seat, actions: { sessionsExited, bindingCleared: binding !== null } };
   }
 
-  /** Finish context delivery to the same fresh occupant after its native gate.
+  /** Finish context delivery to the same fresh or forked occupant after its native gate.
    * This never launches a process or replays an uncertain/finished delivery.
    */
-  async continueFreshStartup(seatRef: string) {
+  async continueStartup(seatRef: string) {
     const resolved = this.resolveSeat(seatRef);
     if ("code" in resolved) return resolved;
     const guard = this.tmuxAdapter.deliveryGuard;
     return guard
-      ? guard.lifecycle([resolved.nodeId], () => this.continueFreshStartupUnchecked(seatRef))
-      : this.continueFreshStartupUnchecked(seatRef);
+      ? guard.lifecycle([resolved.nodeId], () => this.continueStartupUnchecked(seatRef))
+      : this.continueStartupUnchecked(seatRef);
   }
 
-  private async continueFreshStartupUnchecked(seatRef: string) {
+  private async continueStartupUnchecked(seatRef: string) {
     const resolved = this.resolveSeat(seatRef);
     if ("code" in resolved) return resolved;
     const seat = this.describe(resolved);
     const node = this.rigRepo.getRig(seat.rigId)?.nodes.find((n) => n.id === seat.nodeId);
     const session = this.latestSession(seat.nodeId);
     const binding = this.sessionRegistry.getBindingForNode(seat.nodeId);
+    const pending = session && this.startupOrchestrator?.pendingStartupContext(seat.nodeId, session.id);
     if (!node || !session || !binding?.tmuxSession || !this.startupOrchestrator
-      || !this.startupOrchestrator.canContinueFresh(node.id, session.id)) {
-      return { ok: false as const, code: "continuation_unavailable", message: "No verified pending fresh-context delivery exists for this occupant. Refresh to inspect its actual state." };
+      || !pending) {
+      return { ok: false as const, code: "continuation_unavailable", message: "No verified pending startup-context delivery exists for this occupant. Refresh to inspect its actual state." };
     }
     const pane = await observeSolePane(this.tmuxAdapter, binding.tmuxSession);
     if (!pane.ok || pane.pane !== binding.tmuxPane) return { ok: false as const, code: "binding_changed", message: "The managed terminal binding changed; context was not delivered." };
-    const adapter = node.runtime ? this.runtimeAdapters[node.runtime] : undefined;
+    const adapter = seatAdapter(this.runtimeAdapters, node.runtime, session.community_harness);
     if (!adapter) return { ok: false as const, code: "runtime_adapter_missing", message: "The configured runtime adapter is unavailable." };
     const ready = await adapter.checkReady({ ...binding, cwd: node.cwd ?? "." });
     if (!ready.ready) return { ok: false as const, code: "attention_required", message: ready.reason ?? "Resolve the native prerequisite first." };
@@ -749,15 +1097,16 @@ export class SeatLifecycleService {
     // Recheck after the asynchronous native observation; startNode immediately
     // records pending before its first await, consuming the retained permission.
     if (this.latestSession(node.id)?.id !== session.id || this.sessionRegistry.getBindingForNode(node.id)?.tmuxPane !== pane.pane
-      || !this.startupOrchestrator.canContinueFresh(node.id, session.id)) return { ok: false as const, code: "continuation_unavailable", message: "Startup changed during the readiness check. Refresh." };
+      || !this.stillPending(node.id, session.id, pending)) return { ok: false as const, code: "continuation_unavailable", message: "Startup changed during the readiness check. Refresh." };
     const result = await this.startupOrchestrator.startNode({
       rigId: seat.rigId, nodeId: node.id, sessionId: session.id,
-      binding: { ...binding, cwd: node.cwd ?? ".", model: node.model ?? undefined, effort: resolveSeatEffort(node).effective ?? undefined, codexConfigProfile: node.codexConfigProfile ?? undefined },
+      binding: { ...binding, cwd: node.cwd ?? ".", model: node.model ?? undefined, effort: resolveSeatEffort(node).effective ?? undefined, advisor: node.advisor ?? undefined, codexConfigProfile: node.codexConfigProfile ?? undefined },
       adapter, plan: startup.context.plan, resolvedStartupFiles: startup.context.resolvedStartupFiles,
-      startupActions: startup.context.startupActions, isRestore: false,
-      sessionName: session.session_name, skipHarnessLaunch: true, continueFreshStartup: true, includeDurableObligations: true, allowFreshFallback: false,
+      startupActions: startup.context.startupActions, isRestore: pending.mode === "fork" && pending.isRestore,
+      sessionName: session.session_name, skipHarnessLaunch: true, continueFreshStartup: pending.mode === "fresh", includeDurableObligations: true, allowFreshFallback: false,
+      ...(pending.mode === "fork" ? { forkSource: { kind: "native_id" as const, value: pending.parentToken } } : {}),
     });
-    return { ...result, message: result.ok ? "Configured context delivered to the existing fresh conversation." : result.errors.join("; ") };
+    return { ...result, message: result.ok ? "Configured context delivered to the existing conversation." : result.errors.join("; ") };
   }
 
   /**
@@ -786,7 +1135,7 @@ export class SeatLifecycleService {
         message: `Persisted startup context runtime '${startup.context.runtime}' does not match current node runtime '${node.runtime ?? "missing"}'.`,
       };
     }
-    const adapter = this.runtimeAdapters[node.runtime];
+    const adapter = seatAdapter(this.runtimeAdapters, node.runtime, this.latestSession(node.id)?.community_harness);
     if (!adapter) {
       return {
         ok: false as const,
@@ -806,6 +1155,14 @@ export class SeatLifecycleService {
    * mismatched sessions. Return its session row or a refusal, including unknown pane
    * observations, without stopping, repairing, or starting a tmux server.
    */
+  /** Whether the context found before the native check is still owed. A fork continuation needs the exact
+   *  same pending event: its child is verified against that attempt. A fresh continuation keeps main's
+   *  check (fresh context still pending for this occupant), so another pending event doesn't refuse it. */
+  private stillPending(nodeId: string, sessionId: string, pending: PendingStartupContext): boolean {
+    const now = this.startupOrchestrator?.pendingStartupContext(nodeId, sessionId);
+    return pending.mode === "fork" ? now?.eventSeq === pending.eventSeq : now?.mode === "fresh";
+  }
+
   private async validateFreshCollision(resolved: ResolvedSeat, canonicalSessionName: string, stop: boolean): Promise<LatestSessionRow | SeatRefusal> {
     const currentSession = this.latestSession(resolved.nodeId);
     const currentBinding = this.sessionRegistry.getBindingForNode(resolved.nodeId);
@@ -939,6 +1296,9 @@ export class SeatLifecycleService {
       sessionName: canonicalSessionName, currentOccupant,
       stopRequired, wouldStop: blockers.length > 0 ? false : tmuxUnknown ? null : owned && input.stop === true,
       blockers, warnings, siblings,
+      // OPR.0.7.0.9: what this seat's launch passes of its own additions (null when none).
+      launchAdditions: node.runtime === "claude-code"
+        ? seatLaunchAdditionsReport(seatSkillPaths({ rigId: seat.rigId, logicalId: node.logicalId, runtime: "claude-code" })) : null,
       startup: { projectionCount: startup.plan.entries.length,
         fileCount: startup.resolvedStartupFiles.filter(f => f.appliesOn.includes("fresh_start")).length,
         actionCount: startup.startupActions.filter(a => a.appliesOn.includes("fresh_start")).length },
@@ -987,6 +1347,7 @@ export class SeatLifecycleService {
     ).all(node.id) as Array<{ id: string }>).map((row) => row.id);
     const retiringGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
 
+    const viewWarnings: string[] = [];
     let canonicalProbe = await this.probeLiveness(
       canonicalSessionName,
       "fresh launch refuses rather than overwrite a possibly-live canonical session",
@@ -1034,6 +1395,10 @@ export class SeatLifecycleService {
         false,
       );
       if (!stopped.ok) return stopped;
+      // Older open views still attach once. Keep recovery guidance for those
+      // views and replacements that outlast the new tile command's wait.
+      const view = shellQuote(`rig:${seat.rigName}`);
+      viewWarnings.push(`Replacing the tmux session for "${canonicalSessionName}" detaches its open terminal clients. New tiles wait up to 30 seconds for the same seat; for older views or a tile that closes, close and reopen the view: rig terminal open ${view} --window (Herdr or tmux), or rig terminal open ${view} --provider cmux.`);
       // Stopping the server's last session ends tmux's server, and every probe
       // below would then be transport_unavailable, never absence. Restore an
       // empty server (no session is invented; a no-op while the server is up)
@@ -1050,7 +1415,7 @@ export class SeatLifecycleService {
         reason: input.reason,
         operator: input.operator,
       });
-      if (!cleaned.ok) return cleaned;
+      if (!cleaned.ok) return { ...cleaned, warnings: viewWarnings };
     }
 
     // The stop/clean composition may have taken time; buy absence again at the
@@ -1059,11 +1424,12 @@ export class SeatLifecycleService {
       canonicalSessionName,
       "fresh launch refuses rather than race a canonical-session collision",
     );
-    if ("code" in finalProbe) return finalProbe;
+    if ("code" in finalProbe) return { ...finalProbe, warnings: viewWarnings };
     if (finalProbe.state === "present") {
       return {
         ok: false,
         code: "unmanaged_session_collision",
+        warnings: viewWarnings,
         message: `Canonical tmux session "${canonicalSessionName}" appeared before launch; refusing to overwrite it.`,
       };
     }
@@ -1082,7 +1448,7 @@ export class SeatLifecycleService {
       occupantKind: "fresh",
     });
     if (!launch.ok) {
-      return { ok: false, code: "launch_failed", message: launch.message };
+      return { ok: false, code: "launch_failed", message: launch.message, warnings: viewWarnings };
     }
     const observedGeneration = this.sessionRegistry.currentOccupantTenure(node.id)?.generationUuid ?? null;
     const generation = observedGeneration && observedGeneration !== retiringGeneration
@@ -1098,13 +1464,14 @@ export class SeatLifecycleService {
         startupPolicyHash: startup.hash,
         model: node.model,
         effort: resolveSeatEffort(node).effective,
+        advisor: node.advisor ?? null,
         reason: input.reason,
         operator: input.operator,
         errors: ["new occupant generation was not persisted"],
       });
       return compensation === "zero"
-        ? { ok: false, code: "startup_failed", status: "failed", message: "Fresh launch could not persist a new occupant generation; the new session was rolled back." }
-        : { ok: false, code: "attention_required", status: "attention_required", message: "Fresh launch could not persist a new occupant generation and the new process could not be confirmed stopped; the seat requires attention.", sessionName: canonicalSessionName, sessionId: launch.session.id };
+        ? { ok: false, code: "startup_failed", status: "failed", warnings: viewWarnings, message: "Fresh launch could not persist a new occupant generation; the new session was rolled back." }
+        : { ok: false, code: "attention_required", status: "attention_required", warnings: viewWarnings, message: "Fresh launch could not persist a new occupant generation and the new process could not be confirmed stopped; the seat requires attention.", sessionName: canonicalSessionName, sessionId: launch.session.id };
     }
     this.activityOracle?.declareOccupantSwap(node.id, generation);
 
@@ -1120,6 +1487,7 @@ export class SeatLifecycleService {
         cwd: node.cwd ?? ".",
         model: node.model ?? undefined,
         effort: resolveSeatEffort(node).effective ?? undefined,
+        advisor: node.advisor ?? undefined,
         codexConfigProfile: node.codexConfigProfile ?? undefined,
         launchPosture,
       },
@@ -1133,6 +1501,8 @@ export class SeatLifecycleService {
       allowFreshFallback: false,
     });
 
+    const warnings = viewWarnings.length ? [...(startupResult.warnings ?? []), ...viewWarnings] : startupResult.warnings;
+
     if (!startupResult.ok && startupResult.startupStatus === "failed") {
       const compensation = await this.compensateFailedFreshLaunch({
         seat,
@@ -1143,6 +1513,7 @@ export class SeatLifecycleService {
         startupPolicyHash: startup.hash,
         model: node.model,
         effort: resolveSeatEffort(node).effective,
+        advisor: node.advisor ?? null,
         reason: input.reason,
         operator: input.operator,
         errors: startupResult.errors,
@@ -1153,14 +1524,14 @@ export class SeatLifecycleService {
             code: "startup_failed",
             status: "failed",
             message: `Fresh startup failed and was rolled back to zero live session/binding: ${startupResult.errors.join("; ")}`,
-            warnings: startupResult.warnings,
+            warnings,
           }
         : {
             ok: false,
             code: "attention_required",
             status: "attention_required",
             message: `Fresh startup failed and the new process could not be confirmed stopped; the seat requires attention: ${startupResult.errors.join("; ")}`,
-            warnings: startupResult.warnings,
+            warnings,
             sessionName: canonicalSessionName,
             sessionId: launch.session.id,
             generation,
@@ -1206,6 +1577,7 @@ export class SeatLifecycleService {
         ...(nativeSessionId ? {} : { nativeSessionIdReason: "scrape_miss" }),
         model: node.model,
         effort: resolveSeatEffort(node).effective,
+        advisor: node.advisor ?? null,
         startupPolicyHash: startup.hash,
         reason: input.reason.trim(),
         operator: input.operator ?? null,
@@ -1226,7 +1598,7 @@ export class SeatLifecycleService {
         sessionName: canonicalSessionName,
         sessionId: launch.session.id,
         generation,
-        warnings: startupResult.warnings,
+        warnings,
       };
     }
 
@@ -1239,9 +1611,10 @@ export class SeatLifecycleService {
       generation,
       model: node.model,
       effort: resolveSeatEffort(node).effective ?? undefined,
+      advisor: node.advisor ?? undefined,
       startupPolicyHash: startup.hash,
       supersededSessionIds,
-      warnings: startupResult.warnings,
+      warnings,
     };
   }
 
@@ -1356,15 +1729,32 @@ export class SeatLifecycleService {
 
   // -- shared internals --
 
+  /** Shared stop effects; checked calls revalidate at terminal boundaries and before persistence. */
   private async stopManagedTmuxSeat(
     resolved: ResolvedSeat,
     session: LatestSessionRow,
     reason: string,
     operator: string | null | undefined,
     recordStopIntent: boolean,
+    checked?: { selection: () => SeatRefusal | null; guard: NonNullable<TmuxAdapter["deliveryGuard"]> },
   ): Promise<StopSeatResult> {
     const seat = this.describe(resolved);
-    const kill = await this.tmuxAdapter.killSession(session.session_name);
+    const beforeEffect = checked && (() => {
+      const changed = checked.selection();
+      if (changed) throw Object.assign(new Error(changed.message), { code: changed.code });
+      checked.guard.checkInput(resolved.nodeId);
+    });
+    const kill = checked
+      ? await this.tmuxAdapter.killSession(session.session_name, beforeEffect)
+      : await this.tmuxAdapter.killSession(session.session_name);
+    if (checked && !kill.ok) {
+      const partialEffect = kill.stopPhase !== undefined && kill.stopPhase !== "none";
+      if (kill.code === "selection_changed" || kill.code === "guard_target_changed" || kill.code === "guard_target_unknown") {
+        return { ok: false, code: "selection_changed", message: kill.message, partialEffect, stopPhase: kill.stopPhase };
+      }
+      if (!partialEffect && kill.code !== "session_not_found") return { ok: false, code: "tmux_probe_failed", message: kill.message };
+      return { ok: false, code: "stop_uncertain", message: `Checked stop did not complete: ${kill.message}`, partialEffect, stopPhase: kill.stopPhase };
+    }
     if (kill && !kill.ok && kill.code !== "session_not_found") {
       return {
         ok: false,
@@ -1373,7 +1763,12 @@ export class SeatLifecycleService {
       };
     }
     let persisted: PersistedEvent | null = null;
-    const tx = this.db.transaction(() => {
+    const tx = this.db.transaction((): SeatRefusal | null => {
+      if (checked) {
+        const changed = checked.selection();
+        if (changed) return changed;
+        checked.guard.checkInput(resolved.nodeId);
+      }
       if (recordStopIntent && kill?.ok) {
         this.sessionRegistry.markIntentionallyStopped(session.id);
       } else {
@@ -1389,10 +1784,23 @@ export class SeatLifecycleService {
         reason: reason.trim(),
         operator: operator ?? null,
       });
+      return null;
     });
-    tx();
-    this.tmuxAdapter.deliveryGuard?.rebindLifecycle(resolved.nodeId);
-    if (persisted) this.eventBus.notifySubscribers(persisted);
+    try {
+      const changed = tx();
+      if (changed) return { ...changed, partialEffect: true, stopPhase: "kill_attempted" };
+    } catch (error) {
+      if (!checked) throw error;
+      if ((error as { code?: string }).code === "guard_target_changed") return { ok: false, code: "selection_changed", message: (error as Error).message, partialEffect: true, stopPhase: "kill_attempted" };
+      return { ok: false, code: "stop_uncertain", message: `Session kill completed, but stop state could not be persisted: ${(error as Error).message}`, partialEffect: true, stopPhase: "kill_attempted" };
+    }
+    try {
+      this.tmuxAdapter.deliveryGuard?.rebindLifecycle(resolved.nodeId);
+      if (persisted) this.eventBus.notifySubscribers(persisted);
+    } catch (error) {
+      if (!checked) throw error;
+      return { ok: false, code: "stop_uncertain", message: `Session kill completed, but stop finalization failed: ${(error as Error).message}`, partialEffect: true, stopPhase: "kill_attempted" };
+    }
     return { ok: true, seat, sessionName: session.session_name, sessionId: session.id };
   }
 
@@ -1409,7 +1817,7 @@ export class SeatLifecycleService {
     return row?.resume_token?.trim() || null;
   }
 
-  private readStartupContext(
+  readStartupContext(
     nodeId: string,
     cwd: string,
   ): { ok: true; context: ParsedStartupContext } | { ok: false; refusal: SeatRefusal } {
@@ -1565,6 +1973,7 @@ export class SeatLifecycleService {
     startupPolicyHash: string;
     model: string | null;
     effort?: string | null;
+    advisor?: string | null;
     reason: string;
     operator?: string | null;
     errors: string[];
@@ -1600,6 +2009,7 @@ export class SeatLifecycleService {
         newGeneration: input.newGeneration,
         model: input.model,
         effort: input.effort ?? null,
+        advisor: input.advisor ?? null,
         startupPolicyHash: input.startupPolicyHash,
         reason: input.reason.trim(),
         operator: input.operator ?? null,
@@ -1664,7 +2074,7 @@ export class SeatLifecycleService {
 
   private latestSession(nodeId: string): LatestSessionRow | null {
     const row = this.db.prepare(
-      "SELECT id, session_name, status, origin FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1",
+      `SELECT id, session_name, status, origin, ${sessionCommunityHarnessSelect(this.db, "sessions")} AS community_harness FROM sessions WHERE node_id = ? ORDER BY id DESC LIMIT 1`,
     ).get(nodeId) as LatestSessionRow | undefined;
     return row ?? null;
   }
@@ -1761,19 +2171,26 @@ function isStringArrayOf<T extends string>(value: unknown, allowed: readonly T[]
 }
 
 /** One line naming where the four values agree, and where they can't be seen. */
-function effortSummary(saved: EffortResolution, emitted: EffortReport["emitted"], observed: EffortReport["observed"]): string {
+function effortSummary(saved: EffortResolution, emitted: EffortReport["emitted"], observed: EffortReport["observed"], runtime: string): string {
   const savedText = saved.effective ? `${saved.effective} (${saved.source === "seat_choice" ? "seat choice" : "authored"})` : "no flag (the runtime's own default)";
-  if (emitted.state !== "observed") return `Saved: ${savedText}. Launch: unknown (${emitted.detail}) Native effort: NOT VERIFIED.`;
+  if (emitted.state !== "observed") {
+    // Only a Pi launch value that can't be read back unambiguously leaves the native turn readable.
+    const native = observed.state === "observed" ? `${observed.value} (${observed.source}, ${observed.at})` : "NOT VERIFIED";
+    return `Saved: ${savedText}. Launch: unknown (${emitted.detail}) Native effort: ${native}.`;
+  }
   const launch = emitted.value ?? "no flag";
-  const launchNote = emitted.matchesSaved ? "" : " This differs from the saved value: it applies at the seat's next managed continuation.";
+  // A Pi saved value the launch guard leaves out never applies, so it isn't reported as pending.
+  const launchNote = runtime === "pi" && saved.effective && !piThinkingValue(saved.effective) ? " The saved value isn't sent: it doesn't pass the check set-effort uses (a letter, then up to 31 letters, digits, - or _)."
+    : emitted.matchesSaved ? "" : " This differs from the saved value: it applies at the seat's next managed continuation.";
   if (observed.state !== "observed") return `Saved: ${savedText}. Launch sent: ${launch}.${launchNote} Native effort: NOT VERIFIED (${observed.detail})`;
-  const sent = observed.matchesEmitted === false
-    ? `${observed.value}, not the ${launch} the launch sent (changed or overridden inside the session)`
-    : observed.value;
+  const sent = observed.matchesEmitted !== false ? observed.value
+    : runtime === "pi" ? `${observed.value}, not the ${launch} sent at launch (Pi caps a level the model doesn't offer, ignores one it doesn't know, and the level can change inside the session)`
+    : `${observed.value}, not the ${launch} the launch sent (changed or overridden inside the session)`;
   const verdict = observed.outcome === "accepted" ? "accepted by the service for that turn"
     : observed.outcome === "rejected" ? `REJECTED (${observed.detail})`
     : observed.outcome === "failed" || observed.outcome === "interrupted" ? (observed.detail ?? "not judged").replace(/\.$/, "")
     : observed.outcome === "pending" ? "its turn hasn't finished, so not yet known whether it was taken"
+    : runtime === "pi" ? "applied level NOT VERIFIED (Pi records the level it requested, not what the provider ran)"
     : "applied level NOT VERIFIED (whether this is after any model fallback isn't shown)";
   return `Saved: ${savedText}. Launch sent: ${launch}.${launchNote} The session sent ${sent} with its latest turn (${observed.source}, ${observed.at}): ${verdict}.`;
 }

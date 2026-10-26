@@ -30,7 +30,11 @@ import fs from "node:fs";
 import os from "node:os";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { writeRuntimeStubs } from "./stub-runtimes.js";
+import { realRuntimesRequested, writeRuntimeStubs } from "./stub-runtimes.js";
+
+export function fixtureUserHomeEnv(userHome: string, platform: NodeJS.Platform = process.platform): NodeJS.ProcessEnv {
+  return { HOME: userHome, ...(platform === "win32" ? { USERPROFILE: userHome } : {}) };
+}
 
 // Scrub inherited instance selectors before product modules capture their defaults.
 // Tests can still set explicit overrides after setup; test/provider opt-in flags
@@ -41,13 +45,16 @@ for (const key of [
   "WORKSPACE_STEERING_PATH", "WORKSPACE_SPECS_ROOT", "WORKSPACE_PROJECTS_ROOT",
   "WORKSPACE_CATALOG_PATH", "TOPOLOGY_ROOT", "CONTEXT_ROOT", "CONTEXT_PACKS_ROOT",
   "SKILLS_ROOT", "SHARED_DOCS_ROOT", "FILES_ALLOWLIST", "PROGRESS_SCAN_ROOTS",
-  "SESSION_NAME", "NODE_ID", "RIG_ID", "AUTH_BEARER_TOKEN", "TERMINAL_BEARER_TOKEN",
+  "SESSION_NAME", "NODE_ID", "RIG_ID", "OCCUPANT_GENERATION", "AUTH_BEARER_TOKEN", "TERMINAL_BEARER_TOKEN",
   // Slice 15: a seat with compact output on must not change what the suite prints.
   "OUTPUT_COMPACT",
   // Slice 01: a seat with usage windows on must not change what the suite reads.
   "PROVIDER_USAGE_WINDOWS",
+  // A seat whose setup recorded a provider choice must not change which kernel variant the suite picks.
+  "PROVIDER_SELECTED",
   // A seat with input-box verification on must not change what the transport suites verify.
   "TRANSPORT_VERIFY_INPUT_BOX",
+  "TRANSPORT_LOCAL_USER_GUARD",
 ]) {
   delete process.env[`OPENRIG_${key}`];
   delete process.env[`RIGGED_${key}`];
@@ -57,6 +64,9 @@ for (const key of [
 // dedicated bind env for in-process servers and for every child that inherits this env.
 // Tests that assert the env is absent unset it locally.
 process.env["OPENRIG_BIND_HOST"] = "127.0.0.1";
+// A suite run from a Rex block must not make the CLI and TUI pick Rex, or reach the person's Rex server.
+for (const key of ["REX_SESSION", "REX_BLOCK", "REX_SERVER", "REX_BIN_DIR", "REX_CLIENT"]) delete process.env[key];
+if (process.env["TERM_PROGRAM"] === "rex") delete process.env["TERM_PROGRAM"];
 
 // (2) FORCE a fixture-scoped home — BEFORE importing openrig-compat (whose
 // OPENRIG_HOME const is eager). Node builtins above do not load it; the dynamic
@@ -139,15 +149,25 @@ process.env["OPENRIG_COMPACTION_OUT_ROOT"] = path.join(fixtureHome, "compaction-
 // to this fixture. Merely changing HOME would not override OPENRIG_HOME or DB.
 // Keep ordinary user files outside the state root, as in a real installation.
 // Otherwise file-transfer correctly rejects every ~/ path as OpenRig state.
-if (process.env["OPENRIG_E2E_REAL_CODEX"] !== "1") {
+// Vitest sets testPath before setupFiles. Plain Node setup consumers have no native-runtime exception.
+const testPath = process.env["VITEST"] ? (await import("vitest")).expect.getState().testPath : undefined;
+const realCodexTest = realRuntimesRequested(process.env, testPath);
+// These files exercise Codex only; an inherited Claude override never belongs to their fixture.
+delete process.env["CLAUDE_CONFIG_DIR"];
+if (!realCodexTest) {
   const userHome = `${fixtureHome}-user-home`;
   fs.mkdirSync(userHome, { recursive: true });
-  process.env["HOME"] = userHome;
+  Object.assign(process.env, fixtureUserHomeEnv(userHome));
   delete process.env["CODEX_HOME"];
   for (const [key, suffix] of Object.entries({
     XDG_CONFIG_HOME: ".config", XDG_STATE_HOME: ".local/state",
     XDG_DATA_HOME: ".local/share", XDG_CACHE_HOME: ".cache",
   })) process.env[key] = path.join(userHome, suffix);
+
+  if (os.homedir() !== userHome || process.env["CODEX_HOME"] !== undefined
+    || process.env["CLAUDE_CONFIG_DIR"] !== undefined) {
+    throw new Error("test provider homes must stay inside the fixture");
+  }
 
   // codex and claude resolve to stubs that answer at once, so no test runs the host's real
   // binaries (a codex wrapper that hangs under a fixture HOME leaves its probes running).

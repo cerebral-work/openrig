@@ -1,3 +1,4 @@
+import { resolveCurrentSessionAddress } from "./session-registry.js";
 import type Database from "better-sqlite3";
 import type { RigRepository } from "./rig-repository.js";
 import type { SessionRegistry } from "./session-registry.js";
@@ -18,6 +19,7 @@ export interface WhoamiResult {
     memberId: string;
     memberLabel: string | null;
     sessionName: string | null;
+    senderAddress: string | null;
     runtime: string;
     cwd: string | null;
     agentRef: string | null;
@@ -163,6 +165,12 @@ export class WhoamiService {
     return row !== undefined && row.archived_at === null;
   }
 
+  private senderAddress(sessionName: string, nodeId: string): string {
+    const current = resolveCurrentSessionAddress(this.db, sessionName);
+    return current && resolveCurrentSessionAddress(this.db, current.senderAddress)?.nodeId === nodeId
+      ? current.senderAddress : sessionName;
+  }
+
   resolve(query: { nodeId?: string; sessionName?: string; targetRepoOverride?: string; compact?: boolean }): WhoamiResult | null {
     let nodeRow: NodeRow | undefined;
     let resolvedBy: "node_id" | "session_name";
@@ -175,24 +183,28 @@ export class WhoamiService {
       currentSessionName = this.getCurrentSessionName(nodeRow.id, nodeRow.rig_id);
     } else if (query.sessionName) {
       // Find sessions matching this name — check for ambiguity across rigs
-      const sessionRows = this.db
-        .prepare("SELECT * FROM sessions WHERE session_name = ? ORDER BY id DESC")
-        .all(query.sessionName) as SessionRow[];
+      const current = resolveCurrentSessionAddress(this.db, query.sessionName);
+      const sessionRows = current && current.sessionName !== query.sessionName
+        ? this.db.prepare("SELECT * FROM sessions WHERE id=?").all(current.sessionId) as SessionRow[]
+        : this.db.prepare("SELECT * FROM sessions WHERE session_name = ? ORDER BY id DESC").all(query.sessionName) as SessionRow[];
 
       if (sessionRows.length === 0) return null;
 
-      // Spec 0009: only sessions of UNARCHIVED rigs count. A lead swap archives a rig and reuses its
-      // session names, so archived rigs never make a session ambiguous and are never resolved to.
-      const liveRows: SessionRow[] = [];
-      const rigIds = new Set<string>();
+      // Spec 0009 with upstream #1101: a lead swap archives a rig and reuses its session names, so an unarchived rig
+      // wins. An archived rig's session counts only when no unarchived rig has the name, or while that session is
+      // still running (it is then still a live claim on the name, and the session stays ambiguous).
+      const rigOf = new Map<string, string>();
       for (const sess of sessionRows) {
         const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(sess.node_id) as { rig_id: string } | undefined;
-        if (node && this.rigIsLive(node.rig_id)) {
-          liveRows.push(sess);
-          rigIds.add(node.rig_id);
-        }
+        if (node) rigOf.set(sess.id, node.rig_id);
       }
+      let liveRows = sessionRows.filter((s) => rigOf.has(s.id));
       if (liveRows.length === 0) return null;
+      const unarchivedRigIds = new Set([...new Set(rigOf.values())].filter((rigId) => this.rigIsLive(rigId)));
+      if (unarchivedRigIds.size > 0) {
+        liveRows = liveRows.filter((s) => unarchivedRigIds.has(rigOf.get(s.id)!) || s.status === "running");
+      }
+      const rigIds = new Set(liveRows.map((s) => rigOf.get(s.id)!));
 
       if (rigIds.size > 1) {
         const ids = [...rigIds];
@@ -250,6 +262,7 @@ export class WhoamiService {
       memberId,
       memberLabel: nodeRow.label,
       sessionName: currentSessionName,
+      senderAddress: currentSessionName ? this.senderAddress(currentSessionName, nodeRow.id) : null,
       runtime: nodeRow.runtime ?? "unknown",
       cwd: nodeRow.cwd,
       agentRef: nodeRow.agent_ref,

@@ -1,3 +1,4 @@
+import { physicalSessionName } from "./session-registry.js";
 import { readWorkflowGuidance, type GuidanceInput } from "./workflow-guidance.js";
 import { exceptionConfigurationSource, inspectExceptionReadiness, type ExceptionReadiness } from "./workflow-exception-readiness.js";
 import { inspectGraph, recoverGraphOperation, reviseGraph } from "./workflow-reconciliation.js";
@@ -27,6 +28,7 @@ import { resolveExceptionRoute, type ExceptionRoute } from "./workflow-exception
 import type { WorkflowHumanDestination } from "./workflow-human-destination.js";
 import { classifyGateTrip, workflowExceptionTags } from "./workflow-exception.js";
 import { newQitemId } from "./queue-repository.js";
+import { HUMAN_ALERT_TAG } from "./gateway/human-registry.js";
 import type { WorkflowExceptionClass } from "./workflow-exception.js";
 import {
   WorkflowProjector,
@@ -348,6 +350,7 @@ export class WorkflowRuntime {
     // EITHER way — report alive so no warning fires, and never let an advisory
     // path fail validate/instantiate.
     try {
+      sessionRef = physicalSessionName(this.db, sessionRef);
       const row = this.db
         .prepare(
           `SELECT s.status AS status FROM sessions s WHERE s.session_name = ? ORDER BY s.created_at DESC LIMIT 1`,
@@ -903,9 +906,15 @@ export class WorkflowRuntime {
   }
 
   async project(input: ProjectStepInput): Promise<ProjectStepResult> {
+    const owner = this.queueRepo.getById(input.currentPacketId)?.destinationSession;
     const result = await this.projector.project(input);
     this.reconcileStuckExceptions(input.instanceId);
-    return result;
+    // A known caller projecting another seat's packet is told so in the response. Nothing is refused and the owner isn't
+    // notified: delegated work stays one call. A claimed or unknown-origin caller isn't a mismatch.
+    const known = input.identityProvenance === "transport:v1" || input.identityProvenance === "relay:v1";
+    if (!known || !owner || owner === input.actorSession) return result;
+    return { ...result, advisories: [...(result.advisories ?? []),
+      `recorded ${input.actorSession} as the agent that projected packet ${input.currentPacketId}, which is owned by ${owner}`] };
   }
 
   /** Recheck each recorded overdue packet, never a sibling's verdict. The
@@ -1018,7 +1027,7 @@ export class WorkflowRuntime {
     return { instance, frontier, failures, unknowns, boundaryObligations: lifecycleObligations(this.db, instanceId, instance.lifecycleBinding, spec?.steps ?? [], instance.currentFrontier) };
   }
 
-  async abort(input: { instanceId: string; reason: string; actorSession: string }): Promise<{
+  async abort(input: { instanceId: string; reason: string; actorSession: string; identityProvenance?: string | null }): Promise<{
     instanceId: string;
     closedPacketIds: string[];
     status: "aborted";
@@ -1045,6 +1054,7 @@ export class WorkflowRuntime {
         const closed = this.queueRepo.updateWithinTransaction({
           qitemId: packetId,
           actorSession: input.actorSession,
+          identityProvenance: input.identityProvenance ?? null,
           viaWorkflowVerb: true,
           state: "canceled",
           transitionNote: `workflow abort by ${input.actorSession}: ${input.reason}`,
@@ -1118,6 +1128,7 @@ export class WorkflowRuntime {
     occurrenceId?: string;
     decision?: string;
     actorSession: string;
+    identityProvenance?: string | null;
   }): Promise<{
     instanceId: string;
     stepId: string;
@@ -1208,6 +1219,7 @@ export class WorkflowRuntime {
       const created = this.queueRepo.createWithinTransaction({
         qitemId: redrivePacketId,
         sourceSession: input.actorSession,
+        identityProvenance: input.identityProvenance ?? null,
         destinationSession: owner,
         body: withWorkflowContinuation({
           binding: instance.lifecycleBinding,
@@ -1244,7 +1256,7 @@ export class WorkflowRuntime {
         created.qitemId,
         input.actorSession,
         created.destinationSession,
-        null,
+        input.identityProvenance ?? null,
         created.nudge,
       );
 
@@ -1341,7 +1353,7 @@ export class WorkflowRuntime {
     instanceId: string,
     failedPacketId: string,
     stepId: string,
-    input: { actorSession: string; decision?: string },
+    input: { actorSession: string; decision?: string; identityProvenance?: string | null },
     register: (event: PersistedEvent) => void,
   ): number {
     const openItems = this.db.prepare(
@@ -1355,6 +1367,7 @@ export class WorkflowRuntime {
       const closed = this.queueRepo.updateWithinTransaction({
         qitemId: row.qitem_id,
         actorSession: input.actorSession,
+        identityProvenance: input.identityProvenance ?? null,
         state: "done",
         closureReason: "no-follow-on",
         transitionNote: `workflow resume: occurrence resolved by ${input.actorSession} redriving step ${stepId}${input.decision ? ` — ${input.decision}` : ""}`,
@@ -1369,6 +1382,7 @@ export class WorkflowRuntime {
     occurrenceId?: string;
     decision?: string;
     actorSession: string;
+    identityProvenance?: string | null;
   }): Promise<{
     instanceId: string;
     stepId: string;
@@ -1435,6 +1449,7 @@ export class WorkflowRuntime {
       const created = this.queueRepo.createWithinTransaction({
         qitemId: redrivePacketId,
         sourceSession: input.actorSession,
+        identityProvenance: input.identityProvenance ?? null,
         destinationSession: owner,
         body: withWorkflowContinuation({
           binding: instance.lifecycleBinding,
@@ -1452,7 +1467,7 @@ export class WorkflowRuntime {
         chainOfRecord: [occurrence.failedPacketId],
       });
       register(created.persistedEvent);
-      this.queueRepo.stageWakeIntent(created.qitemId, input.actorSession, created.destinationSession, null, created.nudge);
+      this.queueRepo.stageWakeIntent(created.qitemId, input.actorSession, created.destinationSession, input.identityProvenance ?? null, created.nudge);
       this.instanceStore.bindFrontierPacket({
         instanceId: instance.instanceId,
         packetId: created.qitemId,
@@ -1491,6 +1506,7 @@ export class WorkflowRuntime {
     packetId?: string;
     toSession: string;
     actorSession: string;
+    identityProvenance?: string | null;
     reason?: string;
   }): Promise<{
     instanceId: string;
@@ -1589,6 +1605,7 @@ export class WorkflowRuntime {
       const closed = this.queueRepo.updateWithinTransaction({
         qitemId: oldPacketId,
         actorSession: input.actorSession,
+        identityProvenance: input.identityProvenance ?? null,
         viaWorkflowVerb: true,
         state: "handed-off",
         closureReason: "handed_off_to",
@@ -1613,6 +1630,7 @@ export class WorkflowRuntime {
       const created = this.queueRepo.createWithinTransaction({
         qitemId: routedPacketId,
         sourceSession: input.actorSession,
+        identityProvenance: input.identityProvenance ?? null,
         destinationSession: input.toSession,
         body: withWorkflowContinuation({
           binding: instance.lifecycleBinding,
@@ -1627,7 +1645,8 @@ export class WorkflowRuntime {
         priority: oldPacket.priority ?? "routine",
         tier: oldPacket.tier ?? "mode2",
         // OPR.0.4.6.WF5 (rev1-r2 B1 fold): the successor IS the same work
-        // item — tags carry VERBATIM (+ re-route) so a routed class-(c)
+        // item — tags carry over (+ re-route; the queue keeps human-alert only
+        // on an alert-worthy create, which humanAlert below restores) so a routed class-(c)
         // gate item keeps its exception identity on the live frontier
         // packet (workflow-exception/step:/exception:human_gate_trip/
         // occurrence:<ORIGINAL gate packet id> — the occurrence is the
@@ -1647,6 +1666,8 @@ export class WorkflowRuntime {
         summary: oldPacket.summary ?? undefined,
         evidenceRef: oldPacket.evidenceRef ?? undefined,
         targetRepo: oldPacket.targetRepo ?? undefined,
+        // An alert-worthy item (a failed step's approval) stays alert-worthy when it's routed to a person.
+        ...((oldPacket.tags ?? []).includes(HUMAN_ALERT_TAG) && this.queueRepo.isPersonAddress(input.toSession) ? { humanAlert: true } : {}),
       });
       register(created.persistedEvent);
       nudgeTo = { qitemId: created.qitemId, session: created.destinationSession, nudge: created.nudge };
@@ -1656,7 +1677,7 @@ export class WorkflowRuntime {
         created.qitemId,
         input.actorSession,
         created.destinationSession,
-        null,
+        input.identityProvenance ?? null,
         created.nudge,
       );
 
@@ -1674,6 +1695,7 @@ export class WorkflowRuntime {
         const reparked = this.queueRepo.updateWithinTransaction({
           qitemId: created.qitemId,
           actorSession: input.actorSession,
+          identityProvenance: input.identityProvenance ?? null,
           state: "blocked",
           closureReason: "blocked_on",
           closureTarget: oldPacket.blockedOn,
@@ -1776,9 +1798,10 @@ export class WorkflowRuntime {
    * mechanical advance is folded into project() for v1; continue() is
    * the audit/inspect entrypoint.
    */
-  continue(instanceId: string): {
+  continue(instanceId: string, options: { fullHistory?: boolean } = {}): {
     instance: WorkflowInstanceWithDeadline;
     trail: WorkflowStepTrailEntry[];
+    trailCompleteness: "complete" | "recent";
     guidance: ReturnType<WorkflowRuntime["guidance"]>;
     reconciliation: ReturnType<typeof inspectGraph>;
     frontier: ReturnType<WorkflowRuntime["inspect"]>["frontier"];
@@ -1787,11 +1810,16 @@ export class WorkflowRuntime {
     boundaryObligations: LifecycleObligation[];
   } {
     const instance = this.instanceStore.getByIdOrThrow(instanceId);
-    const trail = this.trailLog.listForInstance(instanceId);
+    // The default's order either way. One row past the 50 shows whether the default cut anything;
+    // a negative LIMIT is SQLite's "no limit".
+    const read = this.trailLog.listForInstance(instanceId, options.fullHistory ? -1 : 51);
+    const cut = !options.fullHistory && read.length > 50;
+    const trail = cut ? read.slice(0, 50) : read;
     const inspected = this.inspect(instanceId);
     return {
       instance: this.withDeadline(instance),
       trail,
+      trailCompleteness: cut ? "recent" : "complete",
       guidance: this.guidance(instanceId),
       reconciliation: this.inspectGraph(instanceId),
       frontier: inspected.frontier,

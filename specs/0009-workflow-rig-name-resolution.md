@@ -36,13 +36,13 @@ Workflow code resolved a bound rig by name to the OLDEST rig of that name, archi
 
 ## Requirements
 
-- REQ-0009-01: When workflow code resolves a bound rig by name, the daemon shall consider only unarchived rigs.
+- REQ-0009-01: When workflow code resolves a bound rig by name, the daemon shall prefer an unarchived rig, and resolve an archived rig only when no unarchived rig has the name.
 - REQ-0009-02: When exactly one unarchived rig has the name, the member advisory shall check that rig's nodes.
 - REQ-0009-03: When exactly one unarchived rig has the name, role resolution shall draw its candidates from that rig.
 - REQ-0009-04: If two or more unarchived rigs share the name, then binding and projection shall fail with `rig_ambiguous` naming their ids.
 - REQ-0009-05: If two or more unarchived rigs share a rig name in a preferred target, then the instantiate member sweep shall report `rig_ambiguous` as an advisory.
 - REQ-0009-06: The rig-registered check shall ignore archived rigs.
-- REQ-0009-07: When whoami resolves a session name, the daemon shall consider only sessions of unarchived rigs.
+- REQ-0009-07: When whoami resolves a session name, the daemon shall prefer sessions of unarchived rigs, and answer from an archived rig only when no unarchived rig has the session; a running session of an archived rig still makes the name ambiguous. (Amended with the v0.7.2 merge, which follows upstream's rule.)
 - REQ-0009-08: If a session name resolves to two or more live rigs, then `rig queue whoami` shall report `rig_ambiguous` naming those rigs.
 - REQ-0009-09: When `rig queue whoami` runs with the seat's own session, the CLI shall send the seat's node id.
 - REQ-0009-10: When a queue item names a target repo, the daemon shall validate it against the workspace of the one unarchived rig named by the source session.

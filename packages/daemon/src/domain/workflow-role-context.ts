@@ -52,6 +52,16 @@ export function resolveUnarchivedRigId(db: Database.Database, rigName: string): 
   return ids[0] ?? null;
 }
 
+/**
+ * An archived rig answers a probe only when no unarchived rig has the name (upstream #1101, kept beside spec 0009):
+ * the unarchived rig always wins, two of them stay ambiguous, and the oldest archived rig is the fallback.
+ */
+export function resolveRigIdPreferringUnarchived(db: Database.Database, rigName: string): string | null {
+  const unarchived = resolveUnarchivedRigId(db, rigName);
+  if (unarchived) return unarchived;
+  return (db.prepare("SELECT id FROM rigs WHERE name = ? ORDER BY created_at LIMIT 1").get(rigName) as { id: string } | undefined)?.id ?? null;
+}
+
 /** The ids of every unarchived rig named `rigName`, oldest first (spec 0009). */
 export function unarchivedRigIds(db: Database.Database, rigName: string): string[] {
   return new RigRepository(db).findUnarchivedRigsByName(rigName).map((r) => r.id);
@@ -91,7 +101,7 @@ export function roleResolutionContext(
   return {
     boundRig,
     candidatesForRig: () => {
-      const rigId = resolveUnarchivedRigId(db, boundRig);
+      const rigId = resolveRigIdPreferringUnarchived(db, boundRig);
       if (!rigId) return null;
       const entries = attachTerminalActivityAndWork(getNodeInventory(db, rigId), { db });
       return entries.map((e) => ({
@@ -177,7 +187,7 @@ export function rigMemberExists(
   rigName: string,
   sessionRef: string,
 ): boolean {
-  const rigId = resolveUnarchivedRigId(db, rigName);
+  const rigId = resolveRigIdPreferringUnarchived(db, rigName);
   if (!rigId) return false;
   return getNodeInventory(db, rigId).some(
     (e) => deriveCanonicalFromEntry(e) === sessionRef,

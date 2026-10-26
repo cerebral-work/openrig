@@ -79,7 +79,7 @@ function wire(db: ReturnType<typeof createDb>, home: string) {
   const tmux = mockTmux();
   const tmuxAdapter = tmux as unknown as TmuxAdapter;
   const nodeLauncher = new NodeLauncher({ db, rigRepo, sessionRegistry, eventBus, tmuxAdapter });
-  const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter });
+  const startupOrchestrator = new StartupOrchestrator({ db, sessionRegistry, eventBus, tmuxAdapter, sleep: async () => {} });
   const claude = new ClaudeCodeAdapter({ tmux: tmuxAdapter, fsOps: realFs(home), sleep: async () => {} });
   const resolverFs: AgentResolverFsOps = { readFile: (p) => fs.readFileSync(p, "utf-8"), exists: (p) => fs.existsSync(p) };
   const inst = new PodRigInstantiator({
@@ -160,8 +160,32 @@ describe("env: reaches the seats from a rig spec", () => {
   it("records the declared names on the session so the managed Claude launch can forward them", async () => {
     const f = fixture();
     await launch(f);
-    expect(envOf(f, "dev-impl").OPENRIG_SEAT_ENV_KEYS?.split(",").sort()).toEqual(["MEMBER_ONLY", "RIG_ONLY", "SHARED"]);
-    expect(envOf(f, "dev-plain").OPENRIG_SEAT_ENV_KEYS?.split(",").sort()).toEqual(["RIG_ONLY", "SHARED"]);
+    // A Claude seat also carries its own skill plugin (OPR.0.7.0.13), so the managed launch forwards that name too.
+    expect(envOf(f, "dev-impl").OPENRIG_SEAT_ENV_KEYS?.split(",").sort()).toEqual(["CLAUDE_CODE_PLUGIN_DIRS", "MEMBER_ONLY", "RIG_ONLY", "SHARED"]);
+    expect(envOf(f, "dev-plain").OPENRIG_SEAT_ENV_KEYS?.split(",").sort()).toEqual(["CLAUDE_CODE_PLUGIN_DIRS", "RIG_ONLY", "SHARED"]);
+    f.db.close();
+  });
+
+  it("a runtime home that isn't an absolute path doesn't reach the seat's terminal; an absolute one does", async () => {
+    const f = fixture();
+    f.yaml = f.yaml
+      .replace("          MEMBER_ONLY: member\n", "          MEMBER_ONLY: member\n          CLAUDE_CONFIG_DIR: relative-claude\n")
+      .replace("  RIG_ONLY: rig\n", "  RIG_ONLY: rig\n  CODEX_HOME: /homes/rig-codex\n");
+    await launch(f);
+    expect(envOf(f, "dev-impl")).not.toHaveProperty("CLAUDE_CONFIG_DIR", "relative-claude");
+    expect(envOf(f, "dev-impl").OPENRIG_SEAT_ENV_KEYS?.split(",")).not.toContain("CLAUDE_CONFIG_DIR");
+    expect(envOf(f, "dev-impl")).toMatchObject({ MEMBER_ONLY: "member", CODEX_HOME: "/homes/rig-codex" });
+    expect(envOf(f, "dev-plain")).toMatchObject({ CODEX_HOME: "/homes/rig-codex" });
+    f.db.close();
+  });
+
+  it("a one-off CODEX_HOME or CLAUDE_CONFIG_DIR isn't applied; other one-off values are", async () => {
+    const f = fixture();
+    await launch(f, { env: { CODEX_HOME: "/homes/one-off", CLAUDE_CONFIG_DIR: "/homes/one-off-claude", EXTRA: "1" } });
+    expect(envOf(f, "dev-impl")).toMatchObject({ EXTRA: "1" });
+    expect(envOf(f, "dev-impl")).not.toHaveProperty("CODEX_HOME", "/homes/one-off");
+    expect(envOf(f, "dev-impl")).not.toHaveProperty("CLAUDE_CONFIG_DIR", "/homes/one-off-claude");
+    expect(envOf(f, "dev-impl").OPENRIG_SEAT_ENV_KEYS?.split(",")).not.toContain("CODEX_HOME");
     f.db.close();
   });
 
@@ -182,14 +206,16 @@ describe("env: reaches the seats from a rig spec", () => {
     f.db.close();
   });
 
-  it("a seat that declares nothing is launched exactly as before", async () => {
+  it("a seat that declares nothing is launched with nothing of its own but its skill plugin", async () => {
     const f = fixture();
     const noEnv = f.yaml.replace(/env:\n {2}SHARED: from-rig\n {2}RIG_ONLY: rig\n/, "").replace(/ {8}env:\n {10}SHARED: from-member\n {10}MEMBER_ONLY: member\n/, "");
     expect(noEnv).not.toContain("SHARED");
     const result = await f.inst.instantiate(noEnv, f.rigRoot);
     expect(result.ok, JSON.stringify(result)).toBe(true);
     const env = envOf(f, "dev-impl");
-    expect(env).not.toHaveProperty("OPENRIG_SEAT_ENV_KEYS");
+    // OPR.0.7.0.13: a Claude seat's own skill plugin is the only name it carries; nothing the spec didn't declare.
+    expect(env.OPENRIG_SEAT_ENV_KEYS).toBe("CLAUDE_CODE_PLUGIN_DIRS");
+    expect(env.CLAUDE_CODE_PLUGIN_DIRS).toMatch(/\/state\/seats\/[^/]+\/dev\.impl\/claude-code\/plugin$/);
     expect(env).not.toHaveProperty("SHARED");
     f.db.close();
   });

@@ -25,6 +25,8 @@ Resolve conflicts toward upstream unless the estate change is intentionally kept
 
 cw.4, cw.4.1, cw.4.2, cw.4.3, cw.4.4 and cw.4.5 are based on untagged upstream `main` at `f41740137f3d3ab807f5f24e559b9845632ed908`, not on a release tag.
 
+cw.1-rc.1 (`0.7.2-cw.1-rc.1`) is based on upstream tag `v0.7.2`. It was brought up by merging the tag, not by rebase: the estate carries 141 patches, and a rebase would have rewritten the history of `cerebral` (spec 0001 REQ-0001-07).
+
 ## Estate changes
 
 - **The default bind is loopback only until the fork has auth** (CER-2924). With no `OPENRIG_BIND_HOST`, the daemon binds `127.0.0.1`; upstream also binds the tailscale IP, and upstream's default is unchanged. Tailnet exposure is opt-in: `OPENRIG_BIND_HOST=<address>` binds exactly that address. Following upstream's explicit behaviour, loopback is then not also bound, and a bind that is neither loopback nor tailnet needs `OPENRIG_AUTH_BEARER_TOKEN`.

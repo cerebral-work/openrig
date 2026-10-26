@@ -34,7 +34,7 @@ type LaunchResponse = {
 // OPR.0.4.3.20 FR-7 — a launched-entry status that means NO session is running (the
 // operator must act). These are NOT successful launches — never print "Launched" for
 // them; exit non-zero. Mirrors the daemon's NON_RUNNING_LAUNCH_STATUSES.
-const NON_RUNNING_LAUNCH_STATUSES = new Set(["awaiting-decision", "attention_required", "failed"]);
+const NON_RUNNING_LAUNCH_STATUSES = new Set(["awaiting-decision", "attention_required", "failed", "left_attached"]);
 function launchStatusRunning(status: string): boolean {
   return !NON_RUNNING_LAUNCH_STATUSES.has(status);
 }
@@ -66,7 +66,9 @@ function refuseAmbiguousRig(handle: string, ids: string[], json: boolean | undef
 
 /** Build the launch command, allowing local launches that start seats a longer wait than previews. */
 export function launchCommand(depsOverride?: StatusDeps): Command {
-  const cmd = new Command("launch").description("Launch or relaunch a node in a running rig");
+  const cmd = new Command("launch")
+    .description("Launch a node in a running rig, unless it's already running")
+    .addHelpText("after", "\nA running node is left as it is. For a fresh occupant in a running seat, use\n`rig seat launch <seat> --fresh --stop --reason <why>` (`--plan` previews it).");
   const getDeps = () => depsOverride ?? { lifecycleDeps: realDeps(), clientFactory: (url: string) => new DaemonClient(url) };
 
   async function getClient(deps: StatusDeps): Promise<DaemonClient | null> {
@@ -83,7 +85,7 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
     .option("--snapshot-id <id>", "Use this exact restore-usable snapshot")
     .option("--retry-startup-from <member-file>", "Retry a stopped first start that failed during projection, using its original member fragment")
     .option("--rig-root <path>", "Original absolute source root for --retry-startup-from")
-    .option("--plan", "Show subset selection and non-target effects without mutation")
+    .option("--plan", "Show restore selection and non-target effects without mutation; does not preview first start of a never-started materialized seat")
     .option("--json", "JSON output")
     .option("--host <id>", "Run on a remote host declared in ~/.openrig/hosts.yaml")
     .action(async (rigHandle: string, nodeRef: string | undefined, opts: { json?: boolean; holdReason?: string; seats?: string; host?: string; snapshotId?: string; plan?: boolean; retryStartupFrom?: string; rigRoot?: string }) => {
@@ -139,6 +141,8 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
       // lookup that can't be read keeps today's path: the handle goes to the daemon as an id.
       let rigId = rigHandle;
       let rigLabel = rigHandle;
+      // Set when the handle matched a rig's name: `rig seat launch` resolves `<logicalId>@<rig name>` within that rig.
+      let rigName: string | undefined;
 
       if (opts.host) {
         const { runRemoteHttpOp, lookupRemoteRigId } = await import("../remote-host-ops.js");
@@ -249,7 +253,10 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
         }
         if (resolution.kind === "resolved") {
           rigId = resolution.id;
-          if (resolution.byName) rigLabel = `${rigHandle} (${resolution.id})`;
+          if (resolution.byName) {
+            rigLabel = `${rigHandle} (${resolution.id})`;
+            rigName = rigHandle;
+          }
         }
         return true;
       };
@@ -394,6 +401,7 @@ export function launchCommand(depsOverride?: StatusDeps): Command {
       };
       if (res.data.code === "already_running" || (res.data.alreadyRunning && res.data.alreadyRunning.length > 0)) {
         console.log(`Node ${logicalId} is already running in rig ${rigLabel} (not relaunched)`);
+        console.log(`For a fresh occupant: rig seat launch ${rigName ? `${logicalId}@${rigName}` : logicalId} --fresh --stop --reason "<why>"`);
         printLaunchWarnings();
         return;
       }

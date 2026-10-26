@@ -19,7 +19,7 @@ references: []
 2. **`cerebral`** is the distribution branch and the fork's default branch: an upstream release tag plus estate commits (version pin, tooling, patches).
 3. **Feature branches** are cut from `cerebral` with an estate prefix (`feat/`, `fix/`, `chore/`, `cw/`, `up/`) and merged back by pull request.
 4. **Releases** are tagged `cw-v<version>` on `cerebral`, disjoint from upstream's `v*` tags.
-5. **Upstream sync** rebases `cerebral` onto each new upstream release tag.
+5. **Upstream sync** brings `cerebral` up to each new upstream release tag. A rebase is the default. When the estate patches are too many to rebase without rewriting the history of `cerebral`, the maintainer merges the tag instead and records that in the pull request.
 6. **GitButler** manages the main checkout with `origin/cerebral` as the target; the `gitbutler/workspace` ref is a valid branch.
 7. **Workflow triggers (CER-2908).** No workflow under `.github/workflows/` may declare a `pull_request_target` or `workflow_run` trigger. Such a run executes as `refs/heads/cerebral`, so it would match the `ent-parity` runner group's workflow restriction and could put fork-influenced code on the self-hosted pool.
    - The `workflow-trigger-check` gate parses each workflow's `on` in every form: scalar, list or map. It reads the key `on` both as a string and as YAML 1.1's boolean `true`.
@@ -61,8 +61,8 @@ references: []
 - REQ-0001-04: When a change is started, the author shall cut its feature branch from `cerebral`.
 - REQ-0001-05: When a feature branch is ready, the author shall open a pull request into `cerebral`.
 - REQ-0001-06: When a release is cut, the maintainer shall tag the `cerebral` commit as `cw-v<version>`.
-- REQ-0001-07: When upstream publishes a new release tag, the maintainer shall rebase `cerebral` onto that tag.
-- REQ-0001-08: If a rebase onto an upstream tag conflicts, then the maintainer shall resolve it in favour of upstream unless the estate change is intentionally retained.
+- REQ-0001-07: When upstream publishes a new release tag, the maintainer shall bring `cerebral` up to that tag by rebase, or by merging the tag when a rebase would rewrite the history of `cerebral`. The pull request states which method was used and why.
+- REQ-0001-08: If a rebase or merge of an upstream tag conflicts, then the maintainer shall resolve it in favour of upstream unless the estate change is intentionally retained.
 - REQ-0001-09: Where a change is generally useful, the maintainer shall offer a clean copy to upstream from an `up/<feature>` branch cut from `upstream/main`.
 - REQ-0001-10: The branch-hygiene gate shall reject any current branch that is not `main`, `cerebral`, `gitbutler/workspace`, or a `<type>/<slug>` branch.
 - REQ-0001-11: If a file under `.github/workflows/` declares a `pull_request_target` or `workflow_run` trigger in any `on` form, then the workflow-trigger-check gate shall fail, naming the file and the trigger.

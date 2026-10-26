@@ -20,6 +20,12 @@ if (process.argv.includes("tmux")) {
   const pid = Number(execFileSync("tmux", ["-S", socket, "display-message", "-p", "#{pid}"], { env, encoding: "utf-8" }).trim());
   tmux = { socket, pid };
 }
-console.log(JSON.stringify({ openrigHome: process.env["OPENRIG_HOME"], home: process.env["HOME"], tmpdir: os.tmpdir(), scratch, tmux }));
+console.log(JSON.stringify({
+  openrigHome: process.env["OPENRIG_HOME"], home: process.env["HOME"], tmpdir: os.tmpdir(), scratch,
+  osHome: os.homedir(), codexHome: process.env["CODEX_HOME"], claudeConfigDir: process.env["CLAUDE_CONFIG_DIR"],
+  xdgConfig: process.env["XDG_CONFIG_HOME"],
+  tmux,
+  codexVersion: execFileSync("codex", ["--version"], { encoding: "utf-8", timeout: 5000 }).trim(),
+}));
 // With "wait", stay alive for the test to signal: a vitest worker is ended with SIGTERM while it is running.
 if (process.argv.includes("wait")) setInterval(() => {}, 1000);

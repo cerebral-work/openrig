@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
@@ -9,6 +10,12 @@ import type { ProjectionPlan, ProjectionEntry } from "../src/domain/projection-p
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
 import { claudePostureFlag } from "../src/adapters/yolo-mode.js";
 import { resolveReadinessTimeoutMs } from "../src/domain/readiness-timeout.js";
+import { claudeCommandSessionToken } from "../src/domain/native-process-lineage.js";
+
+const probeEvidence = expect.objectContaining({
+  status: expect.any(String), code: expect.any(String),
+  capture: { lines: expect.any(Number), bytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/), columns: null, rows: null },
+});
 
 function mockTmux(): TmuxAdapter {
   return {
@@ -222,6 +229,64 @@ describe("launchHarness — the resume token is one shell argument", () => {
     const cmd = lastCmd(tmux);
     expect(argvOf(cmd)).toEqual(argvOf(cmd.replace(`'${token}'`, token)));
     expect(argvOf(cmd).slice(-4)).toEqual(["--resume", token, "--name", "seat"]);
+  });
+});
+
+// OPR.0.7.0.9: a seat's own launch additions (from its seat storage) reach every Claude launch builder: fresh, resume
+// and fork, managed and not. Without them the command is byte-identical (the tests above).
+describe("launchHarness — a seat's launch additions", () => {
+  const additions = { agent: "openrig:reviewer", appendSystemPromptFile: "/home/u/Open Rig/state/seats/r/dev.impl/claude-code/additions/system-prompt.md", pluginDirs: [] };
+  const binding = (): NodeBinding => ({ ...makeBinding(), launchAdditions: additions });
+  const lastCmd = (tmux: TmuxAdapter): string => {
+    const calls = (tmux.sendText as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    return (calls[calls.length - 1]?.[1] as string) ?? "";
+  };
+  const argvOf = (cmd: string): string[] =>
+    execFileSync("/bin/sh", ["-c", `claude() { printf '%s\\n' "$@"; }; ${cmd}`], { encoding: "utf8" }).split("\n").slice(0, -1);
+  const expected = ["--agent", "openrig:reviewer", "--append-system-prompt-file", additions.appendSystemPromptFile];
+  const between = (argv: string[], flag: string) => argv.slice(argv.indexOf("--agent"), argv.indexOf(flag));
+
+  it.each([
+    ["fresh", {}, "--session-id"],
+    ["resume", { resumeToken: "tok-1" }, "--resume"],
+    ["fork", { forkSource: { kind: "native_id" as const, value: "parent-1" } }, "--resume"],
+  ])("%s: the agent and the prompt file are passed, each one argument, before the identity", async (_name, opts, identityFlag) => {
+    const tmux = mockTmux();
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+    const result = await adapter.launchHarness(binding(), { name: "seat", ...opts });
+    expect(result.ok).toBe(true);
+    expect(between(argvOf(lastCmd(tmux)), identityFlag)).toEqual(expected);
+  });
+
+  it("managed: the same arguments reach the managed command", async () => {
+    const tmux = { ...mockTmux(), sendShellCommand: vi.fn(async () => ({ ok: true as const })) } as unknown as TmuxAdapter;
+    const seen: string[][] = [];
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {}, sessionIdFactory: () => "fresh-1",
+      claudeManagedLaunch: { prepare: async () => ({ command: (args: readonly string[]) => { seen.push([...args]); return "claude"; }, assertCurrent: () => {}, configDir: "/fixture" }) } as never });
+    const result = await adapter.launchHarness({ ...binding(), permissionMode: "acceptEdits" }, { name: "seat" });
+    expect(result.ok).toBe(true);
+    const args = seen[0]!;
+    expect(args.slice(args.indexOf("--agent"), args.indexOf("--session-id"))).toEqual(expected);
+  });
+});
+
+// OPR.0.7.0.9 (K1): the strict identity reader keeps its earlier behaviour for the flags OpenRig already emits. A saved
+// model `-custom`, a spec effort `-x` or a session name `-dev-impl@demo` still proves the session it launched, as it did
+// before this slice; only `--agent` and `--append-system-prompt-file` use the new value rule.
+describe("launchHarness — existing flags with a dash-led value keep their identity proof", () => {
+  const argvOf = (cmd: string): string[] =>
+    execFileSync("/bin/sh", ["-c", `claude() { printf '%s\\n' "$@"; }; ${cmd}`], { encoding: "utf8" }).split("\n").slice(0, -1);
+  it.each([
+    [{ model: "-custom" }, "seat"],
+    [{ effort: "-x" }, "seat"],
+    [{}, "-dev-impl@demo"],
+  ])("%j, name %s: the launched argv, as ps shows it, still names its session", async (fields, name) => {
+    const tmux = mockTmux();
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {}, sessionIdFactory: () => "11111111-1111-4111-8111-111111111111" });
+    expect((await adapter.launchHarness({ ...makeBinding(), ...fields }, { name })).ok).toBe(true);
+    const calls = (tmux.sendText as unknown as { mock: { calls: unknown[][] } }).mock.calls;
+    const argv = argvOf(calls[calls.length - 1]![1] as string);
+    expect(claudeCommandSessionToken(["claude", ...argv].join(" "))).toBe("11111111-1111-4111-8111-111111111111");
   });
 });
 
@@ -501,6 +566,26 @@ describe("Claude Code runtime adapter", () => {
     expect(fs.readFileSync(nodePath.join(cwd, ".claude", "agents", "reviewer.yaml"), "utf-8")).toBe("name: reviewer");
   });
 
+  it.each(["auto", "denyAll"])("keeps a worktree's %s permission selection when projecting shared settings", async mode => {
+    const source = "/shared/claude-settings.fragment.json";
+    const target = "/project/.claude/settings.local.json";
+    const permissions = { defaultMode: mode, allow: ["Read(.)"], deny: ["Read(/private/**)"] };
+    const files = mockFs({
+      [source]: fs.readFileSync(new URL("../specs/agents/shared/runtime/claude-settings.fragment.json", import.meta.url), "utf8"),
+      [target]: JSON.stringify({ permissions, userSetting: "keep" }),
+    });
+    const adapter = new ClaudeCodeAdapter({ tmux: mockTmux(), fsOps: files });
+    const plan: ProjectionPlan = { runtime: "claude-code", cwd: "/project", entries: [makeEntry({
+      category: "runtime_resource", effectiveId: "claude-default-settings", resourceType: "claude_settings_fragment", absolutePath: source,
+    })], startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [] };
+    await adapter.project(plan, makeBinding());
+    await adapter.project(plan, makeBinding());
+    const result = JSON.parse((files as unknown as { _store: Record<string, string> })._store[target]!);
+    expect(result.permissions).toEqual(permissions);
+    expect(result.userSetting).toBe("keep");
+    expect(result.enabledMcpjsonServers).toEqual(["exa", "context7"]);
+  });
+
   it("applies claude_settings_fragment runtime resources to project-local Claude settings", async () => {
     const fs = mockFs({
       "/agents/base/runtime/claude-settings.json": JSON.stringify({
@@ -642,6 +727,21 @@ describe("Claude Code runtime adapter", () => {
     );
   });
 
+  it("returns diagnostics from the captured login refusal without changing the timeout outcome", async () => {
+    const tmux = mockTmux();
+    const content = "❯ fixture-private-prompt\n● Login expired · Please run /login\n\n❯";
+    vi.mocked(tmux.capturePaneContent).mockResolvedValue(content);
+    vi.mocked(tmux.listPanes).mockResolvedValue([{ id: "%1", index: 0, cwd: "/project", width: 100, height: 30, active: true }]);
+    const adapter = new ClaudeCodeAdapter({ tmux, fsOps: mockFs(), sleep: async () => {} });
+    const result = await adapter.launchHarness(makeBinding(), { name: "dev-impl@test-rig", resumeToken: "abc-123" });
+    expect(result).toEqual({
+      ok: false, error: "Claude resume failed: timed out waiting for Claude to become active",
+      probe: { status: "failed", code: "login_required", loginRefusal: { message: "Login expired · Please run /login", row: "response" },
+        capture: { lines: 4, bytes: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex"), columns: 100, rows: 30 } },
+    });
+    expect(JSON.stringify(result)).not.toContain("fixture-private-prompt");
+  });
+
   it("launchHarness returns retry_fresh when Claude reports no conversation found for the requested resume token", async () => {
     const tmux = mockTmux();
     (tmux.getPaneCommand as ReturnType<typeof vi.fn>).mockResolvedValue("zsh");
@@ -654,6 +754,7 @@ describe("Claude Code runtime adapter", () => {
 
     expect(result).toEqual({
       ok: false,
+      probe: probeEvidence,
       error: "Claude resume failed: no conversation found for the requested session",
       recovery: "retry_fresh",
       missingConversation: true,
@@ -674,6 +775,7 @@ describe("Claude Code runtime adapter", () => {
     expect(capture).toHaveBeenCalledTimes(17);
     expect(result).toEqual({
       ok: false,
+      probe: probeEvidence,
       error: "Claude resume failed: no conversation found for the requested session",
       recovery: "retry_fresh",
       missingConversation: true,
@@ -690,6 +792,7 @@ describe("Claude Code runtime adapter", () => {
 
     expect(result).toEqual({
       ok: false,
+      probe: probeEvidence,
       error: "Claude resume failed: pane returned to shell instead of entering Claude",
       recovery: "retry_fresh",
     });
@@ -735,6 +838,7 @@ describe("Claude Code runtime adapter", () => {
       const { result, reads } = await run({ screen: () => "something Claude draws that no probe knows" });
       expect(result).toEqual({
         ok: false,
+        probe: probeEvidence,
         error: "Claude resume did not finish within 6s; Claude may still be starting, so the launch was kept",
         recovery: "attention_required",
         evidence: "something Claude draws that no probe knows",
@@ -769,6 +873,7 @@ describe("Claude Code runtime adapter", () => {
       const { result } = await run({ screen: (read) => (read < 22 ? "" : "No conversation found with session ID: abc-123") });
       expect(result).toEqual({
         ok: false,
+        probe: probeEvidence,
         error: "Claude resume failed: no conversation found for the requested session",
         recovery: "retry_fresh",
         missingConversation: true,
@@ -788,6 +893,7 @@ describe("Claude Code runtime adapter", () => {
       const { result } = await run({ rows: (read) => (read < 25 ? occupied : [pane]) });
       expect(result).toEqual({
         ok: false,
+        probe: probeEvidence,
         error: "Claude resume failed: pane returned to shell instead of entering Claude",
         recovery: "retry_fresh",
       });
@@ -798,6 +904,7 @@ describe("Claude Code runtime adapter", () => {
       const { result, reads } = await run({ rows: (read) => (read < 19 ? occupied : [pane]) });
       expect(result).toEqual({
         ok: false,
+        probe: probeEvidence,
         error: "Claude resume failed: pane returned to shell instead of entering Claude",
         recovery: "retry_fresh",
       });
@@ -832,9 +939,9 @@ describe("Claude Code runtime adapter", () => {
         expect((await run({ readinessTimeoutMs, rows: () => [pane] })).result).toMatchObject({ ok: false, recovery: "retry_fresh" });
         const other = { ...claude, command: "claude --permission-mode acceptEdits --resume some-other-session --name other" };
         expect((await run({ readinessTimeoutMs, rows: () => [{ ...pane, tpgid: 11 }, launchScript, other] })).result)
-          .toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+          .toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
         expect((await run({ readinessTimeoutMs, rows: () => stuck, screen: () => "● Not logged in · Please run /login" })).result)
-          .toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+          .toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
       });
     });
 
@@ -851,7 +958,7 @@ describe("Claude Code runtime adapter", () => {
     });
 
     describe("a different occupant keeps main's result (timed out, no token): only unknown observations get attention", () => {
-      const timedOut = { ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" };
+      const timedOut = { ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" };
       const codex = { pid: 13, ppid: 11, pgid: 11, tpgid: 11, executableName: "codex", startedAt, command: "codex resume some-codex-session" };
       const otherClaude = { ...claude, command: "claude --permission-mode acceptEdits --resume some-other-session --name other" };
       const booting = [{ ...pane, tpgid: 11 }, launchScript];
@@ -958,7 +1065,7 @@ describe("Claude Code runtime adapter", () => {
     it("does not wait for a Claude that names another conversation: another occupant, timed out as before", async () => {
       const other = { ...claude, command: "claude --permission-mode acceptEdits --resume some-other-session --name other" };
       const { result, reads } = await run({ rows: () => [{ ...pane, tpgid: 11 }, launchScript, other] });
-      expect(result).toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+      expect(result).toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
       expect(reads).toBe(17);
     });
 
@@ -967,7 +1074,7 @@ describe("Claude Code runtime adapter", () => {
       const lookAlike = { ...claude, executableName: "printf" };
       const ready = "Restored conversation\n❯\u00a0\n  ⏵⏵ bypass permissions on (shift+tab to cycle)";
       const { result, reads } = await run({ rows: () => [{ ...pane, tpgid: 11 }, launchScript, lookAlike], screen: () => ready });
-      expect(result).toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+      expect(result).toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
       expect(reads).toBe(17);
     });
 
@@ -979,13 +1086,13 @@ describe("Claude Code runtime adapter", () => {
         rows: (read) => (read < 20 ? [{ ...pane, tpgid: 11 }, launchScript] : [{ ...pane, tpgid: 11 }, launchScript, lookAlike]),
         screen: (read) => (read < 20 ? "" : ready),
       });
-      expect(result).toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+      expect(result).toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
       expect(reads).toBeLessThan(25);
     });
 
     it("does not wait for a Claude that says it needs a login: timed out as before", async () => {
       const { result, reads } = await run({ screen: () => "● Not logged in · Please run /login" });
-      expect(result).toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+      expect(result).toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
       expect(reads).toBe(17);
     });
 
@@ -993,7 +1100,7 @@ describe("Claude Code runtime adapter", () => {
       // A trust prompt that shows up at read 22 ends the wait there; it is not a start in progress.
       const gate = ["Accessing workspace:", "/project", "❯ 1. Yes, I trust this folder", "  2. No, exit"].join("\n");
       const { result, reads } = await run({ screen: (read) => (read < 22 ? "" : gate) });
-      expect(result).toEqual({ ok: false, error: "Claude resume failed: timed out waiting for Claude to become active" });
+      expect(result).toEqual({ ok: false, probe: probeEvidence, error: "Claude resume failed: timed out waiting for Claude to become active" });
       expect(reads).toBeLessThan(26);
     });
 
@@ -1147,6 +1254,30 @@ describe("Claude Code runtime adapter", () => {
     expect(logSpy).toHaveBeenCalledWith(
       expect.stringContaining("skip: effectiveId is rig-role")
     );
+    logSpy.mockRestore();
+  });
+
+  it("projectEntry skips a legacy `role` projection of the seat's own role file, and still merges shared guidance named `role`", async () => {
+    const fs = mockFs({ "/agents/analyst/guidance/role.md": "# You are the analyst", "/rig/guidance/team-role.md": "# Our team's role" });
+    const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    const project = (absolutePath: string, cwd: string) => new ClaudeCodeAdapter({ tmux: mockTmux(), fsOps: fs }).project({
+      runtime: "claude-code", cwd,
+      entries: [makeEntry({ category: "guidance", effectiveId: "role", mergeStrategy: "managed_block", absolutePath, resourcePath: "guidance/role.md" })],
+      startup: { files: [], actions: [] }, conflicts: [], noOps: [], diagnostics: [],
+    }, makeBinding(cwd));
+    const store = (fs as unknown as { _store: Record<string, string> })._store;
+
+    // Saved before the id became rig-role: the analyst's own role must not land in the file every pod-mate reads.
+    const own = await project("/agents/analyst/guidance/role.md", "/project");
+    expect(store["/project/CLAUDE.md"]).toBeUndefined();
+    expect(own.skipped).toContain("role");
+    // A spec saved that way may have had no other route for the role, so the result says what happened.
+    expect(own.warnings).toEqual([expect.stringContaining("role: not merged into /project/CLAUDE.md")]);
+    // Guidance that is genuinely shared and happens to be named role still merges.
+    const shared = await project("/rig/guidance/team-role.md", "/shared");
+    expect(store["/shared/CLAUDE.md"]).toContain("Our team's role");
+    expect(shared.projected).toContain("role");
+    expect(shared.warnings).toBeUndefined();
     logSpy.mockRestore();
   });
 
