@@ -25,7 +25,7 @@ Resolve conflicts toward upstream unless the estate change is intentionally kept
 
 cw.4, cw.4.1, cw.4.2, cw.4.3, cw.4.4 and cw.4.5 are based on untagged upstream `main` at `f41740137f3d3ab807f5f24e559b9845632ed908`, not on a release tag.
 
-cw.1-rc.1 (`0.7.2-cw.1-rc.1`) and cw.1-rc.2 (`0.7.2-cw.1-rc.2`) are based on upstream tag `v0.7.2`. rc.2 adds the rigs-skill version fix (spec 0020). It was brought up by merging the tag, not by rebase: the estate carries 141 patches, and a rebase would have rewritten the history of `cerebral` (spec 0001 REQ-0001-07).
+cw.1-rc.1, rc.2 and rc.3 (`0.7.2-cw.1-rc.N`) are based on upstream tag `v0.7.2`. rc.2 adds the rigs-skill version fix (spec 0020). rc.3 fixes seat launches in allow-list mode on a running tmux server (spec 0013 REQ-0013-22). It was brought up by merging the tag, not by rebase: the estate carries 141 patches, and a rebase would have rewritten the history of `cerebral` (spec 0001 REQ-0001-07).
 
 ## Estate changes
 
