@@ -62,6 +62,15 @@ const REPO_BASE = "https://github.com/mvschwarz/openrig-plugins";
 const PLUGIN_MANIFESTS = [".claude-plugin/plugin.json", ".codex-plugin/plugin.json"] as const;
 const GLOBAL_VENDOR_VERSION = ".openrig-vendor-version";
 
+/** The numeric x.y.z core of a daemon version, for the vendor service's authority comparison. A fork build carries a
+ *  pre-release part (0.7.2-cw.1-rc.1), which the service refuses. Anything that is not x.y.z with an optional
+ *  pre-release part is returned as it came, so the service still refuses it. */
+export function vendorAuthorityVersion(raw: string): string {
+  const value = raw.trim();
+  const core = /^(\d+(?:\.\d+){2})-[0-9A-Za-z][0-9A-Za-z.-]*$/.exec(value);
+  return core ? core[1]! : value;
+}
+
 function parseNumericVersion(raw: string, source: string): number[] {
   const value = raw.trim();
   if (!/^\d+(?:\.\d+){2}$/.test(value)) {
