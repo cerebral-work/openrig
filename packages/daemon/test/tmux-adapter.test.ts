@@ -1292,7 +1292,7 @@ describe("TmuxAdapter", () => {
 
     it("createSession (fresh launch) marks every HERDR_* name removed and keeps OPENRIG_*, TMUX_* and credentials", async () => {
       const exec = execWithGlobal(HERDR_SERVER);
-      expect(await new TmuxAdapter(exec).createSession("dev-impl@rig", "/w", { OPENRIG_NODE_ID: "n" })).toEqual({ ok: true });
+      expect(await adapterFor(exec).createSession("dev-impl@rig", "/w", { OPENRIG_NODE_ID: "n" })).toEqual({ ok: true });
       expect(exec.mock.calls.map((c) => c[0]).slice(2)).toEqual([
         "tmux set-environment -t =dev-impl@rig -r HERDR_SESSION",
         "tmux set-environment -t =dev-impl@rig -r HERDR_SOCKET_PATH",

@@ -10,6 +10,9 @@ import { shellQuote } from "../src/adapters/shell-quote.js";
 // Synthetic values only: the fixture never copies an operator's provider environment.
 const credentials = { CLAUDE_CODE_OAUTH_TOKEN: "SYNTHETIC-OAUTH-ONLY", OPENAI_API_KEY: "SYNTHETIC-API-ONLY", OPENRIG_ACTIVITY_HOOK_TOKEN: "SYNTHETIC-HOOK-ONLY" };
 const exec = promisify(execFile);
+// Option A (spec 0017, SEC-183): these credentials stand for the daemon's own provider auth and activity token, which the launchers
+// mark daemon-origin; the adapter then carries them only in the private source-file config. An unmarked direct call is refused.
+const daemonOriginSecrets = Object.keys(credentials);
 for (const transport of ["argv", "legacy"] as const) {
   for (const scoped of [false, true]) for (const operation of ["create", "respawn"] as const) {
     it(`${transport} ${operation}, scoped=${scoped}: credentials stay off client and reset command lines`, async () => {
@@ -23,7 +26,7 @@ for (const transport of ["argv", "legacy"] as const) {
       const a = new TmuxAdapter(command => respond([command]), files, transport === "argv" ? respond : undefined);
       a.launchEnvironment = () => ({ inheritTmuxEnvironment: !scoped, env: { ...credentials, PATH: "/bin" } });
       const env = { ...credentials, OPENRIG_NODE_ID: "synthetic-node", OPENRIG_DB: "/private/selected.sqlite", TMUX_TMPDIR: "/private/tmux" };
-      const result = operation === "create" ? await a.createSession("synthetic-seat", "/private", env) : await a.respawnPane("%1", "/bin/sh", { env });
+      const result = operation === "create" ? await a.createSession("synthetic-seat", "/private", env, { daemonOriginSecrets }) : await a.respawnPane("%1", "/bin/sh", { env, daemonOriginSecrets });
       expect(result.ok).toBe(true);
       expect(calls.some(arg => Object.values(credentials).some(value => arg.includes(value)))).toBe(false);
       if (scoped) {
@@ -50,8 +53,8 @@ it("a private-file write failure never falls back to credential-bearing argv", a
   const a = new TmuxAdapter(async command => { calls.push(command); return ""; }, {
     writeFile: async () => { throw new Error("synthetic write failure"); }, unlink: async () => {}, tmpName: () => "/tmp/not-created", bufferName: () => "unused",
   });
-  expect((await a.createSession("synthetic", undefined, credentials)).ok).toBe(false);
-  expect((await a.respawnPane("%1", "/bin/sh", { env: credentials })).ok).toBe(false);
+  expect((await a.createSession("synthetic", undefined, credentials, { daemonOriginSecrets })).ok).toBe(false);
+  expect((await a.respawnPane("%1", "/bin/sh", { env: credentials, daemonOriginSecrets })).ok).toBe(false);
   await expect(a.setSessionEnv("synthetic", "OPENAI_API_KEY", credentials.OPENAI_API_KEY)).rejects.toThrow();
   expect(calls.some(arg => Object.values(credentials).some(value => arg.includes(value)))).toBe(false);
 });
@@ -85,7 +88,7 @@ describe.skipIf(process.platform === "win32")("owned tmux credential delivery (n
     try {
       if (mode === "inherited") {
         // Creation must still bootstrap an absent server; source-file alone does not.
-        expect((await a.createSession("bootstrap", home, selected)).ok).toBe(true);
+        expect((await a.createSession("bootstrap", home, selected, { daemonOriginSecrets })).ok).toBe(true);
         expect(await a.getSessionEnv("bootstrap", "OPENRIG_DB")).toBe(selected.OPENRIG_DB);
         await tmux(["kill-server"]);
       }
@@ -93,13 +96,13 @@ describe.skipIf(process.platform === "win32")("owned tmux credential delivery (n
       await tmux(["set-option", "-g", "default-shell", "/bin/bash"]);
       await tmux(["set-option", "-g", "update-environment", ""]);
       await tmux(["set-option", "-g", "default-command", `${command}; exec /bin/sleep 60`]);
-      expect((await a.createSession(session, home, selected)).ok).toBe(true);
+      expect((await a.createSession(session, home, selected, { daemonOriginSecrets })).ok).toBe(true);
       expect(await read()).toEqual(selected); rmSync(output);
       // Only this disposable fixture's pane is stopped, with scrollback/pane retained.
       await tmux(["set-window-option", "-t", target, "remain-on-exit", "on"]);
       await tmux(["respawn-pane", "-k", "-t", target, "/bin/sh", "-c", "exit"]);
       for (let i = 0; i < 100 && await tmux(["display-message", "-p", "-t", target, "#{pane_dead}"]) !== "1"; i++) await new Promise(r => setTimeout(r, 25));
-      expect((await a.respawnPane(target, command, { env: selected, cwd: home })).ok).toBe(true);
+      expect((await a.respawnPane(target, command, { env: selected, cwd: home, daemonOriginSecrets })).ok).toBe(true);
       expect(await read()).toEqual(selected); rmSync(output);
       // Read restored values from a new process, not tmux display formatting.
       for (const [key, value] of Object.entries(selected)) await a.setSessionEnv(session, key, value);

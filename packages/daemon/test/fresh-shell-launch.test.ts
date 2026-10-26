@@ -21,9 +21,12 @@ function fixture(options: { neverReady?: boolean; transportFailure?: boolean; sh
   let probe = "";
   let launchPath = "";
   const calls: string[][] = [];
+  const sourced: string[] = [];
   const launches: string[] = [];
   const exec = vi.fn(async (args: string[]) => {
     calls.push(args);
+    // The session is created through a private source-file config (upstream's launch path), so its text is read here.
+    if (args.includes("source-file")) sourced.push(readFileSync(args.at(-1)!, "utf8"));
     const cmd = args[1];
     if (cmd === "display-message") return args.at(-1) === "#{pane_pid}" ? "900" : "zsh";
     if (cmd === "load-buffer") paste = readFileSync(args.at(-1)!, "utf8");
@@ -53,15 +56,15 @@ function fixture(options: { neverReady?: boolean; transportFailure?: boolean; sh
     listProcesses: () => options.shellBusy ? [] : [shell],
     sleep: async ms => { clock += ms; },
   });
-  return { adapter, calls, launches, get launchPath() { return launchPath; } };
+  return { adapter, calls, sourced, launches, get launchPath() { return launchPath; } };
 }
 
 describe("CER-2889 fresh shell launch", () => {
   it("allocates a sane initial size even when an attached tile is 50 by 2", async () => {
     const f = fixture();
     expect(await f.adapter.createSession("lead@fixture")).toEqual({ ok: true });
-    const create = f.calls.find(args => args[1] === "new-session")!;
-    expect(create.slice(create.indexOf("-x"), create.indexOf("-x") + 4)).toEqual(["-x", "160", "-y", "48"]);
+    const create = f.sourced.find(text => text.startsWith("new-session "))!;
+    expect(create.match(/ -x (\S+) -y (\S+)/)?.slice(1)).toEqual(["160", "48"]);
   });
 
   it("waits for an executed sentinel, not its echo, before pasting the launch", async () => {

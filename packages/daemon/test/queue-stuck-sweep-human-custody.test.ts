@@ -55,7 +55,9 @@ describe("#514 custody findings for a human decision", () => {
 
   function sweepResult() {
     return runStuckSweep({ db, queueRepo: repo, status, resolveOrchestrator: () => null,
-      unclaimedAgeMinutes: 60, isRegisteredHost: () => false, log: (line) => { logs.push(line); } });
+      unclaimedAgeMinutes: 60, isRegisteredHost: () => false, log: (line) => { logs.push(line); },
+      // Fork churn B2 creates dangling-closure findings without a wake by default; these tests pin who the wake goes to.
+      quietKinds: [] });
   }
 
   async function sweep() {

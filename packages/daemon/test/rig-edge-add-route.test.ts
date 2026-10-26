@@ -101,28 +101,28 @@ describe("POST /api/rigs/:rigId/edges", () => {
 
   // Review r1 MUST-FIX: the spec path refuses self-edges and launch-order cycles; restore silently
   // drops the nodes of either. The route refuses both before any write.
-  it("refuses a self-edge before any write (400 self_edge)", async () => {
+  it("refuses a self-edge before any write (400 edge_cycle for a launch kind)", async () => {
     const { rig } = seedFactory();
     const before = counts();
     const res = await post(rig.id, { from: "dev.build", to: "dev.build", kind: "delegates_to" });
     expect(res.status).toBe(400);
-    expect(await res.json()).toMatchObject({ ok: false, code: "self_edge" });
+    expect(await res.json()).toMatchObject({ ok: false, code: "edge_cycle" });
     // Any kind, as the spec validator refuses it regardless of kind.
     expect((await post(rig.id, { from: "dev.build", to: "dev.build", kind: "can_observe" })).status).toBe(400);
     expect(counts()).toEqual(before);
   });
 
-  it("refuses a launch-dependency edge that closes a cycle (400 cycle); a non-launch edge back is fine", async () => {
+  it("refuses a launch-dependency edge that closes a cycle (400 edge_cycle); a non-launch edge back is fine", async () => {
     const { rig } = seedFactory();
     expect((await post(rig.id, { from: "orch.lead", to: "dev.build", kind: "delegates_to" })).status).toBe(201);
     const before = counts();
     const reverse = await post(rig.id, { from: "dev.build", to: "orch.lead", kind: "delegates_to" });
     expect(reverse.status).toBe(400);
-    expect(await reverse.json()).toMatchObject({ ok: false, code: "cycle" });
+    expect(await reverse.json()).toMatchObject({ ok: false, code: "edge_cycle" });
     // spawned_by launches the TARGET first: orch.lead spawned_by dev.build puts dev.build before orch.lead.
     const spawned = await post(rig.id, { from: "orch.lead", to: "dev.build", kind: "spawned_by" });
     expect(spawned.status).toBe(400);
-    expect(await spawned.json()).toMatchObject({ ok: false, code: "cycle" });
+    expect(await spawned.json()).toMatchObject({ ok: false, code: "edge_cycle" });
     expect(counts()).toEqual(before);
     expect((await post(rig.id, { from: "dev.build", to: "orch.lead", kind: "can_observe" })).status).toBe(201);
   });
@@ -234,7 +234,7 @@ describe("DELETE /api/rigs/:rigId/edges (CER-2981)", () => {
 
   it("a delete that changes no row (the edge went between the lookup and the write) is edge_not_found with no event (review r1 INFO)", async () => {
     const { rig } = seed();
-    const removeEdge = vi.spyOn(setup.rigRepo, "removeEdge").mockReturnValue(false);
+    const removeEdge = vi.spyOn(setup.rigRepo, "removeEdgeById").mockReturnValue(false);
     const res = await del(rig.id, EDGE);
     removeEdge.mockRestore();
     expect(res.status).toBe(404);

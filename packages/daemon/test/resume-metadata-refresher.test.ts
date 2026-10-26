@@ -703,6 +703,11 @@ describe("a seat's own runtime home in capture and the fallback probe", () => {
 
   it("the default probe runs claude with the seat's config dir as a leading assignment", async () => {
     const tmux = mockTmux({ getPaneCommand: vi.fn(async () => "zsh") });
+    // Spec 0013: the probe command goes through sendLaunchCommand; in filter mode that types it (sendText, then Enter).
+    tmux.sendLaunchCommand = vi.fn(async (target: string, command: string) => {
+      const sent = await tmux.sendText(target, command);
+      return sent.ok ? tmux.sendKeys(target, ["Enter"]) : sent;
+    });
     const refresher = new ResumeMetadataRefresher({ sessionRegistry: {} as unknown as SessionRegistry, tmuxAdapter: tmux, sleep: async () => {} });
     vi.spyOn(refresher as never, "waitForProbeShellReady" as never).mockResolvedValue(true as never);
     await (refresher as unknown as { defaultProbeClaudeResume: (...a: unknown[]) => Promise<string> })

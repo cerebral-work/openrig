@@ -2,6 +2,7 @@
 // `-e NAME=VALUE` launch value. A failed launch must leave no value in its result, the database, events or
 // logs: only a failure code and the failing step. Sentinels stand in for a secret and an allowed value.
 import { describe, it, expect, vi, afterEach } from "vitest";
+import { readFileSync } from "node:fs";
 import type Database from "better-sqlite3";
 import { createFullTestDb } from "./helpers/test-app.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
@@ -34,7 +35,10 @@ function captureLogs(): string[] {
 
 function adapter(failing: string, allowlist: boolean): TmuxAdapter {
   const tmux = new TmuxAdapter(async (cmd) => {
-    const sub = cmd.split(" ")[1] ?? "";
+    // Environment-bearing commands run from a private source-file config (never the command line): the step that
+    // fails is the one the file holds.
+    const staged = /(?:^| )source-file (\S+)$/.exec(cmd)?.[1];
+    const sub = staged ? readFileSync(staged, "utf8").split(" ")[0]! : cmd.split(" ")[1] ?? "";
     if (sub === failing) throw execError(cmd, sub === "new-session" ? "duplicate session: dev-build@r1" : "server exited unexpectedly");
     if (sub === "new-session") return "%1\n";
     // The server's global environment holds the operator's values; reading it must not leak them either.

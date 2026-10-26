@@ -289,6 +289,18 @@ export function tmuxFailureMessage(err: Error): string {
   return `tmux ${step} failed${names.length ? ` (env names: ${names.join(", ")})` : ""}${SAFE_TMUX_REASON.test(reason) ? `: ${reason}` : ""}`;
 }
 
+/** SEC-178: the source-file transport's failure names only the config file. Re-state it as the step it carried and the
+ *  names (never the values) of its `-e NAME=VALUE` variables, the form tmuxFailureMessage reads, so a failed launch
+ *  reports the same step and names as it did when the values rode the command line. */
+function withLaunchStep(err: unknown, argv: readonly string[]): unknown {
+  if (!(err instanceof Error) || !err.message.startsWith("Command failed:")) return err;
+  const names = argv.flatMap((arg, i) => argv[i - 1] === "-e" ? [arg.split("=", 1)[0]!] : []);
+  const rest = err.message.split("\n").slice(1).join("\n");
+  const e = err as Error & { code?: unknown; stdout?: unknown; stderr?: unknown; execStderr?: unknown };
+  return Object.assign(new Error(`Command failed: tmux ${argv[1] ?? "command"}${names.map((name) => ` -e ${name}=`).join("")}\n${rest}`),
+    { code: e.code, stdout: e.stdout, stderr: e.stderr, execStderr: e.execStderr });
+}
+
 function classifyWriteError(err: unknown): TmuxResult {
   if (err instanceof DeliveryGuardError) return { ok: false, code: err.code, message: err.message };
   if (!(err instanceof Error)) {
@@ -740,7 +752,12 @@ export class TmuxAdapter {
   private async runEnvironmentCommand(argv: string[], legacy?: string, startServer = false): Promise<string> {
     const file = this.fileOps.tmpName();
     await this.fileOps.writeFile(file, (legacy ?? posixJoinArgv(argv)).slice("tmux ".length) + "\n", { mode: 0o600, flag: "wx" });
-    const output = await this.run(["tmux", ...(startServer ? ["start-server", ";"] : []), "source-file", file]);
+    let output: string;
+    try {
+      output = await this.run(["tmux", ...(startServer ? ["start-server", ";"] : []), "source-file", file]);
+    } catch (err) {
+      throw withLaunchStep(err, argv);
+    }
     await this.fileOps.unlink(file).catch(() => {});
     return output;
   }

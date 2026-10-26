@@ -148,6 +148,9 @@ describe("real adapter/transport guard boundaries with no external effects", () 
     const observer = { record: vi.fn() };
     const transport = new SessionTransport({ db: f.db, tmuxAdapter: f.tmux, rigRepo: f.rigRepo, sessionRegistry: f.sessionRegistry,
       sleep: async () => {}, captureObserver: observer });
+    // Spec 0018 fails an override closed on an unreadable pane (permission_check_unavailable); here the pane reads
+    // without a dialog and only the composer is unreadable.
+    vi.spyOn(f.tmux, "capturePaneContent").mockResolvedValue("worker ready\n");
     const capture = vi.spyOn(f.tmux, "captureComposerSnapshot").mockResolvedValue(null);
     const result = await transport.send("worker@test", "message", { dangerouslyInteract: true, reason: "explicit" });
     expect(result).toMatchObject({ ok: false, reason: "override_input_unknown", sent: false,

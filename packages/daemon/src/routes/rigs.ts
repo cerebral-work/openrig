@@ -39,7 +39,7 @@ import type { Pod, ExpansionPodFragment, RestoreOutcome, Snapshot } from "../dom
 import type { RigExpansionService } from "../domain/rig-expansion-service.js";
 import type { PodRigInstantiator } from "../domain/rigspec-instantiator.js";
 import { convergeOp } from "../domain/topology-converge.js";
-import { addRigEdge, removeRigEdge } from "../domain/rig-edge-add.js";
+import { removeRigEdge } from "../domain/rig-edge-add.js";
 import { requireSenderIdentity, resolveRecordedProvenance } from "./require-sender-identity.js";
 import type { EdgeOpOutcome } from "../domain/rig-edge-ops.js";
 import type { RigLifecycleService } from "../domain/rig-lifecycle-service.js";
@@ -832,30 +832,6 @@ rigsRoutes.post("/:rigId/expand", async (c) => {
   return c.json(result, httpStatus);
 });
 
-// POST /api/rigs/:rigId/edges — add one edge between two EXISTING nodes (spec 0008). The cross-pod case
-// expand (new pod only) and add-member (pod-local only) cannot reach. Writes one edge row and nothing
-// else, so the rig ID and every seat's session are kept. Authorized like expand and add-member: the
-// /api/* browserBoundary in server.ts.
-rigsRoutes.post("/:rigId/edges", async (c) => {
-  const rigId = c.req.param("rigId")!;
-  const rigRepo = c.get("rigRepo" as never) as RigRepository;
-  const body: Record<string, unknown> = await c.req.json().catch(() => ({}));
-  const field = (k: string) => (typeof body[k] === "string" && (body[k] as string).trim() ? (body[k] as string).trim() : null);
-  const from = field("from"), to = field("to"), kind = field("kind");
-  if (!from || !to || !kind) {
-    return c.json({ ok: false, code: "validation_failed", error: "from, to and kind are required (logical ids such as orch.lead, dev.build)" }, 400);
-  }
-  const eventBus = c.get("eventBus" as never) as EventBus;
-  const sender = requireSenderIdentity(c);
-  const by = sender.ok ? { session: sender.session, provenance: resolveRecordedProvenance(c, sender) } : null;
-  const result = addRigEdge(rigRepo, eventBus, { rigId, from, to, kind, by });
-  if (!result.ok) {
-    const status = result.code === "rig_not_found" ? 404 : result.code === "rig_archived" ? 409 : 400;
-    return c.json(result, status);
-  }
-  return c.json(result, result.status === "created" ? 201 : 200);
-});
-
 // DELETE /api/rigs/:rigId/edges?from=&to=&kind= — remove one edge (CER-2981, spec 0008), the reverse of the POST above.
 // Authorized the same way (the /api/* browserBoundary). The caller's transport identity is recorded on the
 // rig.edge_removed event as attribution, not authentication. No node, session, binding or pane changes.
@@ -951,14 +927,22 @@ rigsRoutes.post("/:rigId/pods/:podNamespace/members", async (c) => {
   return c.json(operation.state === "fresh" ? { ...outcome, operation: operation.read() } : outcome, 201);
 });
 
-function edgeOpStatus(outcome: EdgeOpOutcome): 200 | 201 | 400 | 404 | 500 {
+function edgeOpStatus(outcome: EdgeOpOutcome): 200 | 201 | 400 | 404 | 409 | 500 {
   if (outcome.ok) return outcome.outcome === "added" ? 201 : 200;
   if (outcome.code === "rig_not_found" || outcome.code === "edge_not_found") return 404;
+  if (outcome.code === "rig_archived") return 409;
   return outcome.code === "unavailable" ? 500 : 400;
 }
 
+// The caller's transport identity, recorded on the edge event as attribution, not authentication (CER-2981, CER-3001).
+function edgeCaller(c: Parameters<typeof requireSenderIdentity>[0]) {
+  const sender = requireSenderIdentity(c);
+  return sender.ok ? { session: sender.session, provenance: resolveRecordedProvenance(c, sender) } : null;
+}
+
 // POST /api/rigs/:rigId/edges — add one typed edge between two seats, by rig-scoped logical ids (same-pod
-// edges included). A repeat returns the existing edge. `plan: true` writes nothing.
+// edges included; spec 0008). A repeat returns the existing edge. `plan: true` writes nothing. A live rig only.
+// Authorized like expand and add-member: the /api/* browserBoundary in server.ts. A real add records rig.edge_added (CER-3001).
 rigsRoutes.post("/:rigId/edges", async (c) => {
   const rigId = c.req.param("rigId")!;
   const raw: unknown = await c.req.json().catch(() => null);
@@ -973,13 +957,19 @@ rigsRoutes.post("/:rigId/edges", async (c) => {
     return c.json({ ok: false, code: "validation_failed", message: "from, to and kind are required strings" }, 400);
   }
   const converged = await convergeOp(
-    { instantiator: c.get("podInstantiator" as never) as PodRigInstantiator, rigRepo: getRepo(c) },
+    { instantiator: c.get("podInstantiator" as never) as PodRigInstantiator, rigRepo: getRepo(c), eventBus: c.get("eventBus" as never) as EventBus },
     rigId,
-    { kind: "add_edge", from, to, edgeKind: kind, plan },
+    { kind: "add_edge", from, to, edgeKind: kind, plan, by: edgeCaller(c) },
     ".",
   );
   if (converged.kind !== "add_edge" || !converged.supported) return c.json({ error: "Unexpected converge result for add_edge" }, 500);
-  return c.json(converged.outcome, edgeOpStatus(converged.outcome));
+  const outcome = converged.outcome;
+  // The fork's earlier answer to this route also named `status` and the stored edge's node ids; keep both.
+  const body = outcome.ok && (outcome.outcome === "added" || outcome.outcome === "present")
+    ? { ...outcome, status: outcome.outcome === "added" ? "created" : "exists",
+        edge: { ...outcome.edge, sourceId: outcome.edge.from.nodeId, targetId: outcome.edge.to.nodeId } }
+    : outcome;
+  return c.json(body, edgeOpStatus(outcome));
 });
 
 // DELETE /api/rigs/:rigId/edges/:edgeId — remove exactly that edge. `?plan=1` writes nothing.
@@ -989,9 +979,9 @@ rigsRoutes.delete("/:rigId/edges/:edgeId", async (c) => {
     return c.json({ ok: false, code: "validation_failed", message: "plan must be 0 or 1" }, 400);
   }
   const converged = await convergeOp(
-    { instantiator: c.get("podInstantiator" as never) as PodRigInstantiator, rigRepo: getRepo(c) },
+    { instantiator: c.get("podInstantiator" as never) as PodRigInstantiator, rigRepo: getRepo(c), eventBus: c.get("eventBus" as never) as EventBus },
     c.req.param("rigId")!,
-    { kind: "remove_edge", edgeId: c.req.param("edgeId")!, plan: plan === "1" },
+    { kind: "remove_edge", edgeId: c.req.param("edgeId")!, plan: plan === "1", by: edgeCaller(c) },
     ".",
   );
   if (converged.kind !== "remove_edge" || !converged.supported) return c.json({ error: "Unexpected converge result for remove_edge" }, 500);

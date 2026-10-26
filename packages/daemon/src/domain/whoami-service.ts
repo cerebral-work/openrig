@@ -190,18 +190,21 @@ export class WhoamiService {
 
       if (sessionRows.length === 0) return null;
 
-      // Spec 0009: only sessions of UNARCHIVED rigs count. A lead swap archives a rig and reuses its
-      // session names, so archived rigs never make a session ambiguous and are never resolved to.
-      const liveRows: SessionRow[] = [];
-      const rigIds = new Set<string>();
+      // Spec 0009 with upstream #1101: a lead swap archives a rig and reuses its session names, so an unarchived rig
+      // wins. An archived rig's session counts only when no unarchived rig has the name, or while that session is
+      // still running (it is then still a live claim on the name, and the session stays ambiguous).
+      const rigOf = new Map<string, string>();
       for (const sess of sessionRows) {
         const node = this.db.prepare("SELECT rig_id FROM nodes WHERE id = ?").get(sess.node_id) as { rig_id: string } | undefined;
-        if (node && this.rigIsLive(node.rig_id)) {
-          liveRows.push(sess);
-          rigIds.add(node.rig_id);
-        }
+        if (node) rigOf.set(sess.id, node.rig_id);
       }
+      let liveRows = sessionRows.filter((s) => rigOf.has(s.id));
       if (liveRows.length === 0) return null;
+      const unarchivedRigIds = new Set([...new Set(rigOf.values())].filter((rigId) => this.rigIsLive(rigId)));
+      if (unarchivedRigIds.size > 0) {
+        liveRows = liveRows.filter((s) => unarchivedRigIds.has(rigOf.get(s.id)!) || s.status === "running");
+      }
+      const rigIds = new Set(liveRows.map((s) => rigOf.get(s.id)!));
 
       if (rigIds.size > 1) {
         const ids = [...rigIds];

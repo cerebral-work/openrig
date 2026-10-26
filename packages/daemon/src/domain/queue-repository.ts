@@ -1285,14 +1285,16 @@ export class QueueRepository {
    *  window, scheduling its flush at the window's end. A failed notice opens no window. */
   private holdForBlockerResumeWindow(entry: import("./outbox-handler.js").OutboxEntry): boolean {
     if (!entry.tags?.includes(AUTO_UNPARK_WAKE_TAG)) return false;
+    // Coalescing is across blockers: notices for the blocker this one names are one resolution, released together.
+    const ownBlocker = entry.tags.find((tag) => tag.startsWith(AUTO_UNPARK_BLOCKER_TAG_PREFIX))?.slice(AUTO_UNPARK_BLOCKER_TAG_PREFIX.length) ?? null;
     let last: string | null | undefined;
     try {
       last = (this.db.prepare(`SELECT MAX(t.ts) AS ts FROM queue_transition_wakes w
           JOIN queue_transitions t ON t.transition_id = w.transition_id
           JOIN queue_items i ON i.qitem_id = w.qitem_id
-         WHERE w.phase = 'fired' AND w.wake_kind = 'blocker' AND i.destination_session = ?
+         WHERE w.phase = 'fired' AND w.wake_kind = 'blocker' AND i.destination_session = ? AND w.wake_ref IS NOT ?
            AND (w.delivery_status IS NULL OR w.delivery_status NOT LIKE 'failed%')`)
-        .get(entry.destinationSession) as { ts: string | null } | undefined)?.ts;
+        .get(entry.destinationSession, ownBlocker) as { ts: string | null } | undefined)?.ts;
     } catch {
       return false; // no wake ledger (older schema): deliver as before
     }
@@ -1437,6 +1439,7 @@ export class QueueRepository {
           ORDER BY outbox_id`).all(first.destinationSession, WAKE_INTENT_PREFIX.length, WAKE_INTENT_PREFIX, AUTO_UNPARK_WAKE_TAG) as Array<{ outbox_id: string }>;
         for (const peer of resumes) {
           const entry = this.outbox!.getById(peer.outbox_id)!;
+          if (outcome(entry) !== firstOutcome) continue; // each member keeps its own admission, as for the correlated group
           if (actionable(entry) && claim(entry)) intents.push(entry);
         }
       }

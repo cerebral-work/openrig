@@ -11,6 +11,7 @@ import { SeatIdentityStore } from "../src/domain/seat-identity-store.js";
 import { rebindAndVerifyPaneIdentity } from "../src/domain/seat-attention-reconciler.js";
 import { RigRepository } from "../src/domain/rig-repository.js";
 import { SessionRegistry } from "../src/domain/session-registry.js";
+import type { NativeProcessLister } from "../src/domain/native-process-lineage.js";
 
 const databases: Database.Database[] = [];
 afterEach(() => { for (const db of databases.splice(0)) db.close(); });
@@ -18,7 +19,7 @@ afterEach(() => { for (const db of databases.splice(0)) db.close(); });
 type Pane = { pid: number | null; command: string | null };
 
 /** One running, tmux-bound seat of `runtime`, its pane reporting `pane`. */
-function seat(runtime: string, pane: Pane) {
+function seat(runtime: string, pane: Pane, processes: ReturnType<NativeProcessLister> = []) {
   const db = createFullTestDb(); databases.push(db);
   const repo = new RigRepository(db), registry = new SessionRegistry(db);
   const rig = repo.createRig("shellid"), name = `${runtime}-seat@shellid`, paneId = "%7";
@@ -32,7 +33,7 @@ function seat(runtime: string, pane: Pane) {
     getPanePid: vi.fn(async () => pane.pid),
     getPaneCommand: vi.fn(async () => pane.command),
   };
-  const listProcesses = vi.fn(async () => []);
+  const listProcesses = vi.fn(async () => processes);
   const poll = async () => {
     await new SeatIdentityReconciler({ db, tmux, listProcesses }).reconcileAll();
     return new SeatIdentityStore(db).getForNode(node.id);
@@ -82,7 +83,9 @@ describe("controls", () => {
 
   it("Claude and Codex at a shell are unchanged: a mismatch", async () => {
     for (const runtime of ["claude-code", "codex"]) {
-      expect((await seat(runtime, { pid: 4242, command: "bash" }).poll())?.verdict).toBe("mismatch");
+      // Spec 0016: a Claude seat is a mismatch on contrary evidence, so the process snapshot shows the shell on the pane.
+      const shell = [{ pid: 4242, ppid: 1, command: "bash", pgid: 4242, tpgid: 4242, executableName: "bash", startedAt: "Sat Jan  1 12:00:00 2000" }];
+      expect((await seat(runtime, { pid: 4242, command: "bash" }, shell).poll())?.verdict).toBe("mismatch");
     }
   });
 

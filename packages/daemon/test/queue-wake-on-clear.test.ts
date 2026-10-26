@@ -77,7 +77,9 @@ it("a claimed row is not woken and a never-observed clear still reaches the exis
   await stillRefused.observe("unknown"); await stillRefused.observe("idle");
   expect(stillRefused.send).toHaveBeenCalledTimes(1);
   const result = await runStuckSweep({ db: stillRefused.db, queueRepo: stillRefused.queue,
-    resolveOrchestrator: () => null, unclaimedAgeMinutes: 60, log: () => {}, isRegisteredHost: () => false });
+    resolveOrchestrator: () => null, unclaimedAgeMinutes: 60, log: () => {}, isRegisteredHost: () => false,
+    // Fork churn A waits out a wake refused at a prompt for a grace; 0 turns it off, as this test is about the sweep reaching the row.
+    undeliveredGraceMinutes: 0 });
   expect(result.findings).toContainEqual(expect.objectContaining({ kind: "undelivered-wake", qitemId: id, action: "created" }));
 });
 

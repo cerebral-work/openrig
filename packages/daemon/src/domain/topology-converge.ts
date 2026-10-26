@@ -2,7 +2,8 @@ import type { PodRigInstantiator, AddMemberOutcome } from "./rigspec-instantiato
 import type { ClaimService, ReconcileSessionOutcome } from "./claim-service.js";
 import type { SeatSkillPaths } from "./seat-skill-storage.js";
 import type { RigRepository } from "./rig-repository.js";
-import { addRigEdge, removeRigEdge, type EdgeOpOutcome } from "./rig-edge-ops.js";
+import { addRigEdge, removeRigEdge, type EdgeCaller, type EdgeOpOutcome } from "./rig-edge-ops.js";
+import type { EventBus } from "./event-bus.js";
 import type { RecordCreated } from "./operation-correlation.js";
 
 /**
@@ -39,8 +40,9 @@ export type TopologyOp =
   // One typed edge on an existing rig, between two seats by logical id. Imperative, like reconcile_session:
   // diffTopology compares members only, so it never emits these; an operator applies exactly the edge it chose,
   // and removes one by the id the add returned.
-  | { kind: "add_edge"; from: string; to: string; edgeKind: string; plan?: boolean }
-  | { kind: "remove_edge"; edgeId: string; plan?: boolean };
+  // `by` is the caller recorded on the edge event; it is used with ConvergeDeps.eventBus.
+  | { kind: "add_edge"; from: string; to: string; edgeKind: string; plan?: boolean; by?: EdgeCaller }
+  | { kind: "remove_edge"; edgeId: string; plan?: boolean; by?: EdgeCaller };
 
 export type TopologyOpKind = TopologyOp["kind"];
 
@@ -122,6 +124,8 @@ export interface ConvergeDeps {
   claimService?: ClaimService;
   /** Required for edge-only ops. */
   rigRepo?: RigRepository;
+  /** With an edge op's `by`: records rig.edge_added / rig.edge_removed in the write's transaction. */
+  eventBus?: EventBus;
 }
 
 /**
@@ -172,9 +176,10 @@ export async function convergeOp(
       if (!deps.rigRepo) {
         return { kind: op.kind, supported: true, outcome: { ok: false, code: "unavailable", message: "Rig repository unavailable; cannot change edges." } };
       }
+      const record = deps.eventBus ? { eventBus: deps.eventBus, by: op.by ?? null } : undefined;
       const outcome = op.kind === "add_edge"
-        ? addRigEdge(deps.rigRepo, { rigId, from: op.from, to: op.to, kind: op.edgeKind, plan: op.plan })
-        : removeRigEdge(deps.rigRepo, { rigId, edgeId: op.edgeId, plan: op.plan });
+        ? addRigEdge(deps.rigRepo, { rigId, from: op.from, to: op.to, kind: op.edgeKind, plan: op.plan, record })
+        : removeRigEdge(deps.rigRepo, { rigId, edgeId: op.edgeId, plan: op.plan, record });
       return { kind: op.kind, supported: true, outcome };
     }
     case "remove_member":

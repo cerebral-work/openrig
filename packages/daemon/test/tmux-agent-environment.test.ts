@@ -156,7 +156,11 @@ describe.skipIf(process.platform === "win32")("#1178 initial-shell environment p
       await tmux(["set-environment", "-g", "OPENRIG_DB", "/stale.sqlite"]);
       await tmux(["set-environment", "-g", "TMUX_TMPDIR", "/stale-tmux"]);
       await tmux(["set-option", "-g", "default-shell", "/bin/bash"]);
-      await tmux(["set-option", "-g", "default-command", `printf '%s|%s\\n' "$OPENRIG_DB" "$TMUX_TMPDIR" > ${shellQuote(observed)}; exec /bin/bash --noprofile --norc`]);
+      // A script file, not an inline `$NAME`: tmux 3.4 shows a `$` in an option value as `\$`, and the scoped launch reads the
+      // default command back through that display, so an inline expansion would be observed as literal text.
+      const script = path.join(home, "observe.sh");
+      writeFileSync(script, `printf '%s|%s\\n' "$OPENRIG_DB" "$TMUX_TMPDIR" > ${shellQuote(observed)}\nexec /bin/bash --noprofile --norc\n`);
+      await tmux(["set-option", "-g", "default-command", `exec /bin/bash ${shellQuote(script)}`]);
       const result = await adapter.createSession("seat", home, selected);
       expect(result.ok).toBe(true);
       expect(result.warnings?.some(w => w.includes("Scoped tmux environment unavailable")) ?? false).toBe(inspectionFails);

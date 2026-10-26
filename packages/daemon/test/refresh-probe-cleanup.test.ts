@@ -98,13 +98,13 @@ describe("#188 snapshot refresh probe cleanup", () => {
   afterEach(() => db.close());
 
   /** A Claude seat with a resume token, as `rig down` hands it to the refresher. */
-  function claudeSeat(pane: string | null) {
-    const rig = rigRepo.createRig("first-project-claude");
+  function claudeSeat(pane: string | null, rigName = "first-project-claude") {
+    const rig = rigRepo.createRig(rigName);
     const node = rigRepo.addNode(rig.id, "dev.check", { role: "checker", runtime: "claude-code" });
-    const session = sessionRegistry.registerSession(node.id, "dev-check@first-project-claude");
+    const session = sessionRegistry.registerSession(node.id, `dev-check@${rigName}`);
     sessionRegistry.updateStatus(session.id, "running");
-    sessionRegistry.updateBinding(node.id, { tmuxSession: "dev-check@first-project-claude", ...(pane ? { tmuxPane: pane } : {}) });
-    return { sessionId: session.id, sessionName: "dev-check@first-project-claude", runtime: "claude-code", resumeType: "claude_id", resumeToken: "tok-1", cwd: "/tmp" };
+    sessionRegistry.updateBinding(node.id, { tmuxSession: `dev-check@${rigName}`, ...(pane ? { tmuxPane: pane } : {}) });
+    return { sessionId: session.id, sessionName: `dev-check@${rigName}`, runtime: "claude-code", resumeType: "claude_id", resumeToken: "tok-1", cwd: "/tmp" };
   }
 
   function refresher(tmux: FakeTmux) {
@@ -122,7 +122,7 @@ describe("#188 snapshot refresh probe cleanup", () => {
       adapter.deliveryGuard = new SeatDeliveryGuard(db, (target) => resolveGuardTarget(db, target));
       adapter.setSeatEnvPolicy(() => ({ mode, base: ["HOME", "PATH"], exceptions: [], kubeconfig: "/k", rigs: [] }), () => false);
       await new ResumeMetadataRefresher({ sessionRegistry, tmuxAdapter: adapter, sleep: async () => {}, homeDir: "/tmp" })
-        .refresh([claudeSeat(mode === "allowlist" ? "%7" : "%8")]);
+        .refresh([claudeSeat(mode === "allowlist" ? "%7" : "%8", `first-project-${mode}`)]);
       const staged = written.filter((content) => content.includes("__openrig_names"));
       if (mode === "allowlist") {
         expect(staged).toHaveLength(1);

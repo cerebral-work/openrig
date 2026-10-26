@@ -2,6 +2,7 @@ import type { RigRepository } from "./rig-repository.js";
 import type { Edge, NodeWithBinding } from "./types.js";
 import { VALID_EDGE_KINDS } from "./rigspec-schema.js";
 import { defaultResolveOrchestrator, resolveRigRepresentative } from "./queue-owner.js";
+import type { EventBus } from "./event-bus.js";
 
 /** Edge-only mutations: no node, binding, session or snapshot writes. */
 const LAUNCH_DEPENDENCY_KINDS = new Set(["delegates_to", "spawned_by"]);
@@ -11,6 +12,15 @@ export interface EdgeInput {
   from: string;
   to: string;
   kind: string;
+}
+
+/** Who made the change, recorded on the edge event as attribution (CER-2981, CER-3001). */
+export type EdgeCaller = { session: string; provenance: string } | null;
+
+/** Present on a real caller's call: the event is persisted in the write's transaction and published once it commits. */
+export interface EdgeRecording {
+  eventBus: EventBus;
+  by: EdgeCaller;
 }
 
 export interface EdgeEnd {
@@ -47,9 +57,13 @@ export interface RoutingChange {
 
 interface EdgeOpError {
   ok: false;
-  code: "rig_not_found" | "node_not_found" | "invalid_kind" | "edge_cycle" | "edge_not_found" | "unavailable";
+  code: "rig_not_found" | "rig_archived" | "node_not_found" | "invalid_kind" | "self_edge" | EdgeCycleCode | "edge_not_found" | "unavailable";
   message: string;
 }
+
+/** The code of a launch-order cycle refusal (upstream's name; the fork used "cycle" before the v0.7.2 merge). */
+export type EdgeCycleCode = "edge_cycle";
+export const EDGE_CYCLE_CODE: EdgeCycleCode = "edge_cycle";
 
 export type EdgeOpOutcome = EdgeOpSuccess | EdgeOpError;
 
@@ -108,11 +122,15 @@ function routingChange(before: RoutingView, after: RoutingView): RoutingChange |
 
 export function addRigEdge(
   repo: RigRepository,
-  input: EdgeInput & { rigId: string; plan?: boolean },
+  input: EdgeInput & { rigId: string; plan?: boolean; record?: EdgeRecording },
 ): EdgeOpOutcome {
+  let published: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
   const transaction = repo.db.transaction((): EdgeOpOutcome => {
     const rig = repo.getRig(input.rigId);
     if (!rig) return { ok: false, code: "rig_not_found", message: `rig ${input.rigId} not found` };
+    if (!repo.findUnarchivedRigsByName(rig.rig.name).some((r) => r.id === input.rigId)) {
+      return { ok: false, code: "rig_archived", message: `rig ${input.rigId} is archived; edges are added to live rigs only` };
+    }
     if (!VALID_EDGE_KINDS.has(input.kind)) {
       return { ok: false, code: "invalid_kind", message: `kind must be one of ${[...VALID_EDGE_KINDS].join(", ")} (got "${input.kind}")` };
     }
@@ -122,19 +140,28 @@ export function addRigEdge(
       const missing = [...new Set([from ? null : input.from, to ? null : input.to].filter((id): id is string => id !== null))];
       return { ok: false, code: "node_not_found", message: `no seat with logical id ${missing.map((id) => `'${id}'`).join(" or ")} in rig ${input.rigId}` };
     }
+    if (from.id === to.id) {
+      // A self-edge of a launch kind is a one-seat launch cycle, so it reports the cycle code; any other kind keeps "self_edge".
+      return { ok: false, code: LAUNCH_DEPENDENCY_KINDS.has(input.kind) ? EDGE_CYCLE_CODE : "self_edge", message: `self-edge not allowed: ${input.from} -> ${input.to}` };
+    }
     const edge: EdgeReceipt = { kind: input.kind, from: end(from), to: end(to) };
     const existing = rig.edges.find((e) => e.sourceId === from.id && e.targetId === to.id && e.kind === input.kind);
     if (existing) return { ok: true, rigId: input.rigId, outcome: "present", edge: { ...edge, id: existing.id } };
     const candidate = { sourceId: from.id, targetId: to.id, kind: input.kind };
     if (LAUNCH_DEPENDENCY_KINDS.has(input.kind) && createsLaunchCycle(rig.edges, candidate)) {
       return {
-        ok: false, code: "edge_cycle",
+        ok: false, code: EDGE_CYCLE_CODE,
         message: `a ${input.kind} edge from ${input.from} to ${input.to} would make launch order cycle, and launch and restore refuse a cycle`,
       };
     }
     if (input.plan) return { ok: true, rigId: input.rigId, outcome: "would_add", edge };
     const before = input.kind === "delegates_to" ? routingView(repo, rig.rig.name, to.id) : undefined;
     const added = repo.addEdge(input.rigId, from.id, to.id, input.kind);
+    // CER-3001: the insert and its rig.edge_added event commit together, or neither does.
+    if (input.record) {
+      published = input.record.eventBus.persistWithinTransaction({ type: "rig.edge_added", rigId: input.rigId, edgeId: added.id,
+        from: input.from, to: input.to, kind: input.kind, by: input.record.by });
+    }
     const routing = before && routingChange(before, routingView(repo, rig.rig.name, to.id));
     return {
       ok: true, rigId: input.rigId, outcome: "added", edge: { ...edge, id: added.id },
@@ -144,13 +171,16 @@ export function addRigEdge(
   });
   // Reserve the writer before reading the graph, so another connection cannot
   // insert the same triple between the existence check and the insert.
-  return input.plan ? transaction() : transaction.immediate();
+  const outcome = input.plan ? transaction() : transaction.immediate();
+  if (published) input.record!.eventBus.notifySubscribers(published);
+  return outcome;
 }
 
 export function removeRigEdge(
   repo: RigRepository,
-  input: { rigId: string; edgeId: string; plan?: boolean },
+  input: { rigId: string; edgeId: string; plan?: boolean; record?: EdgeRecording },
 ): EdgeOpOutcome {
+  let published: ReturnType<EventBus["persistWithinTransaction"]> | undefined;
   const transaction = repo.db.transaction((): EdgeOpOutcome => {
     const rig = repo.getRig(input.rigId);
     if (!rig) return { ok: false, code: "rig_not_found", message: `rig ${input.rigId} not found` };
@@ -160,9 +190,16 @@ export function removeRigEdge(
     const receipt: EdgeReceipt = { id: edge.id, kind: edge.kind, from: end(node(edge.sourceId)), to: end(node(edge.targetId)) };
     if (input.plan) return { ok: true, rigId: input.rigId, outcome: "would_remove", edge: receipt };
     const before = edge.kind === "delegates_to" ? routingView(repo, rig.rig.name, edge.targetId) : undefined;
-    repo.removeEdge(input.rigId, edge.id);
+    // A row another caller deleted since the read is a miss, with no event.
+    if (!repo.removeEdge(input.rigId, edge.id)) return { ok: false, code: "edge_not_found", message: `no edge ${input.edgeId} in rig ${input.rigId}` };
+    if (input.record) {
+      published = input.record.eventBus.persistWithinTransaction({ type: "rig.edge_removed", rigId: input.rigId, edgeId: edge.id,
+        from: receipt.from.logicalId, to: receipt.to.logicalId, kind: edge.kind, by: input.record.by });
+    }
     const routing = before && routingChange(before, routingView(repo, rig.rig.name, edge.targetId));
     return { ok: true, rigId: input.rigId, outcome: "removed", edge: receipt, ...(routing ? { routing } : {}) };
   });
-  return input.plan ? transaction() : transaction.immediate();
+  const outcome = input.plan ? transaction() : transaction.immediate();
+  if (published) input.record!.eventBus.notifySubscribers(published);
+  return outcome;
 }

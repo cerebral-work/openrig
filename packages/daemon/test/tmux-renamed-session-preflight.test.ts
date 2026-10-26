@@ -74,7 +74,7 @@ describe("managed launch refuses a session name tmux would rename", () => {
   it("pod rig up control: a name without dots launches", async () => {
     const result = await setup.podInstantiator.instantiate(RigSpecCodec.serialize(podSpec("demo-v2")), "/tmp");
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(createSession()).toHaveBeenCalledWith("crew-a@demo-v2", expect.anything(), expect.anything());
+    expect(createSession()).toHaveBeenCalledWith("crew-a@demo-v2", expect.anything(), expect.anything(), { daemonOriginSecrets: [] });
   });
 
   it("legacy instantiate: preflight fails before any session is created", async () => {
@@ -113,7 +113,7 @@ describe("managed launch refuses a session name tmux would rename", () => {
   it("legacy instantiate control: a name without dots launches", async () => {
     const result = await setup.rigInstantiator.instantiate(flatSpec("demo-v2") as never);
     expect(result.ok, JSON.stringify(result)).toBe(true);
-    expect(createSession()).toHaveBeenCalledWith("r00-demo-v2-solo", expect.anything(), expect.anything());
+    expect(createSession()).toHaveBeenCalledWith("r00-demo-v2-solo", expect.anything(), expect.anything(), { daemonOriginSecrets: [] });
   });
 
   it("adding a member to an existing dotted rig is refused before its session is created", async () => {

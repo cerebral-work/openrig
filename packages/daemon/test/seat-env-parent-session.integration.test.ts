@@ -71,6 +71,10 @@ describe("seat environment from a daemon started inside Claude Code and Herdr", 
       expect(seatPanes.length).toBeGreaterThan(0);
       const seen = seatPanes.map(([, pid]) => environOf(pid)).filter((env): env is Record<string, string> => env !== null);
       if (process.platform === "linux") expect(seen.length).toBe(seatPanes.length);
+      // A seat's pane on a server the daemon did not start gets the daemon-selected launch environment (#1178), not the
+      // server's: the daemon's own PATH and shell/config roots, and only the provider endpoint names its allow-list
+      // channel selects, which is none here. Everything else in the server's global environment stays with the server.
+      const seats = server === "existing" ? seen.splice(0) : [];
       if (server === "daemon") seen.push(global);
 
       for (const env of seen) {
@@ -82,6 +86,12 @@ describe("seat environment from a daemon started inside Claude Code and Herdr", 
           HOME: scaffold.home,
           OPENRIG_HOME: scaffold.openrigHome,
         });
+      }
+      const { CLAUDE_CONFIG_DIR, CODEX_HOME, ...unselected } = CONFIGURATION;
+      for (const env of seats) {
+        expect(Object.keys(env).filter((k) => k in PARENT_SESSION)).toEqual([]);
+        expect(env).toMatchObject({ CLAUDE_CONFIG_DIR, CODEX_HOME, PATH: scaffold.env.PATH, HOME: scaffold.home, OPENRIG_HOME: scaffold.openrigHome });
+        for (const name of Object.keys(unselected)) expect(env).not.toHaveProperty(name);
       }
 
       if (server === "existing") {

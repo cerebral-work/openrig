@@ -81,16 +81,17 @@ describe("S03 production managed capability selection", () => {
     const f = fixture();
     // Execute the actual initializer, without starting a daemon or reading its env.
     const source = readFileSync(new URL("../src/startup.ts", import.meta.url), "utf8");
-    // Startup builds it with buildLaunchSessionEnv (spec 0013 item 9); this evaluates startup's own argument object.
-    const start = source.indexOf("const launchSessionEnv = buildLaunchSessionEnv(");
+    // Startup spreads buildLaunchSessionEnv (spec 0013 item 9) into the initializer; this evaluates startup's own object.
+    const start = source.indexOf("const launchSessionEnv:");
     expect(start).toBeGreaterThan(-1);
-    const expression = source.slice(source.indexOf("{", start), source.indexOf("\n  });", start) + 4);
-    const sessionEnv = buildLaunchSessionEnv(runInNewContext(`(${expression})`, {
+    const expression = source.slice(source.indexOf("{", start), source.indexOf("\n  };", start) + 4);
+    const sessionEnv = runInNewContext(`(${expression})`, {
+      buildLaunchSessionEnv,
       process: { env: { PATH: f.env.PATH, ...names, UNRELATED_VALUE: "not-forwarded" } },
       OPENRIG_HOME: f.env.OPENRIG_HOME, openRigPort: "1", openRigHost: "127.0.0.1",
       resolvedActivityHookUrl: "http://127.0.0.1:1", resolvedActivityHookToken: "synthetic-only",
       providerAuthEnv: {}, daemonHome: f.env.HOME, codexHome: path.join(f.root, "codex"), seatDbPath: path.join(f.root, "instance.sqlite"),
-    }));
+    });
     for (const key of Object.keys(f.env)) delete f.env[key];
     Object.assign(f.env, sessionEnv);
     writeFileSync(f.executable, `#!${process.execPath}\nif (process.argv.includes('--help')) console.log(${JSON.stringify(help)}); else console.log(JSON.stringify(Object.fromEntries(['USER','LOGNAME','UNRELATED_VALUE'].filter(k => process.env[k] !== undefined).map(k => [k,process.env[k]]))));\n`);

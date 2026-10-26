@@ -649,6 +649,9 @@ describe("deliberate override preserves existing input", () => {
 
   it.each([null, "[Pasted text #4 +18 lines]"])("shows unreadable or collapsed input honestly: %s", async body => {
     const f = fixture(); f.bodies.a = body;
+    // Spec 0018 fails an override closed on an unreadable pane (permission_check_unavailable). This test is about an
+    // unreadable composer, so the pane itself stays readable (no dialog) while the composer cannot be read.
+    if (body === null) vi.mocked(f.tmux.capturePaneContent).mockResolvedValue("worker ready\n");
     const result = await f.send("override", "incoming", override);
     expect(result).toMatchObject({ ok: false, sent: false, existingInput: { classification: body === null ? "unreadable" : "typed_or_pasted", fullContentsVisible: false } });
     expect(f.writes).toEqual([]);
