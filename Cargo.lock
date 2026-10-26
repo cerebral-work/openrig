@@ -528,7 +528,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.7.2-cw.1-rc.2"
+version = "0.7.2-cw.1-rc.3"
 dependencies = [
  "anyhow",
  "blake3",

@@ -1,6 +1,6 @@
-# What changed in OpenRig 0.7.2-cw.1-rc.2
+# What changed in OpenRig 0.7.2-cw.1-rc.3
 
-This note is for an agent on an install that was just upgraded to 0.7.2-cw.1-rc.2. It lists only what behaves differently from
+This note is for an agent on an install that was just upgraded to 0.7.2-cw.1-rc.3. It lists only what behaves differently from
 0.7.1 and what to do about it. For everything OpenRig can do, read the capability map:
 `rig context get onboarding-width/public-what-you-can-do.md`. Each release replaces this file, so
 `rig context get reference/whats-new.md` describes the installed version once the upgraded daemon is running. Without
