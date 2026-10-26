@@ -4,7 +4,7 @@ kind: SoftwareSourceCode
 identity:
   namespace: io.todie.cerebral
   name: openrig
-  version: "0.7.2-cw.1-rc.1"
+  version: "0.7.2-cw.1-rc.2"
   title:
     en: "OpenRig (cerebral-work fork)"
   summary:
