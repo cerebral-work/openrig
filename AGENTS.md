@@ -7,8 +7,9 @@ A Codex or agy seat rooted in this checkout gets `<!-- BEGIN OpenRig MANAGED BLO
 ## Spec first (LeanSpec)
 
 - A feat or fix creates or updates a spec in `specs/` before any code changes.
+- **Wave-0 Spec Batch → Wave-1 Implementation Fan-Out:** When running multi-ticket waves or parallel subagents, land all `NNNN..NNNN+k` specs and their `specs/README.md` rows upfront in a single Wave-0 pull request (`docs(specs): ...`) before dispatching builders. Parallel Wave-1 implementation pull requests must cite their pre-allocated spec (`NNNN-slug` or `REQ-NNNN-nn`) in the PR title or body without modifying `specs/`.
 - The pull request names that spec in its title or body, as a `specs/` path or `NNNN-slug`, or it touches a file under `specs/`.
-- `specs/README.md` gives the spec format and the index. Add every new spec to the index.
+- `specs/README.md` gives the spec format and the index. Add every new spec to the index (`.gitattributes` configures `specs/README.md merge=union` to auto-merge concurrent table appends).
 - Before pushing, run `lsc check specs/` (unsigned-gg/lsc) and `cargo xtask spec-check`, and get 0 errors from both.
 - CI runs the reusable lsc job on every pull request (`.github/workflows/lsc.yml`).
   - The spec-link check applies to pull requests whose title starts `feat` or `fix`.

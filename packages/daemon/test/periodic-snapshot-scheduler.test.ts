@@ -461,12 +461,28 @@ describe("PsProjectionService periodic snapshot status", () => {
 
   it("periodicSnapshotActive=true and interval matches after setPeriodicSnapshotState", async () => {
     const { PsProjectionService } = await import("../src/domain/ps-projection.js");
+    const rigRepo = new RigRepository(db);
+    const sessionReg = new SessionRegistry(db);
     const svc = new PsProjectionService({ db });
     svc.setPeriodicSnapshotState(true, 300);
-    const rig = new RigRepository(db).createRig("active-rig");
+    const rig = rigRepo.createRig("active-rig");
+    const node = rigRepo.addNode(rig.id, "w", { role: "worker" });
+    const session = sessionReg.registerSession(node.id, "w@active-rig");
+    sessionReg.updateStatus(session.id, "running");
     const entries = svc.getEntries();
     const entry = entries.find((e) => e.rigId === rig.id);
     expect(entry!.periodicSnapshotActive).toBe(true);
+    expect(entry!.periodicSnapshotIntervalSeconds).toBe(300);
+  });
+
+  it("periodicSnapshotActive=false for stopped rig even after setPeriodicSnapshotState", async () => {
+    const { PsProjectionService } = await import("../src/domain/ps-projection.js");
+    const svc = new PsProjectionService({ db });
+    svc.setPeriodicSnapshotState(true, 300);
+    const rig = new RigRepository(db).createRig("stopped-rig");
+    const entries = svc.getEntries();
+    const entry = entries.find((e) => e.rigId === rig.id);
+    expect(entry!.periodicSnapshotActive).toBe(false);
     expect(entry!.periodicSnapshotIntervalSeconds).toBe(300);
   });
 

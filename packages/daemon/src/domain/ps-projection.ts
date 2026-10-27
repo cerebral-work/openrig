@@ -308,7 +308,7 @@ export class PsProjectionService {
         latestSnapshot: r.latest_snapshot_at ? formatAge(now - new Date(r.latest_snapshot_at + "Z").getTime()) : null,
         archivedAt: r.archived_at,
         isArchived: r.archived_at !== null,
-        periodicSnapshotActive: this.periodicSnapshotActive,
+        periodicSnapshotActive: this.periodicSnapshotActive && lifecycleState !== "stopped" && effectiveRunningCount > 0,
         periodicSnapshotIntervalSeconds: this.periodicSnapshotIntervalSeconds,
         autoPeriodicSnapshotCount: r.auto_periodic_count,
         attentionCount,
