@@ -1,5 +1,5 @@
 ---
-status: planned
+status: in-progress
 created: 2026-10-18
 priority: medium
 scope: daemon, tmux, seat launch, managed Claude launch, seat env validation
@@ -24,7 +24,12 @@ A rig spec's seat env, a one-off `rig up --env`, and a request's `envOverride` r
 
 This spec doesn't read, store or rotate any credential: values come only from the daemon's environment, as today.
 
-Line numbers below are at cerebral `583fa40e`.
+Line numbers below are at cerebral `583fa40e`; the drift section that follows restates what changed by `3d741a89`.
+
+**Drift at `3d741a89` (the upstream v0.7.2 merge).** Three premises above moved; items 1 to 3 are written against the code as it is now.
+- **tmux `-e` values no longer ride a client's argv.** `createSession` and `respawnPane` write the whole `new-session`/`respawn-pane` command, `-e NAME=VALUE` included, to a private file and run `tmux source-file <file>` (`runEnvironmentCommand`, `tmux.ts:752`). The merge let daemon-origin secret-named values (the activity token, the provider-auth allow-list) through 0013 item 9's guard on that basis ("option A"). That is channel (a): it keeps the value off argv, but it puts the value in the tmux session environment, where REQ-0017-03 forbids it, and the file is written under `os.tmpdir()` and kept when the command fails.
+- **The scoped launch writes every value, secrets included, to a file the pane's own shell sources** (`scopedLaunchCommand`, `tmux.ts:492`), so the pane shell holds the secret, which the Delivery test forbids.
+- **The managed Claude launch no longer expands values onto `env`'s argv.** Its command is itself staged by `sendShellCommand`; it forwards a session variable with the builtin `export NAME="${NAME-}"` and ends `exec /usr/bin/env "$@" <claude> …`, where `"$@"` holds only `-u NAME` removals (`claude-managed-launch.ts:307`, `:358`). So item 2's separate file and `/bin/sh -c` wrapper are not needed: the value exported by the staged script (item 1) is the one the forwarding line keeps.
 
 **Where launches go today.**
 - **Staged launches:** `sendShellCommandUnchecked` (`tmux.ts:952`) writes nearly every launch (Claude, Codex, the managed launch, Pi when long) to a staged script and sources it in the pane, `( . <script> )` (`:977`).
@@ -77,30 +82,26 @@ Line numbers below are at cerebral `583fa40e`.
   - The daemon resolves the directory to an absolute path (item 2) and creates it with mode 0700 if absent.
   - It then checks it with `lstat` before each use: a directory, not a symlink, owned by the daemon's uid, mode exactly 0700.
   - Otherwise it refuses the launch, naming the directory and what failed, and writes nothing.
-- **tmux never carries the value.** `createSession` and `respawnPane` get only the non-secret launch variables. 0013 item 9's guard stays, as a backstop that refuses a secret-named variable reaching `-e`. It does not refuse a secret-named variable that comes from the daemon's own environment (the provider-auth allow-list and the activity token). Those values reach tmux only through the private source-file config that upstream v0.7.2 uses, and never on argv. The guard still refuses seat env, `envOverride` and a seat value that overrides a daemon value.
+- **tmux never carries the value.** `createSession` and `respawnPane` take the daemon-origin secret-named values out of the env they give tmux, before the `-e` list, the private source-file config and the scoped launch file are built, so none of the three holds them. The adapter keeps them in the daemon's memory, keyed by the session (and by the respawned pane's session), for that session's staged launches; they are the daemon's own values, which its environment already holds. 0013 item 9's guard stays, as a backstop: it still refuses seat env, `envOverride` and a seat value that overrides a daemon value (anything that is not daemon-origin) before any tmux command runs.
+- **Fail closed without a directory.** A launch that would carry held values, on an adapter with no secret-bearing directory configured, is refused before anything is written or sent (`secret_channel_unavailable`), naming the variables only.
+- **Not yet carried after a daemon restart.** The held values live in the daemon's memory. A seat launched by an earlier daemon life and relaunched in place (resume, restart-in-place) after a restart gets no held value: it is not leaked, it is missing, and the activity relay falls back to `activity-endpoint.json`. Resolving held values from the seat's runtime on demand is a follow-up.
 - Every launch that should have the value gets it from its own staged script: fresh launch, resume, handover successor, restart-in-place. A pane shell started by `respawn-pane` without a launch has none.
 
-### 2. The managed Claude launch reads the value from a file, not argv
+### 2. The managed Claude launch takes the value from its staged script
 
-- The managed launch never forwards a secret-named variable by expansion (`"NAME=${NAME-}"`).
-- When a managed launch has secret-named values, the daemon writes them as `export` lines to a second file in the same 0700 directory: 0600, created exclusively, with the same export-line rule as item 1.
-- **The file's path is absolute.** POSIX `.` searches `PATH` for a name with no `/`. A configured `OPENRIG_HOME` is used as given (`openrig-compat.ts:8-9`) and may be relative, so the daemon resolves the directory to an absolute path before it writes the file or builds the command.
-- **The command becomes:**
-  `cd <cwd> && /usr/bin/env -i <non-secret assignments and forwards> /bin/sh -c 'exec 3<"$0" || exit 1; rm -f -- "$0"; . /dev/fd/3; s=$?; exec 3<&-; [ "$s" -eq 0 ] && exec "$@"' <file> <claude> <args>`.
-  - **Unlink before read** (review r2's form, the lead's ruling). The shell opens the file on descriptor 3, deletes it, then sources the open descriptor. The content stays readable through the descriptor after the unlink.
-  - **Why:** `/bin/sh` is dash on Linux. In a non-interactive POSIX shell an error in the special builtin `.` exits the shell, so an `rm` after `.` never runs when `.` aborts (r2's probe: a syntax error and a missing file both exit 2 before the next line). Deleting first leaves nothing behind whatever `.` does.
-  - If the open fails, the shell exits non-zero (2 under dash: a redirection error on the special builtin `exec` exits the shell before `|| exit 1` runs; 1 under bash) and Claude doesn't start; there is no file to delete. If `.` fails, the launch exits non-zero without starting Claude.
-- Only the file's path is on any argv: `env`'s, `sh`'s and `rm`'s, and nothing after `exec`. `/dev/fd/3` is read by the `.` builtin, not an exec.
-- `env -i` still clears everything else, so the runtime's environment is the non-secret set plus the file's values (probe: 4 entries). Its `sh` starts with no rc file and no inherited tracing; a traced outer command shows only the path.
-- `exec` keeps Claude as the pane's foreground process. The process tree is the same as today's, plus one short-lived `sh` that replaces itself.
+- The managed launch never puts a secret-named value on any argv. At `3d741a89` it doesn't: it is staged by `sendShellCommand`, forwards a session variable with the builtin `export NAME="${NAME-}"`, and execs `/usr/bin/env` with only `-u NAME` removals (drift, above).
+- So its secret-named values come from item 1: the staged script exports them before the managed command, the forwarding line keeps the exported value, and the `env -u` reduction keeps the name (it is in `selectedKeys`). No second file and no `/bin/sh -c` wrapper.
+- The earlier design (a second 0600 file, opened on descriptor 3 and unlinked before `.` reads it) is kept below as the fallback if the managed launch ever forwards by expansion again.
+  - `cd <cwd> && /usr/bin/env -i <non-secret assignments and forwards> /bin/sh -c 'exec 3<"$0" || exit 1; rm -f -- "$0"; . /dev/fd/3; s=$?; exec 3<&-; [ "$s" -eq 0 ] && exec "$@"' <file> <claude> <args>`, with an absolute file path (POSIX `.` searches `PATH` for a name with no `/`, and a configured `OPENRIG_HOME` may be relative).
+  - Unlink before read, because under dash an error in the special builtin `.` exits the shell before a later `rm` runs.
 
 ### 3. Lifetime and cleanup
 
 - **Owner and mode:** the daemon's user; files 0600, directory 0700, checked as in item 1.
-- **Deleted before it is read:** the staged script's second line deletes it by its absolute path, before any export line runs; the managed file is unlinked by its `sh` before `.` reads the open descriptor. The daemon's cleanup (below, REQ-0017-07) stays the backstop for a launch that never opened its file.
+- **Deleted before it is read:** the staged script's second line deletes it by its absolute path, before any export line runs. The daemon's cleanup (below, REQ-0017-07) stays the backstop for a launch that never opened its file.
 - **The daemon deletes any file still present:**
   - when the launch's send fails;
-  - after the launch's readiness outcome;
+  - before the next launch to the same seat is staged, and when the seat's session is killed (a launch whose shell never ran its script; readiness reports such a launch as `launch_not_executed` while the file is there, so the file is not removed while it can still be consumed);
   - at startup, **every** file in the directory, before the daemon serves. No launch can own a file then, so none is spared. A file left by a crash minutes before a restart is otherwise never deleted: the other two triggers belong to launches the new daemon never sees.
 - **Never logged:** a value is never logged, put in an event, a result or a database row. Failures name the variable only (0013 item 8).
 
@@ -160,7 +161,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-01: The daemon shall not pass a secret-named seat value as an argument to any process, including tmux clients, the tmux server, `env`, `sh` and `rm`.
 - REQ-0017-02: When a launch has secret-named values, the tmux adapter shall stage the launch and write the values as exports in its staged script, after any scrub prologue.
 - REQ-0017-03: The tmux adapter shall not put a secret-named value in a tmux session or global environment.
-- REQ-0017-04: When a managed Claude launch has secret-named values, it shall read them from a file whose absolute path is the only argument naming them.
+- REQ-0017-04: When a managed Claude launch has secret-named values, it shall take them from its staged script's exports, and no argument of any process it starts shall hold them.
 - REQ-0017-05: The daemon shall write a secret-bearing file with mode 0600, created exclusively, in a directory with mode 0700.
 - REQ-0017-06: The launch's shell shall delete a secret-bearing file before it reads any exported value from it.
 - REQ-0017-07: If a secret-bearing file outlives its launch, then the daemon shall delete it.
@@ -172,6 +173,8 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-13: If a rig spec's seat env, a `rig up --env` or an `envOverride` names a secret-named variable that is not on the exemption list, then validation shall refuse it with `seat_env_secret_name`, naming the variable and not its value.
 - REQ-0017-14: The seat env validation, the tmux launch guard, the runtime change refusal and both `seat_env.base` checks shall take the name rule and the exemption list from one daemon export.
 - REQ-0017-15: If a stored seat env names a secret-named variable that is not on the exemption list, then the next launch, restore or `rig up` of that seat shall refuse with `seat_env_secret_name` before launching, and name the spec field to remove.
+- REQ-0017-16: When `createSession` or `respawnPane` is given daemon-origin secret-named values, the tmux adapter shall leave them out of the `-e` list, the private source-file config and the scoped launch file, and hold them for that session's staged launches.
+- REQ-0017-17: If a launch would carry held secret-named values and no secret-bearing directory is configured, then the tmux adapter shall refuse the launch with `secret_channel_unavailable` before it writes or sends anything, naming the variables and not their values.
 
 ## Plan
 
@@ -184,7 +187,8 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 **Red first, on a real tmux 3.4 server, with sentinel values:**
 - **Persistent processes:**
   - Start a server and a seat the way the daemon does, launching with a secret-named value through each path: staged, and managed.
-  - Scan `/proc/*/cmdline` of every process in the seat's tree and of the tmux server for the sentinel: 0.
+  - Scan the argv of every process in the seat's tree and of the tmux server for the sentinel: 0. On Linux read `/proc/*/cmdline`; on macOS, which has no `/proc`, read `ps -ww -o args`. The scanner's own positive control is a long-lived process holding the sentinel in its argv (seen: at least 1), so a scanner that can't see argv fails instead of passing.
+  - Target tmux 3.4 (ceres); the suite runs on whatever tmux the host has and the run reports its version.
   - **Red:** the same scan when the value is passed with `-e`, on a server that command starts: at least 1.
 - **Transient processes**, deterministic because sampling can miss them:
   - Record every argv the tmux adapter executes (the adapter's exec function), the staged script's command line, and the managed command text.
@@ -205,7 +209,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
   - **unlink before read, under dash:** a managed file whose `.` aborts (a syntax error) is gone when the shell exits, and Claude doesn't start. **Red:** the earlier wrapper (`. "$0"; s=$?; rm -f -- "$0"; …`) with the same file leaves it behind. A missing file exits non-zero (2 under dash) without starting Claude; the test asserts non-zero, not an exact code;
   - a directory that is a symlink, has another mode, or is owned by another uid refuses the launch;
   - every leftover file is removed at startup, including one written seconds before.
-- **The managed launch:** the runtime's environment is the non-secret set plus the file's values; Claude is the pane's foreground process (`pane_current_command`); the file path on argv is absolute.
+- **The managed launch:** a staged script with the value exported, followed by the managed command's forwarding line and `env -u` reduction, delivers the value to the exec'd process, and the command text holds no value.
 - **Sources (R2):**
   - `env:` at rig and member level, `rig up --env` and `envOverride` each refuse `GITHUB_TOKEN` with `seat_env_secret_name`, naming it without its value.
   - `TOKENIZERS_PARALLELISM` passes validation, the launch guard, the runtime change and both `seat_env.base` checks.
