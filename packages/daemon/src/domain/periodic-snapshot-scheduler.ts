@@ -20,6 +20,8 @@ export interface PeriodicSnapshotSchedulerDeps {
   /** OPR.0.5.3.10 mini-req 2 — ONE process census per tick for ALL rigs and
    *  seats (absent → the refresher's own lister, the pre-slice behavior). */
   processCensus?: ProcessCensus;
+  /** Where a failed telemetry prune is reported (absent → console.warn). */
+  logger?: (message: string) => void;
 }
 
 // Larger native Node timer delays overflow to 1ms; split long cadences instead.
@@ -134,34 +136,33 @@ export class PeriodicSnapshotScheduler {
   }
 
   private pruneStaleTelemetry(): void {
-    try {
-      // Remove snapshots belonging to deleted rigs (004_snapshots lacks ON DELETE CASCADE).
-      this.deps.db.prepare(
-        `DELETE FROM snapshots WHERE rig_id NOT IN (SELECT id FROM rigs)`
-      ).run();
-      // Retain only the newest 500 view.changed rows so W2b drain semantics stay intact
-      // without unbounded SQLite growth on high-frequency queue mutations.
-      this.deps.db.prepare(
-        `DELETE FROM events
-         WHERE type = 'view.changed'
-           AND seq < COALESCE(
-             (SELECT seq FROM events WHERE type = 'view.changed' ORDER BY seq DESC LIMIT 1 OFFSET 500),
-             0
-           )`
-      ).run();
-      // Bound high-frequency usage_samples and watchdog_history to a 7-day rolling window.
-      // Compare instants, not text: SQLite's own `YYYY-MM-DD HH:MM:SS` form sorts below the ISO
-      // `YYYY-MM-DDTHH:MM:SSZ` form on the same date, so a text compare deletes in-window rows.
-      // julianday() reads both forms and gives NULL (row kept) for a value it cannot parse.
-      this.deps.db.prepare(
-        `DELETE FROM usage_samples WHERE julianday(captured_at) < julianday('now', '-7 days')`
-      ).run();
-      this.deps.db.prepare(
-        `DELETE FROM watchdog_history WHERE julianday(evaluated_at) < julianday('now', '-7 days')`
-      ).run();
-    } catch {
-      // Best-effort telemetry hygiene: never fail the periodic snapshot tick.
-    }
+    // Best-effort telemetry hygiene: a failing prune is logged and never fails the tick, and one
+    // table's failure (say, a table an older DB lacks) never stops the others.
+    const prune = (table: string, sql: string): void => {
+      try {
+        this.deps.db.prepare(sql).run();
+      } catch (err) {
+        (this.deps.logger ?? console.warn)(
+          `[openrig] telemetry prune of ${table} failed: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    };
+    // Remove snapshots belonging to deleted rigs (004_snapshots lacks ON DELETE CASCADE).
+    prune("snapshots", `DELETE FROM snapshots WHERE rig_id NOT IN (SELECT id FROM rigs)`);
+    // Retain only the newest 500 view.changed rows so W2b drain semantics stay intact
+    // without unbounded SQLite growth on high-frequency queue mutations.
+    prune("events", `DELETE FROM events
+       WHERE type = 'view.changed'
+         AND seq < COALESCE(
+           (SELECT seq FROM events WHERE type = 'view.changed' ORDER BY seq DESC LIMIT 1 OFFSET 500),
+           0
+         )`);
+    // Bound high-frequency usage_samples and watchdog_history to a 7-day rolling window.
+    // Compare instants, not text: SQLite's own `YYYY-MM-DD HH:MM:SS` form sorts below the ISO
+    // `YYYY-MM-DDTHH:MM:SSZ` form on the same date, so a text compare deletes in-window rows.
+    // julianday() reads both forms and gives NULL (row kept) for a value it cannot parse.
+    prune("usage_samples", `DELETE FROM usage_samples WHERE julianday(captured_at) < julianday('now', '-7 days')`);
+    prune("watchdog_history", `DELETE FROM watchdog_history WHERE julianday(evaluated_at) < julianday('now', '-7 days')`);
   }
 
   private getRunningNonArchivedRigs(rigId?: string): string[] {

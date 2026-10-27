@@ -1,6 +1,6 @@
 // CER-3089 — telemetry retention run by the periodic snapshot scheduler's tick.
 
-import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
 import { PeriodicSnapshotScheduler } from "../src/domain/periodic-snapshot-scheduler.js";
 import type { SnapshotCapture } from "../src/domain/snapshot-capture.js";
@@ -14,16 +14,19 @@ const isoStamp = (offsetDays: number): string => new Date(Date.now() + offsetDay
 describe("PeriodicSnapshotScheduler telemetry retention", () => {
   let db: Database.Database;
   let scheduler: PeriodicSnapshotScheduler;
+  let logger: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     db = createFullTestDb();
     // The shared fixture omits both telemetry tables (see migrationsForFullTestDbExclusions).
     db.exec(usageSamplesSchema.sql);
     db.exec(watchdogHistorySchema.sql);
+    logger = vi.fn();
     scheduler = new PeriodicSnapshotScheduler({
       db,
       snapshotCapture: {} as SnapshotCapture,
       snapshotRepo: {} as SnapshotRepository,
+      logger,
     });
   });
 
@@ -85,4 +88,14 @@ describe("PeriodicSnapshotScheduler telemetry retention", () => {
     expect(ids).toEqual(["snap-live"]);
   });
 
+  it("a failing prune is logged with the table and the message, and the tick still completes", async () => {
+    db.exec(`DROP TABLE usage_samples`);
+    addJob();
+    addHistory("old", isoStamp(-9));
+    await expect(scheduler.tick()).resolves.toBeUndefined();
+    const lines = logger.mock.calls.map((call) => call.join(" "));
+    expect(lines.some((line) => line.includes("usage_samples") && /no such table/i.test(line))).toBe(true);
+    // The other tables are still pruned: one table's failure does not stop the rest.
+    expect(historyIds()).toEqual([]);
+  });
 });

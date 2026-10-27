@@ -11,7 +11,17 @@ import { SnapshotCapture } from "../src/domain/snapshot-capture.js";
 import { PeriodicSnapshotScheduler } from "../src/domain/periodic-snapshot-scheduler.js";
 import { RigTeardownOrchestrator } from "../src/domain/rig-teardown.js";
 import type { TmuxAdapter } from "../src/adapters/tmux.js";
+import { usageSamplesSchema } from "../src/db/migrations/062_usage_samples.js";
+import { watchdogHistorySchema } from "../src/db/migrations/032_watchdog_history.js";
 import { createFullTestDb } from "./helpers/test-app.js";
+
+// The shared fixture omits the telemetry tables the tick prunes (migrationsForFullTestDbExclusions).
+function createSchedulerTestDb(): Database.Database {
+  const db = createFullTestDb();
+  db.exec(usageSamplesSchema.sql);
+  db.exec(watchdogHistorySchema.sql);
+  return db;
+}
 
 describe("PeriodicSnapshotScheduler", () => {
   let db: Database.Database;
@@ -23,7 +33,7 @@ describe("PeriodicSnapshotScheduler", () => {
   let scheduler: PeriodicSnapshotScheduler;
 
   beforeEach(() => {
-    db = createFullTestDb();
+    db = createSchedulerTestDb();
     rigRepo = new RigRepository(db);
     sessionRegistry = new SessionRegistry(db);
     eventBus = new EventBus(db);
@@ -444,7 +454,7 @@ describe("OPR.0.3.4.9 production wiring: startPeriodicSnapshotScheduler", () => 
 describe("PsProjectionService periodic snapshot status", () => {
   let db: Database.Database;
 
-  beforeEach(() => { db = createFullTestDb(); });
+  beforeEach(() => { db = createSchedulerTestDb(); });
   afterEach(() => { db.close(); });
 
   it("periodicSnapshotActive=false and interval=0 by default (scheduler not started)", async () => {
@@ -564,7 +574,7 @@ describe("findLatestRestoreUsable Option Y", () => {
   }
 
   beforeEach(() => {
-    db = createFullTestDb();
+    db = createSchedulerTestDb();
     snapshotRepo = new SnapshotRepository(db);
   });
 
