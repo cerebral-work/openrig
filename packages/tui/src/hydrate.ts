@@ -585,10 +585,45 @@ export async function hydrateSnapshot(
   // across rigs from the SAME nodes read that feeds topology (no extra fetch):
   // one entry per agent seat WITH a canonical session (infra seats have none).
   const seatActivity: SeatActivitySummary[] = [];
-  for (const rig of summaries ?? []) {
-    const readInventory = wantsConnections ? connectionsRead?.configuration?.inboundDestination?.split("@")[1] === rig.name
-      : !focusedTopology || topologyLeaf?.kind === "host" || currentRigName === rig.name || pendingInventory;
-    const nodes = readInventory ? await safe<NodeInventoryRead[]>(`nodes(${rig.name})`, () => client.rigNodes(rig.id)) : null;
+  const perRigResults = await Promise.all(
+    (summaries ?? []).map(async (rig) => {
+      const readInventory = wantsConnections
+        ? connectionsRead?.configuration?.inboundDestination?.split("@")[1] === rig.name
+        : !focusedTopology || topologyLeaf?.kind === "host" || currentRigName === rig.name || pendingInventory;
+      const skipStoppedPulseInventory =
+        readInventory &&
+        !wantsConnections &&
+        !focusedTopology &&
+        currentRigName !== rig.name &&
+        !pendingInventory &&
+        rig.lifecycleState === "stopped" &&
+        rig.hasLiveAgents === false;
+      const wantGraph = Boolean(wantsGraph && (topologyLeaf?.kind === "host" || recentTransitionsRig === rig.name));
+      const wantRigDownStatus = Boolean(broadReads && rig.lifecycleState && rig.lifecycleState !== "running");
+      const wantSpec = Boolean(wantsSpecs || wantsConnections);
+
+      const [nodes, graph, st, spec] = await Promise.all([
+        !readInventory
+          ? Promise.resolve(null)
+          : skipStoppedPulseInventory
+            ? Promise.resolve([] as NodeInventoryRead[])
+            : safe<NodeInventoryRead[]>(`nodes(${rig.name})`, () => client.rigNodes(rig.id)),
+        wantGraph
+          ? safe<import("./topology/graph-types.js").RigGraph>(`graph(${rig.name})`, () => client.rigGraph(rig.id))
+          : Promise.resolve(null),
+        wantRigDownStatus
+          ? safe<RigStatusRead>(`rig-status(${rig.name})`, () => client.rigStatus(rig.id))
+          : Promise.resolve(null),
+        wantSpec
+          ? safe<RigSpecJsonRead>(`rig-spec(${rig.name})`, () => client.rigSpec(rig.id))
+          : Promise.resolve(null),
+      ]);
+
+      return { rig, readInventory, nodes, graph, wantRigDownStatus, st, spec };
+    }),
+  );
+
+  for (const { rig, readInventory, nodes, graph, wantRigDownStatus, st, spec } of perRigResults) {
     for (const node of nodes ?? []) {
       if (node.nodeKind !== "agent" || !node.canonicalSessionName) continue;
       seatActivity.push({
@@ -601,12 +636,6 @@ export async function hydrateSnapshot(
         lastActivityAt: node.lastActivityAt ?? null,
       });
     }
-    // slice-17: the topology graph view consumes the DECLARED §4.A graph read
-    // (nodes + edges + overlay in one fetch); a failed read leaves the view
-    // honest-empty with a NAMED error, never fabricated boxes.
-    const graph = wantsGraph && (topologyLeaf?.kind === "host" || recentTransitionsRig === rig.name)
-      ? await safe<import("./topology/graph-types.js").RigGraph>(`graph(${rig.name})`, () => client.rigGraph(rig.id))
-      : null;
     const rigRow = {
       id: rig.id,
       name: rig.name,
@@ -615,13 +644,10 @@ export async function hydrateSnapshot(
       ...(graph ? { graph } : {}),
       ...(rig.lifecycleState ? { lifecycleState: rig.lifecycleState } : {}),
       hasLiveAgents: rig.hasLiveAgents ?? null,
-      authoredSpecName: undefined as string | undefined,
+      authoredSpecName: spec?.name as string | undefined,
     };
     rigs.push(rigRow);
-    if (broadReads && rig.lifecycleState && rig.lifecycleState !== "running") {
-      // rig-down leg (§4.A): summary lifecycleState verbatim, enriched by the
-      // rig-status projection where it answers — composed BESIDE the items.
-      const st = await safe<RigStatusRead>(`rig-status(${rig.name})`, () => client.rigStatus(rig.id));
+    if (wantRigDownStatus && rig.lifecycleState) {
       const seatDetail = st && st.seatsTotal != null ? `${st.seatsRunning ?? 0}/${st.seatsTotal} seats running` : undefined;
       rigsDown.push({
         hostId: `rig:${rig.name}`,
@@ -629,10 +655,6 @@ export async function hydrateSnapshot(
         ...(seatDetail ? { error: seatDetail } : {}),
       });
     }
-    const spec = (wantsSpecs || wantsConnections)
-      ? await safe<RigSpecJsonRead>(`rig-spec(${rig.name})`, () => client.rigSpec(rig.id))
-      : null;
-    rigRow.authoredSpecName = spec?.name;
     if (spec?.name) rigConsumers.set(spec.name, [...(rigConsumers.get(spec.name) ?? []), { rig: rig.name, host: instanceHealth?.selfHostId?.trim() || "local", status: rig.lifecycleState ?? "unknown" }]);
     if (spec?.pods) {
       const refs = spec.pods.flatMap((p) =>

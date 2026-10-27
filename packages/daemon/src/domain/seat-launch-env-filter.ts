@@ -67,6 +67,10 @@ export const SEAT_ENV_NEVER: readonly string[] = ["OP_SERVICE_ACCOUNT_TOKEN", "O
  *  mode must not break activity hooks (SEC-178 ruling, 2026-10-18). One name, never a pattern. */
 export const SEAT_ENV_ACTIVITY_TOKEN = "OPENRIG_ACTIVITY_HOOK_TOKEN";
 
+/** Kept in allow-list mode only when the daemon's own seat launch sets it (`seatEnvLaunchVars`; it is then in `explicit`);
+ *  an inherited value is dropped. It is kept even though its name contains `KEY`. It holds comma-separated variable names, never a secret value. */
+export const SEAT_ENV_KEYS_INTERNAL = "OPENRIG_SEAT_ENV_KEYS";
+
 /** KUBECONFIG while the scoped file is absent. Left unset, kubectl would fall back to
  *  ~/.kube/config; this path cannot exist and an unprivileged seat cannot create it, so the seat
  *  inherits no kubeconfig. Kubeconfig files stay readable by the seat's unix user (out of scope). */
@@ -85,6 +89,7 @@ export function seatEnvNever(name: string): boolean {
 export function seatEnvKeeps(name: string, policy: SeatEnvPolicy, explicit: readonly string[] = []): boolean {
   if (seatEnvNever(name)) return false;
   if (name === SEAT_ENV_ACTIVITY_TOKEN || policy.exceptions.includes(name)) return true;
+  if (name === SEAT_ENV_KEYS_INTERNAL && explicit.includes(name)) return true;
   if (isSecretSeatEnvName(name)) return false;
   return explicit.includes(name) || matchesBase(name, policy.base);
 }
@@ -192,7 +197,7 @@ export function seatEnvScrubScript(policy: SeatEnvPolicy, explicit: readonly str
   // Spec 0017 item 4: the exempt names a launch keeps (base-listed or its own), as seatEnvKeeps does, ahead of the
   // secret arm; and the secret arm's words from the one rule, never a copy.
   const exempt = Object.keys(SEAT_ENV_SECRET_NAME_EXEMPTIONS).filter((name) => explicit.includes(name) || matchesBase(name, policy.base));
-  const keep = [SEAT_ENV_ACTIVITY_TOKEN, ...policy.exceptions, ...exempt].filter((name) => word.test(name) && !seatEnvNever(name));
+  const keep = [SEAT_ENV_ACTIVITY_TOKEN, ...(explicit.includes(SEAT_ENV_KEYS_INTERNAL) ? [SEAT_ENV_KEYS_INTERNAL] : []), ...policy.exceptions, ...exempt].filter((name) => word.test(name) && !seatEnvNever(name));
   const secret = SEAT_ENV_SECRET_NAME.source.split("|").map((w) => `*${caseless(w)}*`);
   // `_` and OLDPWD are the shell's own (bash exports `_` to every command it runs); gawk adds AWKPATH and
   // AWKLIBPATH to ENVIRON itself; SHELLOPTS and BASHOPTS are bash's option flags, readonly, so an rc that

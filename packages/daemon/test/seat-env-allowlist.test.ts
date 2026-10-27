@@ -7,6 +7,7 @@ import {
   SEAT_ENV_ACTIVITY_TOKEN,
   SEAT_ENV_DEFAULT_BASE,
   SEAT_ENV_DENY_KUBECONFIG,
+  SEAT_ENV_KEYS_INTERNAL,
   seatEnvAllowlistApplies,
   seatEnvKeeps,
   seatEnvPolicyFromSettings,
@@ -64,9 +65,14 @@ describe("seat env allow-list (spec 0013)", () => {
     expect(seatEnvKeeps("db_password", POLICY, ["db_password"])).toBe(false);
   });
 
-  it("keeps the daemon-minted activity token and named exceptions, never OP_SERVICE_ACCOUNT_TOKEN", () => {
+  it("keeps the daemon-minted activity token, internal seat env keys, and named exceptions, never OP_SERVICE_ACCOUNT_TOKEN", () => {
     expect(SEAT_ENV_ACTIVITY_TOKEN).toBe("OPENRIG_ACTIVITY_HOOK_TOKEN");
+    expect(SEAT_ENV_KEYS_INTERNAL).toBe("OPENRIG_SEAT_ENV_KEYS");
     expect(seatEnvKeeps(SEAT_ENV_ACTIVITY_TOKEN, POLICY)).toBe(true);
+    // The key list is kept only when the launch itself set it (it is in `explicit`), never when merely inherited.
+    expect(seatEnvKeeps(SEAT_ENV_KEYS_INTERNAL, POLICY, [SEAT_ENV_KEYS_INTERNAL])).toBe(true);
+    expect(seatEnvKeeps(SEAT_ENV_KEYS_INTERNAL, POLICY)).toBe(false);
+    expect(seatEnvKeeps(SEAT_ENV_KEYS_INTERNAL, POLICY, ["CLAUDE_CONFIG_DIR"])).toBe(false);
     const excepted = { ...POLICY, exceptions: ["EXAMPLE_API_KEY", "OP_SERVICE_ACCOUNT_TOKEN"] };
     expect(seatEnvKeeps("EXAMPLE_API_KEY", excepted)).toBe(true);
     expect(seatEnvKeeps("OP_SERVICE_ACCOUNT_TOKEN", excepted, ["OP_SERVICE_ACCOUNT_TOKEN"])).toBe(false);
@@ -207,6 +213,14 @@ describe("seat env allow-list (spec 0013)", () => {
     expect(seatEnvAllowlistApplies(pilot, "openrig-probe-123")).toBe(true);
     expect(seatEnvAllowlistApplies({ ...POLICY, mode: "filter" }, "dev@cortex")).toBe(false);
     expect(seatEnvAllowlistApplies(undefined, "dev@cortex")).toBe(false);
+  });
+
+  it("the launch prologue keeps OPENRIG_SEAT_ENV_KEYS only when the launch set it, and drops an inherited one", () => {
+    const env = { ...INHERITED, [SEAT_ENV_KEYS_INTERNAL]: "FOO,BAR" };
+    const survivors = (explicit: string[]) => execFileSync("/bin/sh", ["-c",
+      `${seatEnvScrubScript(POLICY, explicit, "/deny/kubeconfig")}\nenv | sed -n 's/^\\([A-Za-z_][A-Za-z0-9_]*\\)=.*/\\1/p'`], { env, encoding: "utf8" }).split("\n");
+    expect(survivors([SEAT_ENV_KEYS_INTERNAL])).toContain(SEAT_ENV_KEYS_INTERNAL);
+    expect(survivors([])).not.toContain(SEAT_ENV_KEYS_INTERNAL);
   });
 
   it("the launch prologue, run by a real sh, leaves only allowed names and the explicit KUBECONFIG", () => {
