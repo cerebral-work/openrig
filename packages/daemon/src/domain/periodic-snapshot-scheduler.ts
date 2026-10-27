@@ -150,11 +150,14 @@ export class PeriodicSnapshotScheduler {
            )`
       ).run();
       // Bound high-frequency usage_samples and watchdog_history to a 7-day rolling window.
+      // Compare instants, not text: SQLite's own `YYYY-MM-DD HH:MM:SS` form sorts below the ISO
+      // `YYYY-MM-DDTHH:MM:SSZ` form on the same date, so a text compare deletes in-window rows.
+      // julianday() reads both forms and gives NULL (row kept) for a value it cannot parse.
       this.deps.db.prepare(
-        `DELETE FROM usage_samples WHERE captured_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')`
+        `DELETE FROM usage_samples WHERE julianday(captured_at) < julianday('now', '-7 days')`
       ).run();
       this.deps.db.prepare(
-        `DELETE FROM watchdog_history WHERE evaluated_at < strftime('%Y-%m-%dT%H:%M:%fZ', 'now', '-7 days')`
+        `DELETE FROM watchdog_history WHERE julianday(evaluated_at) < julianday('now', '-7 days')`
       ).run();
     } catch {
       // Best-effort telemetry hygiene: never fail the periodic snapshot tick.
