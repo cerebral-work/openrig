@@ -2656,6 +2656,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     // OPR.0.4.3.20 FR-4 — refresh live tokens before each periodic snapshot serializes.
     sessionRegistry, resumeMetadataRefresher,
     processCensus: snapshotProcessCensus,
+    // CER-3089 — view.changed rows above the bus's drain watermark are undelivered: never pruned.
+    notifyWatermark: () => eventBus.getNotifyDrainStatus().watermark,
   });
   deps.periodicSnapshotScheduler = periodicSnapshotScheduler;
 
