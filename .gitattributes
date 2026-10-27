@@ -1,0 +1,2 @@
+# Auto-merge concurrent spec catalog appends across parallel branches
+specs/README.md merge=union

@@ -27,6 +27,7 @@ Lightweight specifications following the [LeanSpec methodology](https://github.c
 | [0018](0018-permission-before-selection.md) | Permission prompts are classified before selection prompts; an interact override never answers one | in-progress | daemon, transport, rig send | SEC-189 |
 | [0019](0019-event-loop-age-monotonic.md) | Event-loop health measures last-tick age on the monotonic clock; a wall-clock step is not a stall | in-progress | daemon, event-loop health, daemon status guard | CER-3096 |
 | [0020](0020-vendor-version-prerelease.md) | The `rigs` skill installs under the daemon's numeric x.y.z; a fork pre-release part no longer blocks it | in-progress | daemon, plugin vendor service, global rigs skill |
+| [0021](0021-aggregate-inventory-and-stopped-rig-quiescence.md) | Aggregate `/inventory` route and stopped-rig snapshot quiescence | in-progress | daemon, ps-projection, snapshot-scheduler | CER-3089 |
 
 ## Requirements Syntax (EARS)
 

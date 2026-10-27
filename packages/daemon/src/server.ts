@@ -110,7 +110,7 @@ import { missionsRoutes } from "./routes/missions.js";
 import { rigCmuxRoutes } from "./routes/rig-cmux.js";
 import { terminalRoutes, rigTerminalRoutes } from "./routes/terminal.js";
 import { CmuxLayoutService } from "./domain/cmux-layout-service.js";
-import { getNodeInventory } from "./domain/node-inventory.js";
+import { getNodeInventory, getNodeInventoryForAllRigs } from "./domain/node-inventory.js";
 import { filesRoutes } from "./routes/files.js";
 import { progressRoutes } from "./routes/progress.js";
 import { scopeAuditRoutes } from "./routes/scope-audit.js";
@@ -738,6 +738,18 @@ export function createApp(deps: AppDeps): Hono {
   // Slice 24 — per-rig CMUX workspace launcher.
   app.route("/api/rigs/:rigId/cmux", rigCmuxRoutes);
   app.route("/api/rigs/:rigId/nodes", nodesRoutes);
+  // Fast aggregate node inventory across all rigs (replaces multi-second `rig ps --nodes` CLI for cortex-edge discovery)
+  const handleInventory = (c: import("hono").Context) => {
+    const inventoryByRig = getNodeInventoryForAllRigs(deps.rigRepo.db);
+    const hostSelfId = getSelfHostId();
+    const nodes = Array.from(inventoryByRig.values())
+      .flat()
+      .map((n) => ({ ...n, hostSelfId }));
+    return c.json(nodes);
+  };
+  app.get("/inventory", handleInventory);
+  app.get("/api/inventory", handleInventory);
+  app.get("/api/nodes", handleInventory);
   app.route("/api/sessions", sessionAdminRoutes);
   app.route("/api/adapters", adaptersRoutes);
   app.route("/api/events", eventsRoute);
