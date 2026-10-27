@@ -125,6 +125,8 @@ async function driveEveryMethod(): Promise<RunCall[]> {
   await a.killSession(SESSION);
   await a.respawnPane("%1", "codex resume 'tok en'", { cwd: "/w x", env: { A: "b c", Q: "it's" } });
   await a.respawnPane("%1");
+  // Spec 0017: a daemon-origin secret is held, not sent; the respawn reads the pane's session to key it.
+  await a.respawnPane("%1", "/bin/sh", { env: { OPENRIG_ACTIVITY_HOOK_TOKEN: "sentinel" }, daemonOriginSecrets: ["OPENRIG_ACTIVITY_HOOK_TOKEN"] });
   await a.getPaneLocalOption("%1", "remain-on-exit");
   await a.restorePaneOption("%1", "remain-on-exit", "on");
   const fresh = recordingAdapter(calls, { handshake: true });

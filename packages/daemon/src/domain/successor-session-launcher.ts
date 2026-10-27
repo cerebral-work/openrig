@@ -227,7 +227,7 @@ export class SuccessorSessionLauncher {
         step: "create_successor",
         replacementStarted: false,
         message: `the successor env holds secret-named ${secretNamed.join(", ")}, and a secret value is never put on a tmux argv; `
-          + "the retiree is still running. Remove it from the seat env or the provider-auth allow-list (a channel that carries it without argv is a follow-up).",
+          + "the retiree is still running. Remove it from the seat env; give the seat a credential through the provider-auth allow-list, which the daemon carries in the launch's staged script.",
       };
     }
 

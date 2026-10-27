@@ -338,7 +338,8 @@ export class NodeLauncher {
    *  scrollback), then a shell starts in it with this launch's environment, for the runtime to launch into. Nothing is
    *  touched when the pane isn't in the session. */
   /** Secret-named launch vars that carry the daemon's own value (allowlisted provider auth, activity token): the tmux
-   *  adapter delivers those through its private config; a seat env secret is still refused. */
+   *  adapter holds those for the session's staged launches and never gives them to tmux (spec 0017 item 1); a seat env
+   *  secret is still refused. */
   private daemonOriginSecrets(env: Record<string, string>, runtime: string | null | undefined): string[] {
     return daemonOriginSecretNames(env, this.sessionEnv, runtime ? this.runtimeSessionEnv[runtime] : undefined);
   }
