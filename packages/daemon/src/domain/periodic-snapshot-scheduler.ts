@@ -22,7 +22,13 @@ export interface PeriodicSnapshotSchedulerDeps {
   processCensus?: ProcessCensus;
   /** Where a failed telemetry prune is reported (absent → console.warn). */
   logger?: (message: string) => void;
+  /** The event bus's drain watermark: the highest seq delivered to subscribers. Rows above it are
+   *  undelivered and never pruned. Absent → view.changed rows are not pruned. */
+  notifyWatermark?: () => number;
 }
+
+/** view.changed rows kept by the telemetry prune. */
+const VIEW_CHANGED_KEEP = 500;
 
 // Larger native Node timer delays overflow to 1ms; split long cadences instead.
 const MAX_TIMER_DELAY_MS = 2 ** 31 - 1;
@@ -138,9 +144,9 @@ export class PeriodicSnapshotScheduler {
   private pruneStaleTelemetry(): void {
     // Best-effort telemetry hygiene: a failing prune is logged and never fails the tick, and one
     // table's failure (say, a table an older DB lacks) never stops the others.
-    const prune = (table: string, sql: string): void => {
+    const prune = (table: string, sql: string, ...params: number[]): void => {
       try {
-        this.deps.db.prepare(sql).run();
+        this.deps.db.prepare(sql).run(...params);
       } catch (err) {
         (this.deps.logger ?? console.warn)(
           `[openrig] telemetry prune of ${table} failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -149,14 +155,18 @@ export class PeriodicSnapshotScheduler {
     };
     // Remove snapshots belonging to deleted rigs (004_snapshots lacks ON DELETE CASCADE).
     prune("snapshots", `DELETE FROM snapshots WHERE rig_id NOT IN (SELECT id FROM rigs)`);
-    // Retain only the newest 500 view.changed rows so W2b drain semantics stay intact
-    // without unbounded SQLite growth on high-frequency queue mutations.
-    prune("events", `DELETE FROM events
-       WHERE type = 'view.changed'
-         AND seq < COALESCE(
-           (SELECT seq FROM events WHERE type = 'view.changed' ORDER BY seq DESC LIMIT 1 OFFSET 500),
-           0
-         )`);
+    // Retain the newest 500 view.changed rows (seq <= the 501st newest goes), and never a row the
+    // event bus has not delivered: only seq <= the drain watermark is eligible, so a burst past the
+    // cap cannot lose undelivered rows. Without a watermark nothing can be proven delivered: skip.
+    if (this.deps.notifyWatermark) {
+      prune("events", `DELETE FROM events
+         WHERE type = 'view.changed'
+           AND seq <= ?
+           AND seq <= COALESCE(
+             (SELECT seq FROM events WHERE type = 'view.changed' ORDER BY seq DESC LIMIT 1 OFFSET ?),
+             0
+           )`, this.deps.notifyWatermark(), VIEW_CHANGED_KEEP);
+    }
     // Bound high-frequency usage_samples and watchdog_history to a 7-day rolling window.
     // Compare instants, not text: SQLite's own `YYYY-MM-DD HH:MM:SS` form sorts below the ISO
     // `YYYY-MM-DDTHH:MM:SSZ` form on the same date, so a text compare deletes in-window rows.

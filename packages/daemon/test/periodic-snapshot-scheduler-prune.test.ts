@@ -15,6 +15,7 @@ describe("PeriodicSnapshotScheduler telemetry retention", () => {
   let db: Database.Database;
   let scheduler: PeriodicSnapshotScheduler;
   let logger: ReturnType<typeof vi.fn>;
+  let watermark: number;
 
   beforeEach(() => {
     db = createFullTestDb();
@@ -22,11 +23,13 @@ describe("PeriodicSnapshotScheduler telemetry retention", () => {
     db.exec(usageSamplesSchema.sql);
     db.exec(watchdogHistorySchema.sql);
     logger = vi.fn();
+    watermark = Number.MAX_SAFE_INTEGER;
     scheduler = new PeriodicSnapshotScheduler({
       db,
       snapshotCapture: {} as SnapshotCapture,
       snapshotRepo: {} as SnapshotRepository,
       logger,
+      notifyWatermark: () => watermark,
     });
   });
 
@@ -49,6 +52,12 @@ describe("PeriodicSnapshotScheduler telemetry retention", () => {
   const addHistory = (id: string, evaluatedAt: string) =>
     db.prepare(`INSERT INTO watchdog_history (history_id, job_id, evaluated_at, outcome) VALUES (?, 'job-1', ?, 'skip')`).run(id, evaluatedAt);
   const historyIds = () => (db.prepare(`SELECT history_id FROM watchdog_history ORDER BY history_id`).all() as { history_id: string }[]).map((r) => r.history_id);
+
+  const addViewChanged = (count: number) => {
+    const insert = db.prepare(`INSERT INTO events (type, payload) VALUES ('view.changed', '{"type":"view.changed"}')`);
+    for (let i = 0; i < count; i++) insert.run();
+  };
+  const viewChangedSeqs = () => (db.prepare(`SELECT seq FROM events WHERE type = 'view.changed' ORDER BY seq`).all() as { seq: number }[]).map((r) => r.seq);
 
   it("usage_samples: a SQLite-form captured_at is aged by instant, not by text", async () => {
     addUsage(1, sqliteStamp("-8 days"));
@@ -86,6 +95,44 @@ describe("PeriodicSnapshotScheduler telemetry retention", () => {
     await scheduler.tick();
     const ids = (db.prepare(`SELECT id FROM snapshots ORDER BY id`).all() as { id: string }[]).map((r) => r.id);
     expect(ids).toEqual(["snap-live"]);
+  });
+
+  it("view.changed: keeps exactly the newest 500 delivered rows (boundary at 500 and 501)", async () => {
+    addViewChanged(500);
+    await scheduler.tick();
+    expect(viewChangedSeqs()).toHaveLength(500);
+    addViewChanged(1);
+    await scheduler.tick();
+    const seqs = viewChangedSeqs();
+    expect(seqs).toHaveLength(500);
+    expect(seqs[0]).toBe(2);
+    expect(seqs[seqs.length - 1]).toBe(501);
+  });
+
+  it("view.changed: rows above the drain watermark survive a burst past the cap", async () => {
+    addViewChanged(700);
+    watermark = 100; // 600 rows (seq 101..700) are not delivered yet
+    await scheduler.tick();
+    const seqs = viewChangedSeqs();
+    // Nothing at or above the lowest undelivered seq (101) is deleted, and nothing delivered is over the cap.
+    expect(seqs).toHaveLength(600);
+    expect(seqs[0]).toBe(101);
+    expect(seqs[seqs.length - 1]).toBe(700);
+  });
+
+  it("view.changed: without a delivery watermark nothing is pruned", async () => {
+    const bare = new PeriodicSnapshotScheduler({ db, snapshotCapture: {} as SnapshotCapture, snapshotRepo: {} as SnapshotRepository, logger });
+    addViewChanged(600);
+    await bare.tick();
+    expect(viewChangedSeqs()).toHaveLength(600);
+  });
+
+  it("view.changed pruning leaves other event types alone", async () => {
+    db.prepare(`INSERT INTO events (type, payload) VALUES ('rig.created', '{"type":"rig.created"}')`).run();
+    addViewChanged(600);
+    await scheduler.tick();
+    const other = db.prepare(`SELECT COUNT(*) AS n FROM events WHERE type = 'rig.created'`).get() as { n: number };
+    expect(other.n).toBe(1);
   });
 
   it("a failing prune is logged with the table and the message, and the tick still completes", async () => {
