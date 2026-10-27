@@ -511,8 +511,9 @@ export class TmuxAdapter {
       const baseline = { ...Object.fromEntries(updated.map(key => [key, process.env[key]])), ...policy.env };
       removeParentSessionEnv(baseline);
       // Spec 0017 (REQ-0017-16): the pane shell this file starts never holds a secret-named daemon value (the activity
-      // token, provider auth); those reach the runtime only through its staged script. A seat's own exempt name stays.
-      for (const key of Object.keys(baseline)) if (isSecretSeatEnvName(key) && !(key in seatEnv)) delete baseline[key];
+      // token, provider auth); those reach the runtime only through its staged script. A seat's own exempt name stays, and
+      // so does a name the operator's update-environment copies from the daemon's process, as before.
+      for (const key of Object.keys(policy.env)) if (isSecretSeatEnvName(key) && !(key in seatEnv) && !updated.includes(key)) delete baseline[key];
       // A seat's own value (its env:, a one-off name, or a name in update-environment) wins over the runtime directory.
       const selected: Record<string, string | undefined> = { ...baseline, ...seatEnv };
       addSeatRuntimeDir(selected, policy.runtimeDir);

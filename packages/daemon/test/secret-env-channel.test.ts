@@ -83,6 +83,26 @@ describe.skipIf(process.platform === "win32")("secret env channel, recorded exec
     });
   }
 
+  it("REQ-0017-16: the scoped launch keeps a name tmux's update-environment copies; only daemon-env secrets are left out", async () => {
+    const f = fakeAdapter(home, { scoped: true });
+    const respond = (f.adapter as unknown as { argvExec: (args: string[]) => Promise<string> }).argvExec;
+    (f.adapter as unknown as { argvExec: (args: string[]) => Promise<string> }).argvExec = async (args) =>
+      args.includes("update-environment") ? "SSH_AUTH_SOCK GH_TOKEN\n" : respond(args);
+    const saved = { sock: process.env.SSH_AUTH_SOCK, gh: process.env.GH_TOKEN };
+    process.env.SSH_AUTH_SOCK = "/tmp/agent.sentinel.sock";
+    process.env.GH_TOKEN = "operator-copied-sentinel";
+    try {
+      expect((await f.adapter.createSession("seat@rig", "/w", launchEnv, { daemonOriginSecrets: [NAME] })).ok).toBe(true);
+    } finally {
+      for (const [k, v] of [["SSH_AUTH_SOCK", saved.sock], ["GH_TOKEN", saved.gh]] as const) if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    const scopedFile = [...f.writes.values()].find((c) => c.includes("exec \"$@\""))!;
+    expect(scopedFile).toContain("export SSH_AUTH_SOCK='/tmp/agent.sentinel.sock'");
+    // An update-environment name is the operator's tmux setting, as before this change; the daemon's own secret is not.
+    expect(scopedFile).toContain("export GH_TOKEN=");
+    expect(scopedFile.includes(SENTINEL)).toBe(false);
+  });
+
   it("REQ-0017-02/09/10/05: the next staged launch carries the value as an export, behind the tracing guard, in the 0700 directory", async () => {
     const f = fakeAdapter(home);
     expect((await f.adapter.createSession("seat@rig", "/w", launchEnv, { daemonOriginSecrets: [NAME] })).ok).toBe(true);
