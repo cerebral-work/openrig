@@ -294,7 +294,9 @@ describe.skipIf(process.platform === "win32")("secret env channel on a real tmux
   afterEach(async () => {
     control?.kill("SIGKILL"); control = undefined;
     for (const socket of sockets.splice(0)) await exec("tmux", ["-S", socket, "kill-server"], { env: childEnv() }).catch(() => {});
-    rmSync(home, { recursive: true, force: true });
+    // The server's panes exit after kill-server returns and can still write into HOME (a shell's history), so a
+    // single pass can race them to ENOTEMPTY: retry.
+    rmSync(home, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 });
   });
 
   it("the argv scanner sees a long-lived sentinel argv (positive control) and a server started with -e (red)", async () => {
