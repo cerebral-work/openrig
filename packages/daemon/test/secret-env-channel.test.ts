@@ -197,8 +197,11 @@ describe.skipIf(process.platform === "win32")("secret env channel, recorded exec
     expect((await f.adapter.killSession("seat@rig")).ok).toBe(true);
     expect(readdirSync(f.dir)).toEqual([]);
     // A killed session's held values are forgotten: a later launch to the same name carries none.
+    const before = [...f.writes.keys()];
     await f.adapter.sendShellCommand("seat@rig", "exec runtime");
-    expect(stagedScripts(f).at(-1)![0].startsWith(f.dir)).toBe(true);
+    const added = [...f.writes.entries()].filter(([p]) => !before.includes(p));
+    expect(added.filter(([p]) => p.startsWith(f.dir + path.sep))).toEqual([]);
+    expect(added.filter(([, c]) => c.includes(SENTINEL) || c.includes(`export ${NAME}=`))).toEqual([]);
     expect(readdirSync(f.dir)).toEqual([]);
   });
 
@@ -248,7 +251,7 @@ describe.skipIf(process.platform === "win32")("secret env channel, the staged sc
     });
   }
 
-  it("REQ-0017-04: the managed launch's forwarding line and env -u reduction keep the staged value for the exec'd process", async () => {
+  it("REQ-0017-04/18: the managed launch's forwarding line and env -u reduction keep the staged value for the exec'd process", async () => {
     const script = await stagedScript();
     const out = path.join(home, "managed-out");
     // The shape of the managed command (claude-managed-launch.ts): a forwarding export, then exec env with only -u removals.

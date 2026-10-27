@@ -161,7 +161,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-01: The daemon shall not pass a secret-named seat value as an argument to any process, including tmux clients, the tmux server, `env`, `sh` and `rm`.
 - REQ-0017-02: When a launch has secret-named values, the tmux adapter shall stage the launch and write the values as exports in its staged script, after any scrub prologue.
 - REQ-0017-03: The tmux adapter shall not put a secret-named value in a tmux session or global environment.
-- REQ-0017-04: When a managed Claude launch has secret-named values, it shall take them from its staged script's exports, and no argument of any process it starts shall hold them.
+- REQ-0017-04: When a managed Claude launch has secret-named values, it shall take them from its staged script's exports.
 - REQ-0017-05: The daemon shall write a secret-bearing file with mode 0600, created exclusively, in a directory with mode 0700.
 - REQ-0017-06: The launch's shell shall delete a secret-bearing file before it reads any exported value from it.
 - REQ-0017-07: If a secret-bearing file outlives its launch, then the daemon shall delete it.
@@ -175,6 +175,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-15: If a stored seat env names a secret-named variable that is not on the exemption list, then the next launch, restore or `rig up` of that seat shall refuse with `seat_env_secret_name` before launching, and name the spec field to remove.
 - REQ-0017-16: When `createSession` or `respawnPane` is given daemon-origin secret-named values, the tmux adapter shall leave them out of the `-e` list, the private source-file config and the scoped launch file, and hold them for that session's staged launches.
 - REQ-0017-17: If a launch would carry held secret-named values and no secret-bearing directory is configured, then the tmux adapter shall refuse the launch with `secret_channel_unavailable` before it writes or sends anything, naming the variables and not their values.
+- REQ-0017-18: When a managed Claude launch has secret-named values, it shall not pass any of them as an argument to a process it starts.
 
 ## Plan
 
