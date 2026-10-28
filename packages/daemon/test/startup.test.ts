@@ -549,7 +549,9 @@ describe("createDaemon startup composition", () => {
       expect(command).toContain(`-e 'HOME=${daemonHome}'`);
       expect(command).toContain(`-e 'CODEX_HOME=${path.join(daemonHome, ".codex")}'`);
       expect(command).toContain(`-e 'PATH=${launchPath}'`);
-      expect(command).toContain("-e 'OPENAI_API_KEY=gap7-openai-key'");
+      // REQ-0017-16: the daemon-origin secret is held for the staged launch, never in the -e list or the config file.
+      expect(command).not.toContain("OPENAI_API_KEY");
+      expect(command).not.toContain("gap7-openai-key");
       for (const key of ["HOME", "CODEX_HOME", "PATH", "OPENAI_API_KEY"]) expect(argv()).not.toContain(`${key}=`);
       expect(argv()).not.toContain("gap7-openai-key");
     } finally {
@@ -649,8 +651,8 @@ describe("createDaemon startup composition", () => {
   });
 
   // Spec 0013 item 9: a `-e NAME=VALUE` is on the tmux argv, which `ps` shows (a server keeps the argv that started it).
-  // An allowlisted secret-named provider name is therefore refused at launch, named without its value, until a channel
-  // that carries it without argv exists (a follow-up).
+  // Spec 0017 (REQ-0017-16): an allowlisted secret-named provider value and the activity token are held for the
+  // session's staged launches, so neither the -e list, the source-file config nor any tmux argv holds them.
   it("refuses a launch whose allowlisted provider auth env is secret-named, naming it, with no value on any tmux call", async () => {
     vi.stubEnv("OPENRIG_RECOVERY_PROVIDER_AUTH_ENV_ALLOWLIST", "ANTHROPIC_API_KEY,CLAUDE_CODE_OAUTH_TOKEN,OPENAI_API_KEY,BOGUS_TOKEN");
     vi.stubEnv("ANTHROPIC_API_KEY", "anthropic-test-key");
@@ -672,12 +674,12 @@ describe("createDaemon startup composition", () => {
 
       expect(result.ok).toBe(true);
       const newSessionCmd = launchConfig();
-      expect(newSessionCmd).toContain("-e 'ANTHROPIC_API_KEY=anthropic-test-key'");
-      expect(newSessionCmd).toContain("-e 'CLAUDE_CODE_OAUTH_TOKEN=claude-oauth-test-token'");
-      expect(newSessionCmd).toContain("-e 'OPENAI_API_KEY=openai-test-key'");
-      expect(newSessionCmd).not.toContain("BOGUS_TOKEN");
-      expect(newSessionCmd).not.toContain("must-not-leak");
-      expect(newSessionCmd).toContain("-e 'OPENRIG_ACTIVITY_HOOK_TOKEN=synthetic-startup-hook-token'");
+      for (const name of ["ANTHROPIC_API_KEY", "CLAUDE_CODE_OAUTH_TOKEN", "OPENAI_API_KEY", "BOGUS_TOKEN", "OPENRIG_ACTIVITY_HOOK_TOKEN"]) {
+        expect(newSessionCmd).not.toContain(name);
+      }
+      for (const value of ["anthropic-test-key", "claude-oauth-test-token", "openai-test-key", "synthetic-startup-hook-token", "must-not-leak"]) {
+        expect(newSessionCmd).not.toContain(value);
+      }
       for (const value of ["anthropic-test-key", "claude-oauth-test-token", "openai-test-key", "synthetic-startup-hook-token", "must-not-leak"]) {
         expect(argv()).not.toContain(value);
       }
@@ -712,7 +714,10 @@ describe("createDaemon startup composition", () => {
 
     try {
       const optedIn = await launchCommand("AWS_BEARER_TOKEN_BEDROCK,AWS_SECRET_ACCESS_KEY");
-      expect(optedIn).toContain("-e 'AWS_BEARER_TOKEN_BEDROCK=synthetic-bedrock-token'");
+      // REQ-0017-16: a named Bedrock token is held for the staged launch, not put in the -e list or the config file.
+      expect(optedIn).toContain("new-session ");
+      expect(optedIn).not.toContain("AWS_BEARER_TOKEN_BEDROCK");
+      expect(optedIn).not.toContain("synthetic-bedrock-token");
       expect(optedIn).not.toContain("AWS_SECRET_ACCESS_KEY");
       expect(optedIn).not.toContain("synthetic-unrelated-secret");
 

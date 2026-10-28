@@ -195,6 +195,7 @@ import { NtfyNotificationAdapter } from "./domain/mission-control/notification-a
 import { WebhookNotificationAdapter } from "./domain/mission-control/notification-adapter-webhook.js";
 import type { NotificationAdapter } from "./domain/mission-control/notification-adapter-types.js";
 import { OPENRIG_HOME } from "./openrig-compat.js";
+import { secretLaunchDirPath, sweepSecretLaunchDir } from "./domain/secret-launch-dir.js";
 import { homeIsolationAdvisory } from "./domain/home-isolation.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { withCommunityHarnessResolver, withCommunityHarnesses } from "./adapters/community-harness-runtime-adapter.js";
@@ -541,6 +542,19 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   const seatEnvPolicy = seatEnvPolicyReader(() => ({ mode: seatEnvRead("seat_env.mode"), base: seatEnvRead("seat_env.base"),
     exceptions: seatEnvRead("seat_env.exceptions"), kubeconfig: seatEnvRead("seat_env.kubeconfig"), rigs: seatEnvRead("seat_env.rigs") }));
   tmuxAdapter.setSeatEnvPolicy(seatEnvPolicy);
+  // Spec 0017 (SEC-183): secret-bearing launch scripts go in <OPENRIG_HOME>/seat-env/launch/ (0700, checked before each
+  // use), emptied here before the daemon serves (REQ-0017-12). An unsafe directory is not configured, so a launch that
+  // would carry a daemon-origin secret is refused (secret_channel_unavailable); every other launch is unchanged.
+  {
+    const secretDir = secretLaunchDirPath(OPENRIG_HOME);
+    try {
+      const removed = sweepSecretLaunchDir(secretDir);
+      if (removed > 0) console.info(`[seat env] removed ${removed} leftover launch file(s) from ${secretDir}`);
+      tmuxAdapter.setSecretLaunchDir(secretDir);
+    } catch (error) {
+      console.warn(`[seat env] ${error instanceof Error ? error.message : "the private launch directory is unavailable"} Launches that carry a daemon credential are refused until it is fixed.`);
+    }
+  }
   // The real tmux runs with this process's environment, so its server is the one $TMUX names.
   // An injected exec has no server of its own: printed attach commands stay in the default form.
   setDaemonTmuxServer(opts?.tmuxExec ? [] : tmuxServerArgs(process.env));
@@ -671,7 +685,8 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
     }),
     OPENRIG_DB: seatDbPath,
     TMUX_TMPDIR: process.env.TMUX_TMPDIR,
-    // The seat's own scoped activity credential (SEC-178). It reaches tmux only through the private source-file config.
+    // The seat's own scoped activity credential (SEC-178). It never reaches tmux: the adapter holds it and the launch's
+    // staged script exports it to the runtime (spec 0017 item 1).
     OPENRIG_ACTIVITY_HOOK_TOKEN: resolvedActivityHookToken,
   };
   // OPR.0.4.6.02 S1 — ONE shared tmux option-defaults applier, injected into

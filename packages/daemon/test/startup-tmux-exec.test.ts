@@ -8,6 +8,8 @@ import { execArgvCommand } from "../src/adapters/tmux-exec.js";
 import type { ArgvExecFn, ExecFn, TmuxAdapter } from "../src/adapters/tmux.js";
 import type { CmuxTransportFactory } from "../src/adapters/cmux.js";
 import { removeTmuxTestRoot } from "./helpers/tmux-test-socket.js";
+import { OPENRIG_HOME } from "../src/openrig-compat.js";
+import { secretLaunchDirPath } from "../src/domain/secret-launch-dir.js";
 
 const cmuxFactory: CmuxTransportFactory = async () => { throw Object.assign(new Error(""), { code: "ENOENT" }); };
 
@@ -32,6 +34,43 @@ describe("createDaemon tmux exec wiring", { timeout: 120000 }, () => {
     Object.defineProperty(process, "platform", platform);
     vi.unstubAllEnvs();
     removeTmuxTestRoot(tmuxDir);
+  });
+
+  it.skipIf(process.platform === "win32")("REQ-0017-12: startup empties the private launch directory before serving and gives it to the tmux adapter", async () => {
+    const dir = secretLaunchDirPath(OPENRIG_HOME);
+    fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+    fs.chmodSync(path.dirname(dir), 0o700); fs.chmodSync(dir, 0o700);
+    const leftover = path.join(dir, "openrig-tmux-send-1-left-by-a-crash.txt");
+    fs.writeFileSync(leftover, "export SENTINEL_TOKEN='sentinel'\n", { mode: 0o600 });
+    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+    try {
+      expect(fs.existsSync(leftover)).toBe(false);
+      expect((daemon.deps.tmuxAdapter as unknown as { secretLaunchDir?: string }).secretLaunchDir).toBe(dir);
+    } finally {
+      daemon.eventLoopMonitor.stop();
+      daemon.db.close();
+    }
+  });
+
+  it.skipIf(process.platform === "win32")("REQ-0017-11: an unsafe private launch directory is not configured, and its files are left alone", async () => {
+    const dir = secretLaunchDirPath(OPENRIG_HOME);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.chmodSync(dir, 0o755);
+    const kept = path.join(dir, "kept");
+    fs.writeFileSync(kept, "", { mode: 0o600 });
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const daemon = await createDaemon({ dbPath: ":memory:", cmuxFactory });
+    try {
+      expect((daemon.deps.tmuxAdapter as unknown as { secretLaunchDir?: string }).secretLaunchDir).toBeUndefined();
+      expect(fs.existsSync(kept)).toBe(true);
+      expect(warn.mock.calls.flat().join(" ")).toMatch(/mode 0755, not 0700/);
+    } finally {
+      warn.mockRestore();
+      fs.chmodSync(dir, 0o700);
+      fs.rmSync(kept, { force: true });
+      daemon.eventLoopMonitor.stop();
+      daemon.db.close();
+    }
   });
 
   for (const host of ["linux", "darwin"] as const) {

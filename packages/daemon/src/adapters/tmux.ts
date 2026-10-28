@@ -14,6 +14,7 @@ import { addSeatRuntimeDir } from "../domain/seat-runtime-dir.js";
 import type { TmuxControlExec } from "./tmux-control.js";
 import { stat } from "node:fs/promises";
 import { verifyPaneIdleShell, type NativeProcessLister } from "../domain/native-process-lineage.js";
+import { checkSecretLaunchDir } from "../domain/secret-launch-dir.js";
 
 export type ExecFn = (cmd: string) => Promise<string>;
 
@@ -82,7 +83,8 @@ export type StopPhase = "none" | "detach_attempted" | "detached" | "kill_attempt
 /** Spec 0013 item 9: a `-e NAME=VALUE` is on the tmux client's argv while it runs, and a tmux server keeps the argv
  *  of the command that started it for its whole life, so anything on the host can read it with `ps`. A secret-named
  *  variable is therefore never passed that way: the launch is refused before any tmux command runs, naming the
- *  variable and never its value. A channel that carries such a value without argv is a follow-up. */
+ *  variable and never its value. A daemon-origin value is exempt here: it is held and carried by the launch's staged
+ *  script (spec 0017 item 1), never by tmux. */
 export function secretNamedLaunchVars(env: Readonly<Record<string, string | undefined>> | undefined, daemonOrigin?: readonly string[]): string[] {
   // OPENRIG_SEAT_ENV_KEYS matches the name rule (KEY) but carries a list of declared variable names, never a value: it is
   // exempt only while its value has that shape (review r2 on #35).
@@ -92,15 +94,43 @@ export function secretNamedLaunchVars(env: Readonly<Record<string, string | unde
 
 /** Names in `env` that are secret-named and whose value is the daemon's own (operator-allowlisted provider auth, the
  *  seat's activity token): same name and same value as in a daemon env. A seat env or direct caller value, or one that
- *  overrides a daemon value, is not daemon-origin. These travel only in the private source-file config (never argv). */
+ *  overrides a daemon value, is not daemon-origin. These never reach tmux: the adapter holds them for the session's staged
+ *  launches (spec 0017 item 1). */
 export function daemonOriginSecretNames(env: Readonly<Record<string, string | undefined>>, ...daemonEnvs: Array<Readonly<Record<string, string | undefined>> | undefined>): string[] {
   return Object.keys(env).filter((name) => isSecretSeatEnvName(name) && daemonEnvs.some((d) => d?.[name] !== undefined && d[name] === env[name]));
+}
+
+/** Spec 0017 item 1 (REQ-0017-16): split a launch env into what tmux may carry and the daemon-origin secret-named values,
+ *  which tmux never carries (no `-e`, no source-file config, no scoped launch file, so neither the session environment
+ *  nor the pane shell holds them). The held values reach the runtime only through its staged script. */
+function holdDaemonOriginSecrets(env: Record<string, string> | undefined, daemonOrigin: readonly string[] | undefined):
+  { env: Record<string, string> | undefined; held: Record<string, string> } {
+  const held: Record<string, string> = {};
+  if (!env || !daemonOrigin?.length) return { env, held };
+  const kept: Record<string, string> = {};
+  for (const [name, value] of Object.entries(env)) {
+    if (daemonOrigin.includes(name) && isSecretSeatEnvName(name)) held[name] = value;
+    else kept[name] = value;
+  }
+  return { env: kept, held };
+}
+
+/** Spec 0017 item 1 (REQ-0017-10): a held value as the single-quoted operand of an `export` line, `'\''` escaping, with
+ *  no command substitution and no external command on the line. */
+function secretExportLine(name: string, value: string): string {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error("Invalid environment name");
+  return `export ${name}='${value.replace(/'/g, "'\\''")}'`;
+}
+
+/** The session part of a tmux target (`=name:` and `name:0.1` give `name`); a pane id stays as it is. */
+function sessionKey(target: string): string {
+  return target.replace(/^=/, "").replace(/:.*$/, "");
 }
 
 function secretOnArgvRefusal(env: Record<string, string> | undefined, step: string, daemonOrigin?: readonly string[]): TmuxResult | null {
   const names = secretNamedLaunchVars(env, daemonOrigin);
   if (names.length === 0) return null;
-  return { ok: false, code: "secret_on_argv_refused", message: `tmux ${step} refused: the launch env holds secret-named ${names.join(", ")}, and a secret value is never put on a tmux argv. Remove it from the seat env or the provider-auth allow-list; a channel that carries it without argv is a follow-up.` };
+  return { ok: false, code: "secret_on_argv_refused", message: `tmux ${step} refused: the launch env holds secret-named ${names.join(", ")}, and a secret value is never put on a tmux argv. Remove it from the seat env; give the seat a credential through the provider-auth allow-list, which the daemon carries in the launch's staged script.` };
 }
 
 /** Spec 0015: a pane pid read. `absent` is tmux's positive report that the pane is gone; `unavailable` is any other
@@ -480,6 +510,10 @@ export class TmuxAdapter {
         .trim().split(/\s+/).filter(key => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key));
       const baseline = { ...Object.fromEntries(updated.map(key => [key, process.env[key]])), ...policy.env };
       removeParentSessionEnv(baseline);
+      // Spec 0017 (REQ-0017-16): the pane shell this file starts never holds a secret-named daemon value (the activity
+      // token, provider auth); those reach the runtime only through its staged script. A seat's own exempt name stays, and
+      // so does a name the operator's update-environment copies from the daemon's process, as before.
+      for (const key of Object.keys(policy.env)) if (isSecretSeatEnvName(key) && !(key in seatEnv) && !updated.includes(key)) delete baseline[key];
       // A seat's own value (its env:, a one-off name, or a name in update-environment) wins over the runtime directory.
       const selected: Record<string, string | undefined> = { ...baseline, ...seatEnv };
       addSeatRuntimeDir(selected, policy.runtimeDir);
@@ -520,6 +554,44 @@ export class TmuxAdapter {
   private readonly freshManaged = new Map<string, {nodeId: string; pane: string}>();
   private readonly freshShells = new Set<string>();
   private readonly shellLaunches = new Map<string, string>();
+  /** Spec 0017: daemon-origin secret-named values held for a session's staged launches, keyed by session name (and by
+   *  pane id after a respawn). The daemon's own values, which its environment already holds; never given to tmux. */
+  private readonly heldSecretEnv = new Map<string, Record<string, string>>();
+  /** Spec 0017 item 3: a staged secret-bearing script by target, until the next launch there or the session's kill. */
+  private readonly secretLaunches = new Map<string, string>();
+  /** Spec 0017: the 0700 directory secret-bearing scripts are written in; unset refuses any launch with held values. */
+  private secretLaunchDir?: string;
+  private secretLaunchDirCheck: (dir: string) => string | null = (dir) => checkSecretLaunchDir(dir);
+
+  /** Spec 0017 (REQ-0017-05/11): where secret-bearing launch scripts go. The directory is checked before each use. */
+  setSecretLaunchDir(dir: string, check: (dir: string) => string | null = (d) => checkSecretLaunchDir(d)): void {
+    this.secretLaunchDir = dir;
+    this.secretLaunchDirCheck = check;
+  }
+
+  private heldSecretsFor(target: string): Record<string, string> | undefined {
+    const held = this.heldSecretEnv.get(target) ?? this.heldSecretEnv.get(sessionKey(target));
+    return held && Object.keys(held).length ? held : undefined;
+  }
+
+  private holdSecrets(keys: readonly string[], held: Record<string, string>): void {
+    for (const key of keys) {
+      if (Object.keys(held).length) this.heldSecretEnv.set(key, held);
+      else this.heldSecretEnv.delete(key);
+    }
+  }
+
+  /** Spec 0017 item 3 (REQ-0017-07): delete a secret-bearing script a launch staged for `target` that its shell never
+   *  ran (the script deletes itself first when it runs, so a present file was never read). */
+  private async discardSecretLaunch(target: string): Promise<void> {
+    for (const key of new Set([target, sessionKey(target)])) {
+      const file = this.secretLaunches.get(key);
+      if (!file) continue;
+      this.secretLaunches.delete(key);
+      if (this.shellLaunches.get(key) === file) this.shellLaunches.delete(key);
+      await this.fileOps.unlink(file).catch(() => {});
+    }
+  }
 
   /** Only the private metadata probe uses this door. Success proves allocation,
    * never authority over a pre-existing or registry-managed target. */
@@ -710,7 +782,8 @@ export class TmuxAdapter {
     } catch {
       return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied (step: resolve the seat env policy), so nothing was sent.` };
     }
-    if (allowlist) return this.sendShellCommand(target, command, undefined, { sourceInPane: true, execInScript: true });
+    // Spec 0017: a launch that carries held values is staged too, never typed.
+    if (allowlist || this.heldSecretsFor(target)) return this.sendShellCommand(target, command, undefined, { sourceInPane: true, execInScript: true });
     const sent = await this.sendText(target, command);
     if (!sent.ok) return sent;
     return this.sendKeys(target, ["Enter"]);
@@ -876,10 +949,14 @@ export class TmuxAdapter {
     if (this.deliveryGuard && (!env?.OPENRIG_NODE_ID || !this.deliveryGuard.ownsLifecycle(env.OPENRIG_NODE_ID))) {
       return { ok: false, code: "guard_lease_required", message: "Managed launch requires a lifecycle lease before terminal creation." };
     }
-    const result = await this.createSessionUnchecked(name, cwd, env);
+    // Spec 0017 (REQ-0017-16): daemon-origin secrets never reach tmux; they are held for this session's staged launches.
+    const split = holdDaemonOriginSecrets(env, opts?.daemonOriginSecrets);
+    const result = await this.createSessionUnchecked(name, cwd, split.env);
     if (result.ok) {
       if (this.shellReadiness.handshake) this.freshShells.add(name);
+      await this.discardSecretLaunch(name);
       this.shellLaunches.delete(name);
+      this.holdSecrets([name], split.held);
     }
     if (result.ok && this.deliveryGuard && env?.OPENRIG_NODE_ID) {
       try {
@@ -1232,12 +1309,32 @@ export class TmuxAdapter {
     } catch {
       return { ok: false, code: "seat_env_refused", message: `${target}: the seat env allow-list could not be applied, so nothing was sent.` };
     }
+    // Spec 0017 item 1: held daemon-origin secrets travel only in this launch's staged script, in the 0700 directory.
+    // Such a launch is always staged, never typed, and is refused before anything is written when there is no safe
+    // directory (REQ-0017-11, REQ-0017-17). Failures name the variables, never a value (REQ-0017-08).
+    const held = this.heldSecretsFor(target);
+    let secretExports = "";
+    let secretPath: string | undefined;
+    if (held) {
+      const names = Object.keys(held).sort().join(", ");
+      if (!this.secretLaunchDir) {
+        return { ok: false, code: "secret_channel_unavailable", message: `${target}: the launch carries ${names}, and no private launch directory is configured, so nothing was sent.` };
+      }
+      const problem = this.secretLaunchDirCheck(this.secretLaunchDir);
+      if (problem) {
+        return { ok: false, code: "secret_launch_dir_unsafe", message: `${target}: the launch carries ${names}, and the private launch directory is unsafe (${problem}), so nothing was written or sent.` };
+      }
+      try { secretExports = Object.entries(held).map(([name, value]) => secretExportLine(name, value)).join("\n") + "\n"; }
+      catch { return { ok: false, code: "secret_channel_unavailable", message: `${target}: a held launch variable has an invalid name, so nothing was sent.` }; }
+      await this.discardSecretLaunch(target);
+      secretPath = pathJoin(this.secretLaunchDir, `${SEND_SCRIPT_PREFIX}${process.pid}-${randomUUID()}${SEND_SCRIPT_SUFFIX}`);
+    }
     // POSIX shells retain subshell isolation; unknown/unreadable panes use sh.
     const paneShell = options.sourceInPane ? (await this.getPaneCommand(target) ?? "").replace(/^-/, "") : "";
     const sourceInPane = ["bash", "zsh", "sh", "dash", "ksh"].includes(paneShell);
-    let path = !allowlist && options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName();
+    let path = secretPath ?? (!allowlist && options.stageIfLong && commandBytes <= 512 ? undefined : this.fileOps.tmpName());
     let invocation = path ? sourceInPane ? `( . ${shellQuote(path)} )` : `/bin/sh ${shellQuote(path)}` : command;
-    if (path && paneShell === "fish" && !allowlist) {
+    if (path && paneShell === "fish" && !allowlist && !held) {
       const quotedPath = shellQuote(path);
       invocation = `/bin/sh ${quotedPath}`;
       // Fish single quotes reinterpret POSIX backslashes. Keep those payloads
@@ -1252,7 +1349,7 @@ export class TmuxAdapter {
     }
     if (Buffer.byteLength(invocation, "utf8") > 512) {
       // Pi commands below the canonical tty limit still fit when staging cannot.
-      if (options.stageIfLong && commandBytes < 1024 && !allowlist) {
+      if (options.stageIfLong && commandBytes < 1024 && !allowlist && !held) {
         path = undefined;
         invocation = command;
       } else {
@@ -1262,7 +1359,11 @@ export class TmuxAdapter {
     let created = false;
     try {
       if (path) {
-        await this.fileOps.writeFile(path, `/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${prologue}${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
+        // Spec 0017 (REQ-0017-09): a script that carries a value turns tracing off before anything else, so a pane shell
+        // with xtrace or verbose on never prints an export line; it deletes itself before any export runs (REQ-0017-06),
+        // and its exports come after the scrub prologue, which therefore never sees them (REQ-0017-02).
+        const guard = held ? "{ set +xv; } 2>/dev/null\n" : "";
+        await this.fileOps.writeFile(path, `${guard}/bin/rm -f -- ${shellQuote(path)} 2>/dev/null || command rm -f -- ${shellQuote(path)} || true\n${prologue}${secretExports}${options.execInScript ? "exec " : ""}${command}\n`, { mode: 0o600, flag: "wx" });
         created = true;
       }
       const text = await this.sendText(target, invocation, beforeInput);
@@ -1275,6 +1376,7 @@ export class TmuxAdapter {
       // The receiver now owns removal. Unlinking here races shell startup.
       if (path) this.shellLaunches.set(target, path);
       else this.shellLaunches.delete(target);
+      if (secretPath) this.secretLaunches.set(target, secretPath);
       created = false;
       return { ok: true };
     } catch (err) {
@@ -1399,6 +1501,13 @@ export class TmuxAdapter {
 
   /** With a delivery guard, terminate by immutable tmux session ID; checked callers validate before detach and kill. */
   async killSession(name: string, beforeEffect?: () => void): Promise<TmuxResult> {
+    const result = await this.killSessionGuarded(name, beforeEffect);
+    // Spec 0017 item 3: a killed session's unconsumed secret-bearing script is deleted and its held values forgotten.
+    if (result.ok) { await this.discardSecretLaunch(name); this.heldSecretEnv.delete(name); this.heldSecretEnv.delete(sessionKey(name)); }
+    return result;
+  }
+
+  private async killSessionGuarded(name: string, beforeEffect?: () => void): Promise<TmuxResult> {
     let stopPhase: StopPhase = "none";
     if (this.deliveryGuard) {
       const result = await this.guardedInput(name, async (pane, beforeWrite) => {
@@ -1474,14 +1583,35 @@ export class TmuxAdapter {
   ): Promise<TmuxResult> {
     const secret = secretOnArgvRefusal(opts?.env, "respawn-pane", opts?.daemonOriginSecrets);
     if (secret) return secret;
+    // Spec 0017 (REQ-0017-16): daemon-origin secrets never reach tmux; they are held for the pane's session.
+    const split = holdDaemonOriginSecrets(opts?.env, opts?.daemonOriginSecrets);
+    const tmuxOpts = opts && { ...opts, env: split.env };
     return this.guardedInput(paneTarget, async (pane, beforeWrite) => {
       beforeWrite();
-      const result = await this.respawnPaneUnchecked(pane, command, opts);
+      const result = await this.respawnPaneUnchecked(pane, command, tmuxOpts);
       const guard = this.deliveryGuard;
       const target = guard?.maybeTarget(pane);
       if (result.ok && target && guard!.ownsLifecycle(target.nodeId)) guard!.noteFreshLifecyclePane(target.nodeId, pane);
+      if (result.ok && Object.keys(split.held).length) return this.holdForRespawnedPane(paneTarget, pane, split.held, result);
       return result;
     }, false, "respawn");
+  }
+
+  /** The runtime launches into the respawned pane by its session's name, so the held values are keyed by that name as
+   *  well as by the pane. If the name can't be read, the next launch carries none (missing, never leaked), and the
+   *  result says so, naming the variables only. */
+  private async holdForRespawnedPane(paneTarget: string, pane: string, held: Record<string, string>, result: TmuxResult): Promise<TmuxResult> {
+    const keys = [paneTarget, pane];
+    try {
+      const argv = ["tmux", "display-message", "-p", "-t", exactTarget(pane, "pane"), "#{session_name}"];
+      const session = (await this.run(argv, posixJoinArgv(argv))).trim();
+      if (session) keys.push(session);
+    } catch { /* keyed by the pane only */ }
+    for (const key of keys) await this.discardSecretLaunch(key);
+    this.holdSecrets(keys, held);
+    if (keys.length > 2) return result;
+    const warning = `${pane}: its session couldn't be read, so a launch addressed by session name won't carry ${Object.keys(held).sort().join(", ")}.`;
+    return { ...result, warnings: [...(result.ok ? result.warnings ?? [] : []), warning] } as TmuxResult;
   }
 
   private async respawnPaneUnchecked(paneTarget: string, command?: string, opts?: { cwd?: string; env?: Record<string, string> }): Promise<TmuxResult> {
