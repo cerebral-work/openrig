@@ -23,3 +23,9 @@ A Codex or agy seat rooted in this checkout gets `<!-- BEGIN OpenRig MANAGED BLO
 - **A test that fails on Linux for an environmental reason** goes in the baseline in the same pull request, with its reason and the run URL. A `flaky` entry needs two runs: one where it failed and one where it passed.
 - **A real defect is filed as a ticket**, and the entry's reason names it. Never baseline one silently.
 - **When a baselined test starts passing,** the job fails until its entry is removed.
+
+## Canonical Estate References (`handbook` & `agentic`)
+
+All agents working in this repository must consult the two canonical estate reference repositories:
+- **`cerebral-work/handbook`** (`~/projects/mesh/comms/handbook/`): Organizational handbook (`START-HERE.md`, `where-things-live.md`, `how-to-get-merged.md`, `people.md`, `communicate-in-controlled-language.md`, and `sops/`).
+- **`unsigned-gg/agentic`** (`~/projects/agents/harness/agentic/`): Shared agent harness configurations, reusable skills (`packages/skills/`), lane personas (`packages/claude-agents/bin/lane-persona`), and estate context (`packages/context/estate.md`, `~/.agents/estate.md`).
