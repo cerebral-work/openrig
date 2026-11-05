@@ -629,6 +629,30 @@ describe("Up CLI", () => {
     }
   });
 
+  // SEC-186, REQ-0017-19: a malformed --env argument is a mistyped value more often than not.
+  for (const arg of ["=hunter2-value", "hunter2-value"]) {
+    it(`up --env ${arg.startsWith("=") ? "with an empty name" : "without an equals sign"} does not echo the argument`, async () => {
+      let called = false;
+      const origListeners = server.listeners("request");
+      server.removeAllListeners("request");
+      server.on("request", (_req: http.IncomingMessage, res: http.ServerResponse) => { called = true; res.writeHead(500); res.end(); });
+      try {
+        const { logs, exitCode } = await captureLogs(async () => {
+          await makeCmd().parseAsync(["node", "rig", "up", "/tmp/rig.yaml", "--env", arg]);
+        });
+        const out = logs.join("\n");
+        expect(called).toBe(false);
+        expect(exitCode).toBe(1);
+        expect(out).toContain("--env expects KEY=VALUE");
+        expect(out).toContain(`argument of ${arg.length} characters`);
+        expect(out).not.toContain("hunter2");
+      } finally {
+        server.removeAllListeners("request");
+        for (const l of origListeners) server.on("request", l as (...args: unknown[]) => void);
+      }
+    });
+  }
+
   async function withListener(handler: (url: string) => { status: number; body: unknown }, run: (upCalls: () => number) => Promise<void>) {
     let upCalls = 0;
     const origListeners = server.listeners("request");
