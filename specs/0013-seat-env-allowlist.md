@@ -144,6 +144,9 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 - REQ-0013-20: If a handover successor's env holds a secret-named variable, then the successor launcher shall refuse the handover before ending the retiree.
 - REQ-0013-21: The self-attach response shall include the daemon's `OPENRIG_HOME`.
 - REQ-0013-22: While `seat_env.mode` is `allowlist`, if the scoped launch started a fresh pane, then `createSession` shall not restart that pane.
+- REQ-0013-23: The daemon shall take its activity-hook token from `activity-hook-token` in its state directory, minting one when the file is missing.
+- REQ-0013-24: If `OPENRIG_ACTIVITY_HOOK_TOKEN` or `RIGGED_ACTIVITY_HOOK_TOKEN` is set in the daemon's environment, then the daemon shall ignore it and log the variable's name without its value.
+- REQ-0013-25: When `rig daemon start` builds the daemon's environment, it shall not pass `OPENRIG_ACTIVITY_HOOK_TOKEN` or `RIGGED_ACTIVITY_HOOK_TOKEN` from the caller's environment.
 
 ## Plan
 
@@ -157,6 +160,8 @@ So a filter on tmux's environment alone cannot keep them out of a seat. This spe
 3. The apply plan sets `seat_env.kubeconfig` to the scoped kubeconfig. While that file is absent, an allow-listed seat inherits no kubeconfig.
 
 ## Test
+
+**Activity-hook token source (REQ-0013-23 to -25)** (`activity-endpoint.test.ts`, `transcript-startup-config.test.ts`): with a token file holding one value and an inherited env token holding another, the daemon uses the file's; with the file deleted and an env token inherited, it mints a fresh token and never the inherited one; the log line names the variable and not the value; `buildDaemonEnv` drops both token variables and keeps the rest. **Red:** before the change the inherited token won and was passed on.
 
 **Item 9** (`seat-env-no-secret-argv.test.ts`):
 - **The sentinel test.** It starts a tmux server and a seat on a private socket the way the daemon does: the launch env comes from the daemon's own builder, with a sentinel token, and the adapter's command starts the server. It records every argv the adapter runs, then scans `/proc/*/cmdline` of every tmux process. The sentinel must appear in neither. Red first: before the change, the server's argv held it.

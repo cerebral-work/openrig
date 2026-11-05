@@ -65,3 +65,15 @@ it("daemon start --allow-db-conflict applies to its child only, not a later unfl
   const next = vi.mocked(startDaemon).mock.calls[0]![0];
   expect(buildDaemonEnv({}, { ...next, port: 7433, db: "fixture.sqlite" }).OPENRIG_ALLOW_DB_CONFLICT).toBeUndefined();
 });
+
+// SEC-185, REQ-0013-25: the daemon's token file is the source of truth, so `rig daemon start`
+// must not carry a token held by the caller's shell into the daemon.
+it("buildDaemonEnv drops both activity-hook token variables and keeps the rest", () => {
+  const env = buildDaemonEnv(
+    { OPENRIG_ACTIVITY_HOOK_TOKEN: "old-a", RIGGED_ACTIVITY_HOOK_TOKEN: "old-b", KEEP_ME: "1" },
+    { port: 7433, db: "fixture.sqlite" },
+  );
+  expect(env["OPENRIG_ACTIVITY_HOOK_TOKEN"]).toBeUndefined();
+  expect(env["RIGGED_ACTIVITY_HOOK_TOKEN"]).toBeUndefined();
+  expect(env["KEEP_ME"]).toBe("1");
+});

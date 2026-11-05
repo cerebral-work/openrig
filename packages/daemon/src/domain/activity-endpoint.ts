@@ -64,6 +64,21 @@ export function ensureActivityHookToken(stateDir: string): string {
   return token;
 }
 
+/** The environment variables that used to override the token file. The daemon ignores them
+ *  (SEC-185, REQ-0013-23, -24): the file is the source of truth, so deleting it rotates the token
+ *  even when an old shell still holds the previous one. */
+export const ACTIVITY_TOKEN_ENV_NAMES = ["OPENRIG_ACTIVITY_HOOK_TOKEN", "RIGGED_ACTIVITY_HOOK_TOKEN"] as const;
+
+/** The daemon's activity-hook token: the state-dir file, minted when missing. An inherited token
+ *  variable is not used; its NAME (never its value) comes back in `ignoredEnvNames` for the log. */
+export function resolveActivityHookToken(
+  stateDir: string,
+  env: Record<string, string | undefined>,
+): { token: string; ignoredEnvNames: string[] } {
+  const ignoredEnvNames = ACTIVITY_TOKEN_ENV_NAMES.filter((name) => (env[name] ?? "").trim().length > 0);
+  return { token: ensureActivityHookToken(stateDir), ignoredEnvNames };
+}
+
 /** Snapshot the current {baseUrl, token} to activity-endpoint.json (mode 0600)
  *  for the relay file-discovery fallback (B3). Best-effort. */
 export function writeActivityEndpointFile(stateDir: string, endpoint: { baseUrl: string; token: string }): void {

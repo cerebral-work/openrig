@@ -4,7 +4,36 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import fs from "node:fs";
 import os from "node:os";
 import nodePath from "node:path";
-import { ensureActivityHookToken, writeActivityEndpointFile, readActivityEndpointFile, deriveActivityUrl } from "../src/domain/activity-endpoint.js";
+import { resolveActivityHookToken, ensureActivityHookToken, writeActivityEndpointFile, readActivityEndpointFile, deriveActivityUrl } from "../src/domain/activity-endpoint.js";
+
+describe("activity-hook token source (SEC-185, REQ-0013-23, -24)", () => {
+  let stateDir: string;
+  beforeEach(() => { stateDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-sec185-")); });
+  afterEach(() => { try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch { /* ignore */ } });
+
+  it("the token file wins over an inherited env token, and only the variable's name is reported", () => {
+    fs.writeFileSync(nodePath.join(stateDir, "activity-hook-token"), "file-token-value", { mode: 0o600 });
+    const { token, ignoredEnvNames } = resolveActivityHookToken(stateDir, { OPENRIG_ACTIVITY_HOOK_TOKEN: "inherited-secret" });
+    expect(token).toBe("file-token-value");
+    expect(ignoredEnvNames).toEqual(["OPENRIG_ACTIVITY_HOOK_TOKEN"]);
+    expect(JSON.stringify(ignoredEnvNames)).not.toContain("inherited-secret");
+  });
+
+  it("deleting the file mints a fresh token even when an old one is still inherited", () => {
+    const { token, ignoredEnvNames } = resolveActivityHookToken(stateDir, {
+      OPENRIG_ACTIVITY_HOOK_TOKEN: "old-token", RIGGED_ACTIVITY_HOOK_TOKEN: "old-token",
+    });
+    expect(token).toMatch(/^[0-9a-f]{64}$/);
+    expect(token).not.toBe("old-token");
+    expect(ignoredEnvNames).toEqual(["OPENRIG_ACTIVITY_HOOK_TOKEN", "RIGGED_ACTIVITY_HOOK_TOKEN"]);
+    expect(fs.readFileSync(nodePath.join(stateDir, "activity-hook-token"), "utf-8").trim()).toBe(token);
+  });
+
+  it("reports nothing when no token variable is inherited or one is empty", () => {
+    expect(resolveActivityHookToken(stateDir, {}).ignoredEnvNames).toEqual([]);
+    expect(resolveActivityHookToken(stateDir, { OPENRIG_ACTIVITY_HOOK_TOKEN: "" }).ignoredEnvNames).toEqual([]);
+  });
+});
 
 describe("activity-endpoint (OPR.0.4.3.28 B2)", () => {
   let stateDir: string;
