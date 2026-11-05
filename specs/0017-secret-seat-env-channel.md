@@ -176,6 +176,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
 - REQ-0017-16: When `createSession` or `respawnPane` is given daemon-origin secret-named values, the tmux adapter shall leave them out of the `-e` list, the private source-file config and the scoped launch file, and hold them for that session's staged launches.
 - REQ-0017-17: If a launch would carry held secret-named values and no secret-bearing directory is configured, then the tmux adapter shall refuse the launch with `secret_channel_unavailable` before it writes or sends anything, naming the variables and not their values.
 - REQ-0017-18: When a managed Claude launch has secret-named values, it shall not pass any of them as an argument to a process it starts.
+- REQ-0017-19: If a `rig up --env` argument has no name before its `=`, or no `=`, then the CLI shall refuse it before it contacts the daemon, naming the problem and the argument's length and echoing no part of the argument.
 
 ## Plan
 
@@ -216,6 +217,7 @@ Separating those is the seat-user plan's job (each seat as its own unix user), n
   - `TOKENIZERS_PARALLELISM` passes validation, the launch guard, the runtime change and both `seat_env.base` checks.
   - **One source:** the handover, both settings stores and the CLI import the daemon's export; no other copy of the rule exists (a source scan of `packages/*/src` for the rule's literal finds only the export). **Red:** a fifth copy fails the scan.
   - **The `--env` refusal** names the variable, never the value, and says to rotate it.
+  - **A malformed `--env` argument** (`=secret`, `secret`) is refused with its problem and length, never its text (REQ-0017-19). **Red:** before the change the refusal printed the whole argument.
   - **Red:** before the change, each source accepts `GITHUB_TOKEN`.
 - **Stored env:** a node whose stored `env_json` names a secret-named variable is refused at its next launch and at `rig up`, before any tmux command, with the remedy.
 - **Break-once:** each rule, broken on purpose, turns its test red.

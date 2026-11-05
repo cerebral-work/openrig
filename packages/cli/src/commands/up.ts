@@ -52,7 +52,9 @@ const HOST_RENAME_REFUSAL = "--name over --host needs a spec path or bundle file
 /** The mistakes the daemon would refuse in an env: block, caught before anything is sent. */
 function checkEnvAssignment(assignment: string): string | null {
   const eq = assignment.indexOf("=");
-  if (eq <= 0) return `expects KEY=VALUE, got "${assignment}"`;
+  // A malformed argument is most often a mistyped value: say what is wrong and how long it is, never its text.
+  if (eq === 0) return `expects KEY=VALUE, got an empty name (argument of ${assignment.length} characters)`;
+  if (eq < 0) return `expects KEY=VALUE, got no "=" (argument of ${assignment.length} characters)`;
   const name = assignment.slice(0, eq);
   if (!/^[A-Z_][A-Z0-9_]*$/.test(name)) return `"${name}" is not a valid name; names match ^[A-Z_][A-Z0-9_]*$`;
   if (name.startsWith("OPENRIG_")) return `"${name}" is reserved; OPENRIG_* names belong to OpenRig`;
