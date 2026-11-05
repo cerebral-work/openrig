@@ -199,7 +199,7 @@ import { secretLaunchDirPath, sweepSecretLaunchDir } from "./domain/secret-launc
 import { homeIsolationAdvisory } from "./domain/home-isolation.js";
 import { materializeBuiltinPolicyReference } from "./domain/builtin-policy-reference.js";
 import { withCommunityHarnessResolver, withCommunityHarnesses } from "./adapters/community-harness-runtime-adapter.js";
-import { ensureActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
+import { resolveActivityHookToken, writeActivityEndpointFile, deriveActivityUrl, readActivityEndpointFile } from "./domain/activity-endpoint.js";
 import { buildLaunchSessionEnv } from "./domain/launch-session-env.js";
 import { recoverSeatSkillAttempts } from "./domain/seat-skill-apply.js";
 import { restoreExistingRigUnattended } from "./domain/existing-rig-restore.js";
@@ -633,7 +633,6 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // Read transcript config from env (passed by CLI via PNS-T02 config surface)
   const transcriptsEnabled = readOpenRigEnv("OPENRIG_TRANSCRIPTS_ENABLED", "RIGGED_TRANSCRIPTS_ENABLED") !== "false";
   const transcriptsPath = readOpenRigEnv("OPENRIG_TRANSCRIPTS_PATH", "RIGGED_TRANSCRIPTS_PATH") || undefined;
-  const activityHookToken = readOpenRigEnv("OPENRIG_ACTIVITY_HOOK_TOKEN", "RIGGED_ACTIVITY_HOOK_TOKEN") || undefined;
   const activityHookUrl = readOpenRigEnv("OPENRIG_URL", "RIGGED_URL") || undefined;
   const openRigPort = readOpenRigEnv("OPENRIG_PORT", "RIGGED_PORT") || undefined;
   const openRigHost = readOpenRigEnv("OPENRIG_HOST", "RIGGED_HOST") || undefined;
@@ -645,7 +644,13 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // the ingest expected-token (server dep below) and the seats' env value, so
   // hook POSTs authenticate. Also snapshotted to activity-endpoint.json for the
   // relay file-discovery fallback used by reconcile/restored seats (B3).
-  const resolvedActivityHookToken = activityHookToken ?? ensureActivityHookToken(OPENRIG_HOME);
+  // SEC-185 (REQ-0013-23): the token file is the source of truth. An inherited token variable is
+  // ignored, so deleting the file rotates the token; the log names the variable, never its value.
+  const { token: resolvedActivityHookToken, ignoredEnvNames: ignoredActivityTokenEnv } =
+    resolveActivityHookToken(OPENRIG_HOME, process.env);
+  for (const name of ignoredActivityTokenEnv) {
+    console.warn(`[activity hook] ${name} in the daemon's environment is ignored; the token comes from the activity-hook-token file.`);
+  }
   // Derive from the daemon's OWN bound host+port (honors an explicit OPENRIG_HOST
   // single-host bind; wildcard/absent → loopback) so seats post to a reachable
   // address — a hardcoded 127.0.0.1 breaks an explicit tailnet/hostname bind.
