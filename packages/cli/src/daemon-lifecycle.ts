@@ -454,7 +454,7 @@ const ENV_SCRUB_PREFIXES = ["CODEX_", "GHOSTTY_", "XPC_", "__CF"];
 const ROUTING_ENV_SCRUB = new Set(["OPENRIG_HOST", "RIGGED_HOST"]);
 
 const ENV_SCRUB_EXACT = new Set([
-  // SEC-185 (REQ-0013-24): the daemon's token file is the source of truth, so a token held by the
+  // SEC-185 (REQ-0013-25): the daemon's token file is the source of truth, so a token held by the
   // caller's shell must not ride into the daemon and bring a rotated token back.
   "OPENRIG_ACTIVITY_HOOK_TOKEN",
   "RIGGED_ACTIVITY_HOOK_TOKEN",

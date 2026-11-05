@@ -66,7 +66,7 @@ it("daemon start --allow-db-conflict applies to its child only, not a later unfl
   expect(buildDaemonEnv({}, { ...next, port: 7433, db: "fixture.sqlite" }).OPENRIG_ALLOW_DB_CONFLICT).toBeUndefined();
 });
 
-// SEC-185, REQ-0013-24: the daemon's token file is the source of truth, so `rig daemon start`
+// SEC-185, REQ-0013-25: the daemon's token file is the source of truth, so `rig daemon start`
 // must not carry a token held by the caller's shell into the daemon.
 it("buildDaemonEnv drops both activity-hook token variables and keeps the rest", () => {
   const env = buildDaemonEnv(

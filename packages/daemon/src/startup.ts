@@ -644,7 +644,7 @@ export async function createDaemon(opts?: DaemonOptions): Promise<DaemonResult> 
   // the ingest expected-token (server dep below) and the seats' env value, so
   // hook POSTs authenticate. Also snapshotted to activity-endpoint.json for the
   // relay file-discovery fallback used by reconcile/restored seats (B3).
-  // SEC-185 (REQ-0013-23): the token file is the source of truth. An inherited token variable is
+  // SEC-185 (REQ-0013-23, -24): the token file is the source of truth. An inherited token variable is
   // ignored, so deleting the file rotates the token; the log names the variable, never its value.
   const { token: resolvedActivityHookToken, ignoredEnvNames: ignoredActivityTokenEnv } =
     resolveActivityHookToken(OPENRIG_HOME, process.env);

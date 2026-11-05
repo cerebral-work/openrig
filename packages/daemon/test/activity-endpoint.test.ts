@@ -6,7 +6,7 @@ import os from "node:os";
 import nodePath from "node:path";
 import { resolveActivityHookToken, ensureActivityHookToken, writeActivityEndpointFile, readActivityEndpointFile, deriveActivityUrl } from "../src/domain/activity-endpoint.js";
 
-describe("activity-hook token source (SEC-185, REQ-0013-23)", () => {
+describe("activity-hook token source (SEC-185, REQ-0013-23, -24)", () => {
   let stateDir: string;
   beforeEach(() => { stateDir = fs.mkdtempSync(nodePath.join(os.tmpdir(), "openrig-sec185-")); });
   afterEach(() => { try { fs.rmSync(stateDir, { recursive: true, force: true }); } catch { /* ignore */ } });

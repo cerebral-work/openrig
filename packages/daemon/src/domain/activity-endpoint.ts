@@ -65,7 +65,7 @@ export function ensureActivityHookToken(stateDir: string): string {
 }
 
 /** The environment variables that used to override the token file. The daemon ignores them
- *  (SEC-185, REQ-0013-23): the file is the source of truth, so deleting it rotates the token
+ *  (SEC-185, REQ-0013-23, -24): the file is the source of truth, so deleting it rotates the token
  *  even when an old shell still holds the previous one. */
 export const ACTIVITY_TOKEN_ENV_NAMES = ["OPENRIG_ACTIVITY_HOOK_TOKEN", "RIGGED_ACTIVITY_HOOK_TOKEN"] as const;
 
