@@ -198,7 +198,9 @@ export class AgyRuntimeAdapter implements RuntimeAdapter {
     const wrapped = this.seatLaunchEnvironment
       ? await this.seatLaunchEnvironment.command(binding.tmuxSession, cmd, { nodeId: binding.nodeId, generation: binding.launchGeneration, runtime: this.runtime })
       : cmd;
-    const sent = await this.tmux.sendShellCommand(binding.tmuxSession, `cd ${shellQuote(binding.cwd)} && ${wrapped}`);
+    // exec: the staged launch script runs under /bin/sh, which on dash keeps the shell as the pane's foreground
+    // process for agy's whole life, so the pane command reads "sh". exec makes agy the foreground process.
+    const sent = await this.tmux.sendShellCommand(binding.tmuxSession, `cd ${shellQuote(binding.cwd)} && exec ${wrapped}`);
     if (!sent.ok) return { ok: false, error: `Failed to send launch command: ${sent.message}` };
     // No conversation exists until the first turn; the resume token is captured later from the hook sidecar.
     return { ok: true, appliedLaunch };
@@ -219,11 +221,15 @@ export class AgyRuntimeAdapter implements RuntimeAdapter {
     if (!binding.tmuxSession) return { ready: false, reason: "No tmux session bound" };
     if (!(await this.tmux.hasSession(binding.tmuxSession))) return { ready: false, reason: "tmux session not responsive" };
 
-    const paneCommand = (await this.tmux.getPaneCommand(binding.tmuxSession)) ?? "";
-    if (SHELL_COMMANDS.has(paneCommand)) {
-      return { ready: false, reason: "Agy is not running in the pane (shell in the foreground)", code: "not_running" };
-    }
+    // The screen decides first: a pane command that reads as a shell label can still be agy (see launchHarness).
+    // Only an unrecognized screen under a shell label means agy is not running.
     const state = classifyAgyScreen(await this.captureScreen(binding.tmuxSession));
+    if (state === "unknown") {
+      const paneCommand = (await this.tmux.getPaneCommand(binding.tmuxSession)) ?? "";
+      if (SHELL_COMMANDS.has(paneCommand)) {
+        return { ready: false, reason: "Agy is not running in the pane (shell in the foreground)", code: "not_running" };
+      }
+    }
     switch (state) {
       case "ready": return { ready: true };
       case "trust":
