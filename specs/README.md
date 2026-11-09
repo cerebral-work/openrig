@@ -54,3 +54,4 @@ The 2026-10-18 LeanSpec audit found 3 merged fork pull requests with no spec. Al
 | #4 fix(queue): source evidence for stuck findings | Retro spec | Live queue sweep from cw.4, now 0004. |
 
 Counts: 0 linked, 3 retro specs, 0 exempt.
+| [0022](0022-agy-exec-launch-and-screen-first-readiness.md) | agy launches with `exec` and readiness reads the screen before the pane command, so dash's `sh` label no longer hides a running agy | in-progress | daemon, agy runtime adapter, agy resume |

@@ -54,14 +54,14 @@ describe("AgyRuntimeAdapter", () => {
     it("fresh launch: skip-permissions, no --mode, in cwd, no resume token (deferred)", async () => {
       const tmux = mockTmux("");
       const result = await make(tmux).launchHarness(binding(), { name: "dev-impl@rig" });
-      expect(sentCommand(tmux)).toEqual(["cd '/work/proj' && agy --dangerously-skip-permissions"]);
+      expect(sentCommand(tmux)).toEqual(["cd '/work/proj' && exec agy --dangerously-skip-permissions"]);
       expect(result).toEqual({ ok: true, appliedLaunch: expect.objectContaining({ runtime: "agy", value: "skip-permissions" }) });
       expect(result).not.toHaveProperty("resumeToken");
     });
     it("adds --mode when the seat sets one", async () => {
       const tmux = mockTmux("");
       await make(tmux).launchHarness(binding({ permissionMode: "plan" }), { name: "x" });
-      expect(sentCommand(tmux)[0]).toBe("cd '/work/proj' && agy --dangerously-skip-permissions --mode plan");
+      expect(sentCommand(tmux)[0]).toBe("cd '/work/proj' && exec agy --dangerously-skip-permissions --mode plan");
     });
     it("rejects an invalid --mode without launching", async () => {
       const tmux = mockTmux("");
@@ -98,7 +98,7 @@ describe("AgyRuntimeAdapter", () => {
     it("resume launches with --conversation <uuid> and returns the token once agy is ready", async () => {
       const tmux = mockTmux(fixture("idle-after-trust"));
       const result = await make(tmux).launchHarness(binding({ permissionMode: "auto" }), { name: "x", resumeToken: UUID });
-      expect(sentCommand(tmux)).toEqual([`cd '/work/proj' && agy --dangerously-skip-permissions --mode auto --conversation '${UUID}'`]);
+      expect(sentCommand(tmux)).toEqual([`cd '/work/proj' && exec agy --dangerously-skip-permissions --mode auto --conversation '${UUID}'`]);
       expect(result).toMatchObject({ ok: true, resumeToken: UUID, resumeType: "agy_id" });
     });
     it("resume with a malformed token is refused before any launch", async () => {
@@ -156,6 +156,13 @@ describe("AgyRuntimeAdapter", () => {
     });
     it("working screens are not ready", async () => {
       for (const f of ["working-1", "working-2", "working-4"]) expect((await ready(fixture(f))).ready).toBe(false);
+    });
+    it("a shell-labelled pane command does not hide a screen that is plainly agy (dash keeps sh in the foreground)", async () => {
+      expect(await ready(fixture("idle-after-trust"), "sh")).toEqual({ ready: true });
+      expect(await ready(fixture("trust-dialog"), "sh")).toMatchObject({ ready: false, code: "trust_gate" });
+      const working = await ready(fixture("working-1"), "sh");
+      expect(working.ready).toBe(false);
+      expect(working).not.toHaveProperty("code", "not_running");
     });
     it("shell in the foreground / unknown screen / no session are not ready", async () => {
       expect(await ready("$ ", "bash")).toMatchObject({ ready: false, code: "not_running" });
